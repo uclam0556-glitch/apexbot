@@ -9,7 +9,7 @@ live status, market overview, and multi-button navigation.
 import logging
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 
 from shared.config import get_config
@@ -23,6 +23,16 @@ router = Router()
 # ─────────────────────────────────────────────────────────────────────────────
 # KEYBOARDS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def get_persistent_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="▶️ Старт"), KeyboardButton(text="⏸ Пауза")],
+            [KeyboardButton(text="📊 Статус"), KeyboardButton(text="⚙️ Меню")]
+        ],
+        resize_keyboard=True,
+        is_persistent=True
+    )
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -63,6 +73,27 @@ def get_start_text() -> str:
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
+    # Send persistent keyboard first, then main menu
+    await message.answer("Клавиатура управления загружена 🎛", reply_markup=get_persistent_keyboard())
+    await message.answer(get_start_text(), reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+@router.message(F.text == "▶️ Старт")
+async def cmd_resume(message: Message):
+    global_state.is_paused = False
+    await message.answer("✅ <b>Анализ запущен!</b> Бот мониторит рынок.", parse_mode="HTML")
+
+@router.message(F.text == "⏸ Пауза")
+async def cmd_pause(message: Message):
+    global_state.is_paused = True
+    await message.answer("⏸ <b>Режим сна активирован.</b> Сканирование приостановлено.", parse_mode="HTML")
+
+@router.message(F.text == "📊 Статус")
+async def cmd_status_text(message: Message):
+    # We can reuse the start text or status text. Let's send the main menu for simplicity
+    await message.answer(get_start_text(), reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+@router.message(F.text == "⚙️ Меню")
+async def cmd_menu_text(message: Message):
     await message.answer(get_start_text(), reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 # ─────────────────────────────────────────────────────────────────────────────

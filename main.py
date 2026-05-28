@@ -208,6 +208,11 @@ class ApexSystem:
             await asyncio.sleep(1)
             
         while self.running:
+            if global_state.is_paused:
+                logger.info("Bot is PAUSED. Resting for 60 seconds...")
+                await asyncio.sleep(60)
+                continue
+                
             logger.info("=== STARTING SCAN CYCLE ===")
             
             open_trades = await get_open_trades()

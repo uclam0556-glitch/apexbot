@@ -10,6 +10,7 @@ class SystemState:
     signals_sent_today: int = 0
     scan_cycle_count: int = 0
     total_symbols: int = 40
+    is_paused: bool = False
 
     def __init__(self):
         self.hot_coins = []
