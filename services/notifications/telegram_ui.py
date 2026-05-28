@@ -13,7 +13,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command
 
 from shared.config import get_config
-from shared.lite_db import get_stats, get_recent_trades
+from shared.lite_db import get_stats, get_recent_trades, get_open_trades
 from shared.state import global_state
 
 logger = logging.getLogger(__name__)
@@ -27,41 +27,43 @@ router = Router()
 def get_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📡 Статус", callback_data="status"),
-            InlineKeyboardButton(text="🌡️ Рынок", callback_data="market"),
+            InlineKeyboardButton(text="📡 Статус системы", callback_data="status"),
+            InlineKeyboardButton(text="🌡 Рынок", callback_data="market"),
         ],
         [
             InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
             InlineKeyboardButton(text="📜 История", callback_data="history"),
         ],
         [
-            InlineKeyboardButton(text="🔥 Горячие монеты", callback_data="hot"),
+            InlineKeyboardButton(text="🔥 Hot Coins", callback_data="hot"),
             InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
-        ],
+        ]
     ])
 
 def get_back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="home")]
     ])
 
 # ─────────────────────────────────────────────────────────────────────────────
 # /start
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.message(Command("start"))
-async def cmd_start(message: Message):
+def get_start_text() -> str:
     now = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
-    text = (
+    return (
         "⚡ <b>APEX Quantum AI v5.0</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🧠 <b>Система активна</b> — сканирование 40 монет\n"
-        "📊 Анализ: SMC · MTF · VWAP · RSI Div · EMA Ribbon\n"
-        "🌐 Данные: Funding Rate · OI · Fear&Greed · BTC.D\n\n"
-        f"⏱ Запущено: <code>{now}</code>\n\n"
-        "Выберите раздел ниже 👇"
+        "🟢 <b>Система активна:</b> Мониторинг 40 пар 24/7\n"
+        "🧠 <b>Ядро:</b> SMC + MTF + Macro Alignment\n"
+        "🛡 <b>Риск-менеджмент:</b> $3000 | 1% на сделку\n\n"
+        f"🕒 <i>Время сервера: {now}</i>\n\n"
+        "👇 <b>Главное меню:</b>"
     )
-    await message.answer(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+@router.message(Command("start"))
+async def cmd_start(message: Message):
+    await message.answer(get_start_text(), reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STATUS
@@ -85,10 +87,10 @@ async def process_status(callback: CallbackQuery):
         "<i>Обновляется автоматически каждый цикл</i>"
     )
     try:
-        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     except Exception:
         pass
-    await callback.answer("🔄 Обновлено!")
+    await callback.answer()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MARKET OVERVIEW
@@ -135,7 +137,7 @@ async def process_market(callback: CallbackQuery):
         "<i>Данные обновляются каждый час</i>"
     )
     try:
-        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     except Exception:
         pass
 
@@ -146,24 +148,32 @@ async def process_market(callback: CallbackQuery):
 @router.callback_query(F.data == "stats")
 async def process_stats(callback: CallbackQuery):
     stats = await get_stats()
+    open_trades = await get_open_trades()
+    active_count = len(open_trades) if open_trades else 0
+    
     wr = stats['win_rate']
-    wr_bar = "🟢" * int(wr / 20) + "⬜" * (5 - int(wr / 20))
-
+    
+    # Generate progress bar for win rate
+    filled = int(wr / 10) if stats['total'] > 0 else 0
+    bar = "🟩" * filled + "⬜" * (10 - filled)
+    
     text = (
-        "📊 <b>Статистика торговли</b>\n"
+        "📊 <b>Статистика & Эффективность</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📈 Всего сигналов: <b>{stats['total']}</b>\n"
-        f"✅ Успешных: <b>{stats['won']}</b>\n"
-        f"❌ Убыточных: <b>{stats['lost']}</b>\n\n"
-        f"🎯 Win Rate: <b>{wr:.1f}%</b>\n"
-        f"{wr_bar}\n\n"
-        f"💰 Суммарный PnL: <b>{stats['pnl_sum']:+.2f}%</b>\n"
-        f"💵 Депозит: <b>$3,000</b>\n"
-        f"⚖️ Риск на сделку: <b>1% ($30)</b>\n\n"
-        "<i>Режим: Paper Trading (сигналы без автоисполнения)</i>"
+        f"⏳ <b>Открытых позиций:</b> {active_count}\n"
+        f"📈 <b>Закрытых сделок:</b> {stats['total']}\n"
+        f"   ┣ Успешных (TP): <b>{stats['won']}</b> ✅\n"
+        f"   ┗ Убыточных (SL): <b>{stats['lost']}</b> ❌\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 <b>Win Rate: {wr:.1f}%</b>\n"
+        f"[{bar}]\n\n"
+        f"💰 <b>Суммарный PnL:</b> {stats['pnl_sum']:+.2f}%\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💵 <b>Рабочий депозит:</b> $3,000\n"
+        f"⚖️ <b>Риск на сделку:</b> 1% ($30)\n"
     )
     try:
-        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     except Exception:
         pass
     await callback.answer()
@@ -174,32 +184,40 @@ async def process_stats(callback: CallbackQuery):
 
 @router.callback_query(F.data == "history")
 async def process_history(callback: CallbackQuery):
-    trades = await get_recent_trades(limit=5)
+    trades = await get_recent_trades(limit=10)
 
     if not trades:
         text = (
             "📜 <b>История сигналов</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Сигналов пока нет.\n"
-            "Бот сканирует 40 монет — сигнал придёт как только\n"
-            "система найдёт точку входа с score 6+/10 🔍"
+            "Пока нет активных или закрытых сделок.\n"
+            "Бот сканирует 40 монет — ожидайте сигнал 🔍"
         )
     else:
-        text = "📜 <b>Последние сигналы:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        text = "📜 <b>Последние 10 сделок:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
         for t in trades:
-            dir_emoji = "🟢 LONG" if t['direction'] == "LONG" else "🔴 SHORT"
-            status_emoji = {"OPEN": "⏳", "WON": "✅", "LOST": "❌"}.get(t['status'], "❔")
-            pnl = t['pnl_pct'] or 0.0
-            pnl_str = f"<b>{pnl:+.2f}%</b>" if pnl != 0 else "—"
+            dir_emoji = "🟢 L" if t['direction'] == "LONG" else "🔴 S"
+            
+            if t['status'] == "OPEN":
+                status_emoji = "⏳"
+                pnl_str = "В процессе..."
+            elif t['status'] == "WON":
+                status_emoji = "✅"
+                pnl_str = f"+{t['pnl_pct']:.2f}%"
+            else:
+                status_emoji = "❌"
+                pnl_str = f"{t['pnl_pct']:.2f}%"
+                
+            open_dt = datetime.strptime(t['opened_at'], '%Y-%m-%d %H:%M:%S.%f') if '.' in t['opened_at'] else datetime.strptime(t['opened_at'], '%Y-%m-%d %H:%M:%S')
+            date_str = open_dt.strftime("%d.%m %H:%M")
 
             text += (
-                f"{dir_emoji} <b>{t['symbol']}</b>  {status_emoji} {t['status']}\n"
-                f"💰 Вход: ${t['entry_price']:.4f}  |  PnL: {pnl_str}\n"
-                "──────────────────────\n"
+                f"{status_emoji} <b>{t['symbol']}</b> {dir_emoji}  |  <code>{date_str}</code>\n"
+                f"   Вход: ${t['entry_price']:.4f}  →  PnL: <b>{pnl_str}</b>\n"
             )
 
     try:
-        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     except Exception:
         pass
     await callback.answer()
@@ -228,7 +246,7 @@ async def process_hot(callback: CallbackQuery):
             text += f"   RSI: {coin.get('rsi', '—')} | Режим: {coin.get('regime', '—')}\n\n"
 
     try:
-        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     except Exception:
         pass
     await callback.answer()
@@ -264,7 +282,7 @@ async def process_settings(callback: CallbackQuery):
         "✅ BTC Dominance\n"
     )
     try:
-        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     except Exception:
         pass
     await callback.answer()
@@ -275,7 +293,10 @@ async def process_settings(callback: CallbackQuery):
 
 @router.callback_query(F.data == "home")
 async def process_home(callback: CallbackQuery):
-    await cmd_start.__wrapped__(callback.message) if hasattr(cmd_start, '__wrapped__') else None
+    try:
+        await callback.message.edit_text(get_start_text(), reply_markup=get_main_keyboard(), parse_mode="HTML")
+    except Exception:
+        pass
     await callback.answer()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -386,24 +407,30 @@ async def send_signal(bot: Bot, chat_id: int, signal_data: dict):
 
 async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dict, status: str, pnl_pct: float):
     """Sends a notification when a trade hits TP or SL."""
-    emoji = "✅" if status == "WON" else "❌"
-    result_text = "ЗАКРЫТА В ПЛЮС (Тейк-профит)" if status == "WON" else "ВЫБИТА ПО СТОПУ (Стоп-лосс)"
-    pnl_text = f"+{pnl_pct:.2f}%" if status == "WON" else f"{pnl_pct:.2f}%"
-    
+    if status == "WON":
+        header = "✅ <b>ТЕЙК-ПРОФИТ ДОСТИГНУТ</b>"
+        pnl_text = f"+{pnl_pct:.2f}%"
+        color_emoji = "🟢"
+    else:
+        header = "❌ <b>СДЕЛКА ЗАКРЫТА ПО СТОПУ</b>"
+        pnl_text = f"{pnl_pct:.2f}%"
+        color_emoji = "🔴"
+        
     text = (
-        f"{emoji} <b>СДЕЛКА {status}</b> • {trade_data.get('symbol')}\n"
+        f"{header}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>Статус:</b> {result_text}\n"
-        f"<b>Прибыль/Убыток:</b> {pnl_text}\n"
-        f"<b>Направление:</b> {trade_data.get('direction', 'LONG')}\n"
-        f"<b>Вход:</b> ${trade_data.get('entry_price', 0):.4f}\n"
-        f"<b>Открыта:</b> {trade_data.get('opened_at', '—')} UTC\n"
-        f"<b>Закрыта:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
-        f"<i>Причина входа:</i> {trade_data.get('reasoning', 'SMC+MTF Signal')}"
+        f"🪙 <b>Монета:</b> {trade_data.get('symbol')}\n"
+        f"📈 <b>Направление:</b> {trade_data.get('direction', 'LONG')}\n\n"
+        f"💸 <b>Итоговый PnL:</b>  <b>{pnl_text}</b> {color_emoji}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Вход:</b>  ${trade_data.get('entry_price', 0):.4f}\n"
+        f"🏁 <b>Выход:</b> ${trade_data.get('take_profit_1', 0) if status == 'WON' else trade_data.get('stop_loss', 0):.4f}\n\n"
+        f"🕒 <i>Открыта: {trade_data.get('opened_at', '—')} UTC</i>\n"
+        f"🏁 <i>Закрыта: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC</i>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
-         InlineKeyboardButton(text="📜 История", callback_data="history")]
+         InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
     ])
     try:
         await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="HTML")
