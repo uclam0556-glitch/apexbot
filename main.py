@@ -103,14 +103,26 @@ class ApexSystem:
             try:
                 logger.info("Updating Macro & Rotation State...")
                 self.macro_state = await self.macro_engine.get_full_macro_result()
-                self.rotation_state = self.rotation_engine.get_rotation_multipliers(
-                    self.macro_state.dominance_signal, 
-                    self.macro_state.macro_bias
-                )
-                logger.info(f"Macro Bias: {self.macro_state.macro_bias.value} | Alt Season: {self.macro_state.dominance_signal.season}")
+                try:
+                    self.rotation_state = self.rotation_engine.get_rotation_multipliers(
+                        self.macro_state.dominance,
+                        self.macro_state.macro_bias
+                    )
+                    logger.info(f"Macro Bias: {self.macro_state.macro_bias.value}")
+                except Exception as rot_err:
+                    logger.warning(f"Rotation engine error (non-fatal): {rot_err}")
+                    self.rotation_state = None
             except Exception as e:
                 logger.error(f"Error in macro updater: {e}")
-            
+                # Set a minimal fallback so the scanner loop doesn't block forever
+                if self.macro_state is None:
+                    from shared.models import MacroBias
+                    self.macro_state = type('FallbackMacro', (), {
+                        'macro_bias': MacroBias.NEUTRAL,
+                        'dominance': None,
+                    })()
+                    self.rotation_state = None
+
             await asyncio.sleep(3600)  # 1 hour
 
     async def mock_ai_auditor(self, package: FullSignalPackage) -> AIAuditResult:
@@ -336,10 +348,10 @@ class ApexSystem:
                     deposit = self.config.trading.initial_deposit_usd
                     risk_pct = getattr(self.config.trading, 'risk_per_trade_pct', 1.0)
                     risk_usd = deposit * risk_pct / 100
-                    sl_pct = abs(current_price - sltp.sl) / current_price if current_price > 0 else 0.03
+                    sl_pct = abs(current_price - sltp.stop_loss) / current_price if current_price > 0 else 0.03
                     position_usd = (risk_usd / sl_pct) if sl_pct > 0 else risk_usd * 10
                     position_usd = min(position_usd, deposit * 0.20)  # Max 20% of deposit
-                    rr_ratio = abs(sltp.tp2 - current_price) / abs(current_price - sltp.sl) if abs(current_price - sltp.sl) > 0 else 2.0
+                    rr_ratio = abs(sltp.take_profit_2 - current_price) / abs(current_price - sltp.stop_loss) if abs(current_price - sltp.stop_loss) > 0 else 2.0
 
                     # 9. Build signal package
                     signal_data = {
@@ -347,10 +359,10 @@ class ApexSystem:
                         "direction": "LONG",
                         "entry_low": current_price * 0.999,
                         "entry_high": current_price * 1.001,
-                        "stop_loss": sltp.sl,
-                        "tp1": sltp.tp1,
-                        "tp2": sltp.tp2,
-                        "tp3": sltp.tp3,
+                        "stop_loss": sltp.stop_loss,
+                        "tp1": sltp.take_profit_1,
+                        "tp2": sltp.take_profit_2,
+                        "tp3": sltp.take_profit_3,
                         "score": ultra_score,
                         "regime": current_regime.value,
                         "rsi": rsi_now,
@@ -388,8 +400,8 @@ class ApexSystem:
                         symbol=symbol,
                         direction="LONG",
                         entry_price=current_price,
-                        stop_loss=sltp.sl,
-                        take_profit_1=sltp.tp1,
+                        stop_loss=sltp.stop_loss,
+                        take_profit_1=sltp.take_profit_1,
                         position_usd=position_usd,
                         reasoning=f"Ultra Score {ultra_score:.1f}/10 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}"
                     )

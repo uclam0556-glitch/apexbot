@@ -189,10 +189,10 @@ class CrossAssetCorrelationEngine:
             btc_dom = await self.fetch_btc_dominance()
             
             dxy_snap = self.calculate_correlation(btc_series, dxy_series)
-            dxy_snap.asset_name = "DXY"
-            
+            dxy_snap = dxy_snap.model_copy(update={"asset_b": "DXY"})
+
             gold_snap = self.calculate_correlation(btc_series, gold_series)
-            gold_snap.asset_name = "GOLD"
+            gold_snap = gold_snap.model_copy(update={"asset_b": "GOLD"})
             
             # Assuming prev dom was 53.0
             dom_signal = self.get_btc_dominance_signal(btc_dom, 53.0)

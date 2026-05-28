@@ -238,8 +238,14 @@ class MLConfig(BaseSettings):
 class AlertConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ALERT_", env_file=".env", extra="ignore")
 
-    telegram_bot_token: SecretStr = Field(default=SecretStr(""))
-    telegram_chat_id: str = ""
+    telegram_bot_token: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="TELEGRAM_BOT_TOKEN"  # Also read from TELEGRAM_BOT_TOKEN (no prefix)
+    )
+    telegram_chat_id: str = Field(
+        default="",
+        validation_alias="TELEGRAM_CHAT_ID"    # Also read from TELEGRAM_CHAT_ID (no prefix)
+    )
     telegram_error_chat_id: str = ""   # separate chat for errors
 
     discord_webhook_url: SecretStr = Field(default=SecretStr(""))
