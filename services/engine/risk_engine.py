@@ -584,10 +584,17 @@ class RiskEngine:
         # ── Stop Loss ──────────────────────────────────────────────────────
         stop_loss = self._calculate_stop_loss(entry, is_long, atr, swing_points)
 
-        # SL distance for R:R verification
+        # Calculate Stop Loss distance
         sl_distance = abs(entry - stop_loss)
         if sl_distance < 1e-10:
             sl_distance = atr * 0.5  # safety fallback
+            
+        # Hard Cap SL at 5%
+        max_sl_distance = entry * 0.05
+        if sl_distance > max_sl_distance:
+            # Cap the SL to 5% exactly
+            sl_distance = max_sl_distance
+            stop_loss = entry - sl_distance if is_long else entry + sl_distance
 
         # Round-number proximity check
         sl_near_round_number = self._is_near_round_number(stop_loss)
@@ -595,26 +602,17 @@ class RiskEngine:
         # Buffer percentage
         sl_buffer_actual = abs(stop_loss - entry) / entry * 100
 
-        # ── Take Profits ───────────────────────────────────────────────────
-        tp1 = self._find_tp1(entry, is_long, atr, volume_nodes, sl_distance)
-        tp2 = self._find_tp2(
-            entry, is_long, atr, key_levels, imbalance_zones, tp1, sl_distance
-        )
-        tp3 = self._find_tp3(entry, is_long, atr, swing_points, tp2, sl_distance)
-
-        # Verify TP1 has at least 1.5 R:R; adjust if needed
-        tp1_rr = (abs(tp1 - entry)) / sl_distance if sl_distance > 0 else 0.0
-        if tp1_rr < 1.5:
-            # Force TP1 to exactly 1.5R
-            if is_long:
-                tp1 = entry + 1.5 * sl_distance
-            else:
-                tp1 = entry - 1.5 * sl_distance
-            tp1_rr = 1.5
-
-        # Ensure strictly monotonic: tp1 < tp2 < tp3
-        tp2 = max(tp2, tp1 * 1.002)
-        tp3 = max(tp3, tp2 * 1.002)
+        # ── Take Profits (Fixed R:R for Realistic Sniper Mode) ──
+        if is_long:
+            tp1 = entry + 1.5 * sl_distance
+            tp2 = entry + 2.5 * sl_distance
+            tp3 = entry + 3.5 * sl_distance
+        else:
+            tp1 = entry - 1.5 * sl_distance
+            tp2 = entry - 2.5 * sl_distance
+            tp3 = entry - 3.5 * sl_distance
+            
+        tp1_rr = 1.5
 
         self._log.info(
             "sl_tp_calculated",

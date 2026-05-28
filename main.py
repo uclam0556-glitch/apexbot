@@ -210,9 +210,21 @@ class ApexSystem:
         while self.running:
             logger.info("=== STARTING SCAN CYCLE ===")
             
+            open_trades = get_open_trades()
+            open_symbols = [t['symbol'] for t in open_trades]
+            
+            if len(open_trades) >= 5:
+                logger.info(f"Portfolio limit reached (5 open trades). Resting until a trade closes...")
+                await asyncio.sleep(60)
+                continue
+            
             for symbol in self.config.trading.symbols:
                 if not self.running:
                     break
+                    
+                if symbol in open_symbols:
+                    logger.debug(f"{symbol} already has an open trade. Skipping to avoid duplicate signals.")
+                    continue
                     
                 try:
                     global_state.current_symbol = symbol
