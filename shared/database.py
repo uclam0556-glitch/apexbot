@@ -2,6 +2,7 @@
 APEX Trading System v4.0
 Database Layer — TimescaleDB (asyncpg) + Redis + ClickHouse connections.
 All async, pooled, production-grade.
+On Railway/lightweight deployments, falls back to SQLite via lite_db.
 """
 
 from __future__ import annotations
@@ -11,9 +12,27 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Any
 
-import asyncpg
-import redis.asyncio as aioredis
-from clickhouse_driver import Client as ClickHouseClient
+# Optional heavy DB drivers — graceful fallback if not installed
+try:
+    import asyncpg
+    _HAS_ASYNCPG = True
+except ImportError:
+    asyncpg = None  # type: ignore
+    _HAS_ASYNCPG = False
+
+try:
+    import redis.asyncio as aioredis
+    _HAS_REDIS = True
+except ImportError:
+    aioredis = None  # type: ignore
+    _HAS_REDIS = False
+
+try:
+    from clickhouse_driver import Client as ClickHouseClient
+    _HAS_CLICKHOUSE = True
+except ImportError:
+    ClickHouseClient = None  # type: ignore
+    _HAS_CLICKHOUSE = False
 
 from shared.config import get_config
 
