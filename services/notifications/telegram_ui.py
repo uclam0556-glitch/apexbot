@@ -457,6 +457,7 @@ async def start_telegram_bot():
 
     logger.info("Starting Telegram bot polling...")
     try:
+        await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
     except Exception as e:
         logger.error(f"Telegram bot error: {e}")
