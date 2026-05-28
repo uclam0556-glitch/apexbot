@@ -158,10 +158,10 @@ async def close_redis() -> None:
         logger.info("Redis connection closed")
 
 
-def get_redis() -> aioredis.Redis:
-    """Get Redis client instance."""
+def get_redis() -> "aioredis.Redis | None":
+    """Get Redis client instance. Returns None if Redis not initialized (graceful fallback)."""
     if _redis_client is None:
-        raise RuntimeError("Redis not initialized. Call init_redis() first.")
+        return None
     return _redis_client
 
 

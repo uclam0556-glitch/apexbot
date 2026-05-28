@@ -165,29 +165,27 @@ class ConfluenceEngineV4:
 
     async def get_dynamic_weights(self, regime: MarketRegime) -> tuple[dict[str, float], str]:
         """
-        Load weights from Redis (trained by ConfluenceWeightTrainer).
-        Falls back to seeded weights if not trained yet.
-        Falls back to equal weights if no seeded data.
-
-        Returns: (weights_dict, source_description)
+        Load weights from Redis if available, otherwise use seeded weights.
+        Gracefully handles Railway/lightweight deployments without Redis.
         """
-        redis = get_redis()
-        key = RedisKeys.confluence_weights(regime.value)
+        redis = get_redis()  # Returns None if Redis not available
+        if redis is not None:
+            try:
+                import json
+                key = RedisKeys.confluence_weights(regime.value)
+                weights_json = await redis.get(key)
+                if weights_json:
+                    weights = json.loads(weights_json)
+                    logger.debug(f"Loaded trained weights for {regime.value} from Redis")
+                    return weights, "feature_store_trained"
+            except Exception as e:
+                logger.warning(f"Redis weights load failed: {e}")
 
-        try:
-            import json
-            weights_json = await redis.get(key)
-            if weights_json:
-                weights = json.loads(weights_json)
-                logger.debug(f"Loaded trained weights for {regime.value} from Feature Store")
-                return weights, "feature_store_trained"
-        except Exception as e:
-            logger.warning(f"Failed to load weights from Redis: {e}")
-
-        # Use seeded weights
+        # Fallback: use seeded regime-specific weights (no Redis needed)
         seeded = SEEDED_WEIGHTS_BY_REGIME.get(regime.value, DEFAULT_EQUAL_WEIGHTS)
         logger.debug(f"Using seeded weights for {regime.value}")
         return seeded, "seeded_educated_guess"
+
 
     def _check_support_resistance(
         self,
