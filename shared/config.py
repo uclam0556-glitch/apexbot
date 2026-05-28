@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -240,11 +240,11 @@ class AlertConfig(BaseSettings):
 
     telegram_bot_token: SecretStr = Field(
         default=SecretStr(""),
-        validation_alias="TELEGRAM_BOT_TOKEN"  # Also read from TELEGRAM_BOT_TOKEN (no prefix)
+        validation_alias=AliasChoices("ALERTS_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "ALERT_TELEGRAM_BOT_TOKEN")
     )
     telegram_chat_id: str = Field(
         default="",
-        validation_alias="TELEGRAM_CHAT_ID"    # Also read from TELEGRAM_CHAT_ID (no prefix)
+        validation_alias=AliasChoices("ALERTS_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID", "ALERT_TELEGRAM_CHAT_ID")
     )
     telegram_error_chat_id: str = ""   # separate chat for errors
 
