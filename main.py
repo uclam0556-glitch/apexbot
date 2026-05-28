@@ -38,6 +38,7 @@ from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
 from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification
+from services.intelligence.rs_matrix import rs_matrix_engine
 
 # v5.0 Imports
 from services.data.ws_manager import ExchangeWSManager
@@ -112,6 +113,10 @@ class ApexSystem:
                 except Exception as rot_err:
                     logger.warning(f"Rotation engine error (non-fatal): {rot_err}")
                     self.rotation_state = None
+                    
+                # Update RS Matrix
+                await rs_matrix_engine.update_matrix(self.config.trading.symbols)
+                
             except Exception as e:
                 logger.error(f"Error in macro updater: {e}")
                 # Set a minimal fallback so the scanner loop doesn't block forever
@@ -245,6 +250,11 @@ class ApexSystem:
                     
                 if symbol in open_symbols:
                     logger.debug(f"{symbol} already has an open trade. Skipping to avoid duplicate signals.")
+                    continue
+                    
+                rs_rank = rs_matrix_engine.get_rank(symbol)
+                if rs_rank > 15:
+                    logger.debug(f"{symbol} - RS Rank {rs_rank} > 15 (Too weak against BTC). Skipping.")
                     continue
                     
                 try:
@@ -428,6 +438,18 @@ class ApexSystem:
                         volume_nodes=smc_analysis.volume_nodes,
                         key_levels=[]
                     )
+                    
+                    # 8.5 Squeeze Engine Override
+                    funding_rate_val = market_ctx["funding"]["rate_pct"]
+                    oi_change_val = market_ctx["open_interest"]["change_pct"]
+                    is_squeeze = False
+                    
+                    if funding_rate_val < -0.05 and oi_change_val > 2.0:
+                        logger.info(f"🚨 SHORT SQUEEZE DETECTED on {symbol}! Overriding TP limits.")
+                        is_squeeze = True
+                        sltp.take_profit_1 = sltp.take_profit_3 * 0.9 # Move TP1 near TP3
+                        sltp.take_profit_2 = sltp.take_profit_3 * 0.95
+                        sltp.take_profit_3 = current_price * 1.20 # +20% Moonbag
 
                     # Position sizing: 1% of $3000 = $30
                     deposit = self.config.trading.initial_deposit_usd
@@ -442,6 +464,7 @@ class ApexSystem:
                     signal_data = {
                         "symbol": symbol,
                         "direction": "LONG",
+                        "is_squeeze": is_squeeze,
                         "entry_low": current_price * 0.999,
                         "entry_high": current_price * 1.001,
                         "stop_loss": sltp.stop_loss,

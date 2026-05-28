@@ -259,22 +259,25 @@ async def process_history(callback: CallbackQuery):
 
 @router.callback_query(F.data == "hot")
 async def process_hot(callback: CallbackQuery):
-    hot = global_state.hot_coins if hasattr(global_state, 'hot_coins') and global_state.hot_coins else []
+    from services.intelligence.rs_matrix import rs_matrix_engine
+    hot = rs_matrix_engine.get_top_n(5)
 
     if not hot:
         text = (
-            "🔥 <b>Горячие монеты</b>\n"
+            "🔥 <b>Горячие монеты (RS Matrix)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "⏳ Данные накапливаются...\n\n"
             "После первого полного цикла сканирования\n"
-            "здесь появятся топ монеты по силе сигнала!"
+            "здесь появятся топ монеты сильнее BTC!"
         )
     else:
-        text = "🔥 <b>Горячие монеты сейчас:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        for i, coin in enumerate(hot[:8], 1):
-            medal = ["🥇", "🥈", "🥉"].get(i - 1, f"{i}.")
-            text += f"{medal} <b>{coin['symbol']}</b> — score {coin['score']:.1f}/10\n"
-            text += f"   RSI: {coin.get('rsi', '—')} | Режим: {coin.get('regime', '—')}\n\n"
+        text = "🔥 <b>RS Matrix — Топ Сильных Монет:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for i, coin in enumerate(hot, 1):
+            medal = {0: "🥇", 1: "🥈", 2: "🥉"}.get(i - 1, f"{i}.")
+            text += f"{medal} <b>{coin['symbol']}</b>\n"
+            text += f"   Изменение за 24ч: <b>{coin['change_24h']:+.2f}%</b>\n"
+            text += f"   RS Score к BTC: <b>{coin['rs_score']:+.2f}%</b>\n\n"
+            text += "<i>Только эти монеты бот берет в лонг.</i>\n"
 
     try:
         await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
@@ -391,10 +394,13 @@ def build_signal_card(signal_data: dict) -> str:
     funding_str = f"{funding:+.3f}%" if funding != 0 else "—"
     oi_str = f"{oi_change:+.1f}%" if oi_change != 0 else "—"
     fib_str = f"Fib {fib_level}" if fib_level else "—"
+    
+    squeeze_alert = "🚨 <b>SHORT SQUEEZE DETECTED</b>\n<i>Лимиты сняты, ловим ракету 🚀</i>\n━━━━━━━━━━━━━━━━━━━━━━━━\n" if s.get("is_squeeze") else ""
 
     card = (
         f"{dir_emoji} <b>СИГНАЛ {direction} • {symbol}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{squeeze_alert}"
         f"💰 <b>Вход:</b>     {fmt(entry_low)} – {fmt(entry_high)}\n"
         f"🛑 <b>Стоп-лосс:</b> {fmt(sl)}  <i>(-{sl_pct:.1f}%)</i>\n"
         f"🎯 <b>TP1 (40%):</b>  {fmt(tp1)}  <i>(+{tp1_pct:.1f}%)</i>\n"
