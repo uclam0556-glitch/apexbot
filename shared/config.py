@@ -134,7 +134,7 @@ class TradingConfig(BaseSettings):
         # Majors
         "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
         # Large Caps
-        "AVAX/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT", "LINK/USDT",
+        "AVAX/USDT", "ADA/USDT", "DOT/USDT", "POL/USDT", "LINK/USDT",
         # DeFi
         "UNI/USDT", "AAVE/USDT", "ARB/USDT", "OP/USDT", "INJ/USDT",
         # L1/L2 Trending
