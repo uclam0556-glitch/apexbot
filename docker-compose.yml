@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    environment:
+      POSTGRES_USER: apex
+      POSTGRES_PASSWORD: apex
+      POSTGRES_DB: apex
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ch_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    restart: unless-stopped
+
+  apex_bot:
+    build: .
+    depends_on:
+      - redis
+      - postgres
+      - clickhouse
+    environment:
+      - DB_REDIS_HOST=redis
+      - DB_REDIS_PORT=6379
+      - DB_TIMESCALE_HOST=postgres
+      - DB_TIMESCALE_PORT=5432
+      - DB_TIMESCALE_USER=apex
+      - DB_TIMESCALE_PASSWORD=apex
+      - DB_TIMESCALE_NAME=apex
+      - DB_CLICKHOUSE_HOST=clickhouse
+      - DB_CLICKHOUSE_PORT=9000
+    env_file:
+      - .env
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  pg_data:
+  ch_data:
