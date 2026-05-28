@@ -61,7 +61,7 @@ class ApexSystem:
     def __init__(self):
         self.running = False
         self.config = _config
-        self.exchange = ccxt.binance({
+        self.exchange = ccxt.bybit({
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'}
         })

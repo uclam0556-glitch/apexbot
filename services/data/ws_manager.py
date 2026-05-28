@@ -12,7 +12,7 @@ class ExchangeWSManager:
     Maintains a continuous connection to Binance via ccxt.pro for real-time 
     orderbook and ticker data.
     """
-    def __init__(self, exchange_id: str = 'binance'):
+    def __init__(self, exchange_id: str = 'bybit'):
         self.exchange_id = exchange_id
         exchange_class = getattr(ccxtpro, self.exchange_id)
         self.exchange = exchange_class({
@@ -45,8 +45,12 @@ class ExchangeWSManager:
                     
             except ccxtpro.NetworkError as e:
                 consecutive_errors += 1
-                logger.warning(f"WS Network Error on {symbol}: {e}. Attempt {consecutive_errors}")
-                await asyncio.sleep(min(2 ** consecutive_errors, 60))
+                if "451" in str(e):
+                    logger.error(f"🚨 Binance GEO-BLOCK (451) on {symbol}. Server must be in EU (Amsterdam).")
+                    await asyncio.sleep(60) # Sleep longer if geo-blocked
+                else:
+                    logger.warning(f"WS Network Error on {symbol}. Attempt {consecutive_errors}")
+                    await asyncio.sleep(min(2 ** consecutive_errors, 60))
             except Exception as e:
                 logger.error(f"WS Error on {symbol}: {e}")
                 await asyncio.sleep(5)
