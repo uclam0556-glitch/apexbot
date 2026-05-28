@@ -278,20 +278,55 @@ class ApexSystem:
                         continue
                         
                     # 7. Adversarial Check
-                    mock_sig = {"entry": current_price, "sl": current_price * 0.97, "tp1": current_price * 1.05}
-                    adv_res = self.adversarial_tester.run_adversarial_test(
-                        mock_sig, smc_analysis.swing_points, {}, df_1h, [], {}
-                    )
-                    if not adv_res.passed:
-                        logger.warning(f"{symbol} - Adversarial blocked (score={adv_res.risk_score:.1f}).")
-                        continue
+                    # Combine swing_highs + swing_lows for functions expecting swing_points
+                    all_swing_points = smc_analysis.swing_highs + smc_analysis.swing_lows
+
+                    # Build lightweight mock signal with only fields adversarial tester reads
+                    class _MockSignal:
+                        def __init__(self, sym, price):
+                            self.symbol = sym
+                            self.direction = Direction.LONG
+                            self.entry_low = price * 0.999
+                            self.entry_high = price * 1.001
+                            self.stop_loss = price * 0.97
+                            self.take_profit_1 = price * 1.03
+                            self.take_profit_2 = price * 1.05
+                            self.take_profit_3 = price * 1.08
+
+                    class _MockOrderBook:
+                        def __init__(self):
+                            self.bids = []
+                            self.asks = []
+
+                    class _MockSpoofing:
+                        def __init__(self):
+                            self.detected = False
+                            self.episodes_count = 0
+
+                    try:
+                        adv_res = self.adversarial_tester.run_adversarial_test(
+                            signal=_MockSignal(symbol, current_price),
+                            smc=smc_analysis,
+                            orderbook=_MockOrderBook(),
+                            df_15m=tf_data.get('15m', df_1h),
+                            df_5m=tf_data.get('5m', df_1h),
+                            spoofing=_MockSpoofing(),
+                            news_context={},
+                            copy_traders={},
+                            social_data={}
+                        )
+                        if not adv_res.passed:
+                            logger.warning(f"{symbol} - Adversarial blocked (score={adv_res.adversarial_score:.1f}).")
+                            continue
+                    except Exception as adv_err:
+                        logger.debug(f"{symbol} - Adversarial check skipped: {adv_err}")
 
                     # 8. Risk Engine — SL/TP
                     sltp = self.risk_engine.calculate_sl_tp(
                         entry=current_price,
                         direction="LONG",
                         atr=atr_1h,
-                        swing_points=smc_analysis.swing_points,
+                        swing_points=all_swing_points,
                         imbalance_zones=smc_analysis.imbalance_zones,
                         volume_nodes=smc_analysis.volume_nodes,
                         key_levels=[]
