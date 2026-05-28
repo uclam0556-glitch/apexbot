@@ -61,7 +61,7 @@ class ApexSystem:
     def __init__(self):
         self.running = False
         self.config = _config
-        self.exchange = ccxt.bybit({
+        self.exchange = ccxt.mexc({
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'}
         })

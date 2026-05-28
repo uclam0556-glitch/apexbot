@@ -265,7 +265,7 @@ async def process_settings(callback: CallbackQuery):
         "🎯 <b>Мин. score:</b> 6.0/10\n"
         "📦 <b>Монет в скане:</b> 40\n"
         "⏱ <b>Таймфреймы:</b> 1d · 4h · 1h · 15m · 5m\n"
-        "🏦 <b>Биржа:</b> Bybit\n"
+        "🏦 <b>Биржа:</b> MEXC\n"
         "🤖 <b>Режим:</b> Paper Trading\n\n"
         "<b>Индикаторы:</b>\n"
         "✅ SMC (BOS/CHoCH/FVG)\n"

@@ -12,7 +12,7 @@ class ExchangeWSManager:
     Maintains a continuous connection to Binance via ccxt.pro for real-time 
     orderbook and ticker data.
     """
-    def __init__(self, exchange_id: str = 'bybit'):
+    def __init__(self, exchange_id: str = 'mexc'):
         self.exchange_id = exchange_id
         exchange_class = getattr(ccxtpro, self.exchange_id)
         self.exchange = exchange_class({
