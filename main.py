@@ -334,53 +334,31 @@ class ApexSystem:
                     }
 
                     # 10. Send beautiful signal card to Telegram
-                    bot = getattr(self, '_bot', None)
-                    if bot:
-                        chat_id = self.config.alerts.telegram_chat_id
-                        await send_signal(bot, chat_id, signal_data)
-                        logger.info(f"🚀 SIGNAL SENT: {symbol} | Score={ultra_score:.1f}/10 | Entry=${current_price:.4f}")
+                    try:
+                        from aiogram import Bot
+                        token = self.config.alerts.telegram_bot_token.get_secret_value()
+                        chat_id_str = self.config.alerts.telegram_chat_id
+                        if token and chat_id_str:
+                            bot = Bot(token=token)
+                            await send_signal(bot, int(chat_id_str), signal_data)
+                            await bot.session.close()
+                            global_state.signals_sent_today += 1
+                            logger.info(f"🚀 SIGNAL SENT: {symbol} | Score={ultra_score:.1f}/10 | Entry=${current_price:.4f}")
+                    except Exception as send_err:
+                        logger.error(f"Failed to send signal: {send_err}")
 
-                    # 11. Save to DB
-                    base_signal = SignalCore(
-                        id=str(int(datetime.utcnow().timestamp())),
+                    # 11. Save to DB (paper trading)
+                    await save_trade(
+                        signal_id=str(int(datetime.utcnow().timestamp())),
                         symbol=symbol,
-                        direction=direction,
+                        direction="LONG",
                         entry_price=current_price,
                         stop_loss=sltp.sl,
                         take_profit_1=sltp.tp1,
-                        take_profit_2=sltp.tp2,
-                        take_profit_3=sltp.tp3,
-                        tp_allocation=[0.4, 0.35, 0.25],
-                        risk_pct=size_res.final_risk_pct,
-                        confluence=confluence,
-                        generated_at=datetime.utcnow()
+                        position_usd=position_usd,
+                        reasoning=f"Ultra Score {ultra_score:.1f}/10 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}"
                     )
-                    
-                    package = FullSignalPackage(
-                        signal=base_signal,
-                        macro_context=self.macro_state,
-                        onchain_context=None,
-                        social_context=None,
-                        adversarial_result=adv_res
-                    )
-                    
-                    # 8. AI Audit
-                    audit = await self.mock_ai_auditor(package)
-                    
-                    # 9. Execution
-                    if audit.approved:
-                        await self.executor.execute_signal(package, audit)
-                        await save_trade(
-                            signal_id=base_signal.id,
-                            symbol=base_signal.symbol,
-                            direction=base_signal.direction.value,
-                            entry_price=current_price,
-                            stop_loss=base_signal.stop_loss,
-                            take_profit_1=base_signal.take_profit_1,
-                            position_usd=size_res.position_size_usd,
-                            reasoning=audit.reasoning
-                        )
-                        logger.info(f"Signal executed and saved for {symbol}")
+                    logger.info(f"Signal saved to DB for {symbol}")
                     
                 except Exception as e:
                     logger.error(f"Error processing {symbol}: {e}", exc_info=True)
