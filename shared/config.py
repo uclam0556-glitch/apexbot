@@ -129,7 +129,7 @@ class DataSourceConfig(BaseSettings):
 class TradingConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TRADING_", env_file=".env", extra="ignore")
 
-    # Monitored symbols — Top 40 spot pairs by volume & narrative
+    # Monitored symbols — Top 60 spot pairs by volume & narrative
     symbols: list[str] = [
         # Majors
         "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
@@ -143,10 +143,18 @@ class TradingConfig(BaseSettings):
         "FET/USDT", "RENDER/USDT", "AR/USDT", "WLD/USDT", "TAO/USDT",
         # Memes
         "DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "WIF/USDT", "BONK/USDT",
-        # DeFi 2.0
+        # DeFi 2.0 & DEX
         "PENDLE/USDT", "GMX/USDT", "LDO/USDT", "RUNE/USDT", "JUP/USDT",
         # New Narratives
         "STX/USDT", "TIA/USDT", "STRK/USDT", "BLUR/USDT", "MANTA/USDT",
+        # Real World Assets (RWA) & Infra (NEW)
+        "ONDO/USDT", "MKR/USDT", "PYTH/USDT", "ARKM/USDT", "GRT/USDT",
+        # Gaming & Metaverse (NEW)
+        "IMX/USDT", "GALA/USDT", "SAND/USDT", "BEAMX/USDT", "RONIN/USDT",
+        # Fast L1s & Classics (NEW)
+        "KAS/USDT", "FTM/USDT", "MNT/USDT", "ATOM/USDT", "ICP/USDT",
+        # DePIN & Storage (NEW)
+        "FIL/USDT", "HNT/USDT", "IOTX/USDT", "VET/USDT", "ETC/USDT",
     ]
 
     # Timeframes
