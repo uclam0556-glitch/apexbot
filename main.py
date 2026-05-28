@@ -36,8 +36,8 @@ from services.engine.risk_engine import RiskEngine
 from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
-from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card
-from shared.lite_db import init_lite_db, save_trade
+from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade
+from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification
 
 # v5.0 Imports
 from services.data.ws_manager import ExchangeWSManager
@@ -124,6 +124,58 @@ class ApexSystem:
                     self.rotation_state = None
 
             await asyncio.sleep(3600)  # 1 hour
+
+    async def background_trade_tracker(self):
+        """Continuously monitors open paper trades and closes them if TP/SL is hit."""
+        from aiogram import Bot
+        token = self.config.alerts.telegram_bot_token.get_secret_value()
+        chat_id_str = self.config.alerts.telegram_chat_id
+        bot = None
+        if token and chat_id_str:
+            bot = Bot(token=token)
+            
+        while self.running:
+            try:
+                open_trades = await get_open_trades()
+                if open_trades:
+                    logger.info(f"Tracking {len(open_trades)} open paper trades...")
+                    for t in open_trades:
+                        trade = dict(t)
+                        symbol = trade['symbol']
+                        # Fetch latest ticker
+                        ticker = await self.exchange.fetch_ticker(symbol)
+                        current_price = ticker.get('last')
+                        
+                        if not current_price:
+                            continue
+                            
+                        status = None
+                        pnl_pct = 0.0
+                        
+                        # LONG logic
+                        if trade['direction'] == 'LONG':
+                            if current_price >= trade['take_profit_1']:
+                                status = 'WON'
+                                pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                            elif current_price <= trade['stop_loss']:
+                                status = 'LOST'
+                                pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                                
+                        if status:
+                            await close_trade(trade['id'], status, pnl_pct)
+                            logger.info(f"Trade {symbol} {status} at {current_price} ({pnl_pct:+.2f}%)")
+                            if bot:
+                                try:
+                                    await send_trade_result_notification(bot, int(chat_id_str), trade, status, pnl_pct)
+                                except Exception as e:
+                                    logger.error(f"Failed to send result notification: {e}")
+            except Exception as e:
+                logger.error(f"Error in trade tracker: {e}")
+                
+            await asyncio.sleep(60)  # Check every 60 seconds
+
+        if bot:
+            await bot.session.close()
 
     async def mock_ai_auditor(self, package: FullSignalPackage) -> AIAuditResult:
         """
@@ -422,6 +474,7 @@ class ApexSystem:
         
         # Start background tasks
         asyncio.create_task(self.background_macro_updater())
+        asyncio.create_task(self.background_trade_tracker())
         asyncio.create_task(self.ws_manager.start(self.config.trading.symbols))
         
         # Start main loop

@@ -379,10 +379,36 @@ async def send_signal(bot: Bot, chat_id: int, signal_data: dict):
          InlineKeyboardButton(text="🏠 Меню", callback_data="home")]
     ])
     try:
-        await bot.send_message(chat_id, card, parse_mode="HTML", reply_markup=kb)
+        await bot.send_message(chat_id=chat_id, text=card, reply_markup=kb, parse_mode="HTML")
         logger.info(f"Signal sent: {signal_data.get('symbol')} score={signal_data.get('score')}")
     except Exception as e:
         logger.error(f"Failed to send signal: {e}")
+
+async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dict, status: str, pnl_pct: float):
+    """Sends a notification when a trade hits TP or SL."""
+    emoji = "✅" if status == "WON" else "❌"
+    result_text = "ЗАКРЫТА В ПЛЮС (Тейк-профит)" if status == "WON" else "ВЫБИТА ПО СТОПУ (Стоп-лосс)"
+    pnl_text = f"+{pnl_pct:.2f}%" if status == "WON" else f"{pnl_pct:.2f}%"
+    
+    text = (
+        f"{emoji} <b>СДЕЛКА {status}</b> • {trade_data.get('symbol')}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>Статус:</b> {result_text}\n"
+        f"<b>Прибыль/Убыток:</b> {pnl_text}\n"
+        f"<b>Направление:</b> {trade_data.get('direction', 'LONG')}\n"
+        f"<b>Вход:</b> ${trade_data.get('entry_price', 0):.4f}\n"
+        f"<b>Открыта:</b> {trade_data.get('opened_at', '—')} UTC\n"
+        f"<b>Закрыта:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+        f"<i>Причина входа:</i> {trade_data.get('reasoning', 'SMC+MTF Signal')}"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+         InlineKeyboardButton(text="📜 История", callback_data="history")]
+    ])
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Telegram failed to send result: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

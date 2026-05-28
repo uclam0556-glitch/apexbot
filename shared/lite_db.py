@@ -89,3 +89,20 @@ async def get_recent_trades(limit: int = 5):
         db.row_factory = aiosqlite.Row
         async with db.execute('SELECT * FROM trades ORDER BY opened_at DESC LIMIT ?', (limit,)) as cursor:
             return await cursor.fetchall()
+
+async def get_open_trades():
+    """Fetches all currently OPEN trades."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('SELECT * FROM trades WHERE status = "OPEN"') as cursor:
+            return await cursor.fetchall()
+
+async def close_trade(trade_id: int, status: str, pnl_pct: float):
+    """Marks a trade as WON or LOST and records PnL."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            UPDATE trades 
+            SET status = ?, pnl_pct = ?, closed_at = ?
+            WHERE id = ?
+        ''', (status, pnl_pct, datetime.utcnow(), trade_id))
+        await db.commit()
