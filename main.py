@@ -1,9 +1,8 @@
 """
-APEX Trading System v4.0
-Main Orchestrator Loop
+APEX Trading System v5.0
+Main Orchestrator Loop — Ultra World-Class Edition
 
-Connects all engines into a single asynchronous pipeline.
-Runs continuously, scanning the market every 5 minutes.
+40 coins × 5 timeframes — 12 indicators — Beautiful Telegram signals
 """
 
 from __future__ import annotations
@@ -20,15 +19,15 @@ import pandas as pd
 
 from shared.config import get_config
 from shared.models import (
-    MarketRegime, 
-    Direction, 
-    FullSignalPackage, 
-    SignalCore, 
+    MarketRegime,
+    Direction,
+    FullSignalPackage,
+    SignalCore,
     AIAuditResult,
     ParameterAdjustments
 )
 
-# Engines
+# Core Engines
 from services.engine.mtf_engine import MTFEngine
 from services.engine.smc_core import FormalizedSMCCore
 from services.adversarial.tester import AdversarialSignalTester
@@ -37,7 +36,7 @@ from services.engine.risk_engine import RiskEngine
 from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
-from services.notifications.telegram_ui import start_telegram_bot
+from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card
 from shared.lite_db import init_lite_db, save_trade
 
 # v5.0 Imports
@@ -45,6 +44,10 @@ from services.data.ws_manager import ExchangeWSManager
 from services.intelligence.ml_regime import MLRegimeClassifier
 from services.optimization.dynamic_weights import DynamicWeightsOptimizer
 from shared.state import global_state
+
+# 🌟 NEW: Ultra indicators
+from services.indicators.technical import run_all_indicators
+from services.indicators.market_data import get_market_context
 
 # Setup basic logging
 logging.basicConfig(
@@ -208,16 +211,28 @@ class ApexSystem:
                         
                     # 3. SMC Structure
                     smc_analysis = self.smc_core.analyze(df_1h, symbol=symbol, lookback=5)
-                    
-                    # 4. Confluence Scoring — now with REAL RSI
+
+                    # 4. NEW: Run all technical indicators
+                    indicators = run_all_indicators(df_1h, symbol=symbol)
+                    ind_score = indicators.get("composite_score", 0)  # -6 to +6
+
+                    # 4b. NEW: Fetch market context (Funding, OI, F&G, BTC.D)
+                    price_change_1h = (
+                        (df_1h['close'].iloc[-1] - df_1h['close'].iloc[-5]) /
+                        df_1h['close'].iloc[-5] * 100
+                    ) if len(df_1h) >= 5 else 0.0
+                    market_ctx = await get_market_context(symbol, price_change_1h)
+                    ctx_score = market_ctx.get("total_context_score", 0)  # -8 to +8
+
+                    # 5. Confluence Scoring
                     ofi_mock = type('obj', (object,), {'ofi_score': min(vol_ratio / 2, 1.0), 'delta_usd': 50000})()
-                    
+
                     confluence = await self.confluence_engine.calculate_score(
                         symbol=symbol,
                         direction=direction,
                         current_price=current_price,
                         df_1h=df_1h,
-                        rsi_series=rsi_mock,
+                        rsi_series=rsi_series,
                         smc=smc_analysis,
                         mtf_score=mtf_score,
                         ofi=ofi_mock,
@@ -225,25 +240,53 @@ class ApexSystem:
                         macro_bias=self.macro_state.macro_bias.value,
                         rotation_signal=self.rotation_state
                     )
-                    # Override confluence weights based on optuna optimization
-                    # ... in a fully integrated version, we would pass these weights to confluence_engine
-                    
-                    if not confluence.passed_threshold:
-                        logger.info(f"{symbol} - Confluence score {confluence.raw_score:.2f} below threshold. Skipping.")
+
+                    # 6. Compute final ultra-score (0-10)
+                    # base: confluence.raw_score (0-10)
+                    # bonus: indicators (+/- up to 2) + context (+/- up to 2)
+                    ind_bonus = max(-2.0, min(2.0, ind_score * 0.33))
+                    ctx_bonus = max(-2.0, min(2.0, ctx_score * 0.25))
+                    ultra_score = max(0, min(10.0, confluence.raw_score + ind_bonus + ctx_bonus))
+
+                    logger.info(
+                        f"{symbol} | Score={ultra_score:.1f}/10 "
+                        f"(conf={confluence.raw_score:.1f} ind={ind_bonus:+.1f} ctx={ctx_bonus:+.1f}) "
+                        f"| RSI={rsi_now:.0f} | EMA={indicators['ema_ribbon']['label']} "
+                        f"| FG={market_ctx['fear_greed']['value']}"
+                    )
+
+                    # Update hot coins tracking
+                    if not hasattr(global_state, 'hot_coins'):
+                        global_state.hot_coins = []
+                    if ultra_score >= 5.0:
+                        global_state.hot_coins = [
+                            c for c in global_state.hot_coins if c['symbol'] != symbol
+                        ]
+                        global_state.hot_coins.append({
+                            'symbol': symbol,
+                            'score': ultra_score,
+                            'rsi': f"{rsi_now:.0f}",
+                            'regime': current_regime.value,
+                        })
+                        global_state.hot_coins.sort(key=lambda x: x['score'], reverse=True)
+                        global_state.hot_coins = global_state.hot_coins[:10]
+
+                    # Check minimum score threshold
+                    min_score = getattr(self.config.trading, 'min_score_for_signal', 6.0)
+                    if ultra_score < min_score:
+                        logger.info(f"{symbol} - Ultra score {ultra_score:.1f} < {min_score}. Skipping.")
                         continue
                         
-                    # 5. Adversarial Check
-                    # Mock signal dict for tester
-                    mock_sig = {"entry": current_price, "sl": current_price * 0.95, "tp1": current_price * 1.05}
+                    # 7. Adversarial Check
+                    mock_sig = {"entry": current_price, "sl": current_price * 0.97, "tp1": current_price * 1.05}
                     adv_res = self.adversarial_tester.run_adversarial_test(
                         mock_sig, smc_analysis.swing_points, {}, df_1h, [], {}
                     )
                     if not adv_res.passed:
-                        logger.warning(f"{symbol} - Blocked by Adversarial Tester (Score: {adv_res.risk_score}).")
+                        logger.warning(f"{symbol} - Adversarial blocked (score={adv_res.risk_score:.1f}).")
                         continue
-                        
-                    # 6. Risk Engine
-                    # Calculate SL/TP
+
+                    # 8. Risk Engine — SL/TP
                     sltp = self.risk_engine.calculate_sl_tp(
                         entry=current_price,
                         direction="LONG",
@@ -253,18 +296,51 @@ class ApexSystem:
                         volume_nodes=smc_analysis.volume_nodes,
                         key_levels=[]
                     )
-                    
-                    # Calculate size
-                    size_res = self.risk_engine.calculate_position_size_kelly(
-                        deposit=self.config.trading.initial_deposit_usd,
-                        win_rate_calibrated=0.55,
-                        avg_win_pct=2.0,
-                        avg_loss_pct=1.0,
-                        volatility_regime="NORMAL",
-                        current_drawdown_pct=0.0
-                    )
-                    
-                    # 7. Package Signal
+
+                    # Position sizing: 1% of $3000 = $30
+                    deposit = self.config.trading.initial_deposit_usd
+                    risk_pct = getattr(self.config.trading, 'risk_per_trade_pct', 1.0)
+                    risk_usd = deposit * risk_pct / 100
+                    sl_pct = abs(current_price - sltp.sl) / current_price if current_price > 0 else 0.03
+                    position_usd = (risk_usd / sl_pct) if sl_pct > 0 else risk_usd * 10
+                    position_usd = min(position_usd, deposit * 0.20)  # Max 20% of deposit
+                    rr_ratio = abs(sltp.tp2 - current_price) / abs(current_price - sltp.sl) if abs(current_price - sltp.sl) > 0 else 2.0
+
+                    # 9. Build signal package
+                    signal_data = {
+                        "symbol": symbol,
+                        "direction": "LONG",
+                        "entry_low": current_price * 0.999,
+                        "entry_high": current_price * 1.001,
+                        "stop_loss": sltp.sl,
+                        "tp1": sltp.tp1,
+                        "tp2": sltp.tp2,
+                        "tp3": sltp.tp3,
+                        "score": ultra_score,
+                        "regime": current_regime.value,
+                        "rsi": rsi_now,
+                        "funding_rate": market_ctx["funding"]["rate_pct"],
+                        "oi_change": market_ctx["open_interest"]["change_pct"],
+                        "fear_greed": market_ctx["fear_greed"]["value"],
+                        "btc_dominance": market_ctx["btc_dominance"]["value"],
+                        "vwap_label": indicators["vwap"]["label"],
+                        "ema_label": indicators["ema_ribbon"]["label"],
+                        "rsi_divergence": indicators["rsi_divergence"]["label"],
+                        "bb_label": indicators["bollinger"]["label"],
+                        "fib_level": indicators["fibonacci"].get("nearest_fib"),
+                        "position_usd": round(position_usd, 0),
+                        "risk_usd": round(risk_usd, 0),
+                        "rr_ratio": round(rr_ratio, 1),
+                    }
+
+                    # 10. Send beautiful signal card to Telegram
+                    bot = getattr(self, '_bot', None)
+                    if bot:
+                        chat_id = self.config.alerts.telegram_chat_id
+                        await send_signal(bot, chat_id, signal_data)
+                        logger.info(f"🚀 SIGNAL SENT: {symbol} | Score={ultra_score:.1f}/10 | Entry=${current_price:.4f}")
+
+                    # 11. Save to DB
                     base_signal = SignalCore(
                         id=str(int(datetime.utcnow().timestamp())),
                         symbol=symbol,
@@ -274,7 +350,7 @@ class ApexSystem:
                         take_profit_1=sltp.tp1,
                         take_profit_2=sltp.tp2,
                         take_profit_3=sltp.tp3,
-                        tp_allocation=[0.4, 0.3, 0.3],
+                        tp_allocation=[0.4, 0.35, 0.25],
                         risk_pct=size_res.final_risk_pct,
                         confluence=confluence,
                         generated_at=datetime.utcnow()

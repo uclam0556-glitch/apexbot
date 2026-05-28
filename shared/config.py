@@ -129,29 +129,37 @@ class DataSourceConfig(BaseSettings):
 class TradingConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TRADING_", env_file=".env", extra="ignore")
 
-    # Monitored symbols — Top 25 spot pairs by volume
+    # Monitored symbols — Top 40 spot pairs by volume & narrative
     symbols: list[str] = [
         # Majors
         "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
         # Large Caps
         "AVAX/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT", "LINK/USDT",
-        # Mid Caps DeFi
+        # DeFi
         "UNI/USDT", "AAVE/USDT", "ARB/USDT", "OP/USDT", "INJ/USDT",
-        # Trending
-        "TON/USDT", "SUI/USDT", "APT/USDT", "FET/USDT", "NEAR/USDT",
-        # Memes & Narrative
+        # L1/L2 Trending
+        "TON/USDT", "SUI/USDT", "APT/USDT", "NEAR/USDT", "SEI/USDT",
+        # AI & Data
+        "FET/USDT", "RENDER/USDT", "AR/USDT", "WLD/USDT", "TAO/USDT",
+        # Memes
         "DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "WIF/USDT", "BONK/USDT",
+        # DeFi 2.0
+        "PENDLE/USDT", "GMX/USDT", "LDO/USDT", "RUNE/USDT", "JUP/USDT",
+        # New Narratives
+        "STX/USDT", "TIA/USDT", "STRK/USDT", "BLUR/USDT", "MANTA/USDT",
     ]
 
     # Timeframes
     timeframes: list[str] = ["1d", "4h", "1h", "15m", "5m"]
 
     # Risk parameters
-    initial_deposit_usd: float = 10_000.0
-    min_risk_pct: float = 0.25
-    max_risk_pct: float = 2.0
+    initial_deposit_usd: float = 3_000.0
+    risk_per_trade_pct: float = 1.0          # 1% = $30 per trade
+    min_score_for_signal: float = 6.0        # Minimum confluence score
+    min_risk_pct: float = 0.5
+    max_risk_pct: float = 1.0
     half_kelly: bool = True
-    paper_trading_mode: bool = True  # NEW: Send signals instead of real execution
+    paper_trading_mode: bool = True
 
     # Circuit breakers
     daily_loss_stop_pct: float = 3.0

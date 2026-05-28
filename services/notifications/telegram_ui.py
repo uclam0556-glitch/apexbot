@@ -1,11 +1,13 @@
 """
-APEX Trading System v4.0
+APEX Trading System v5.0
 services/notifications/telegram_ui.py
 
-Aiogram-based Telegram bot for interactive menus and stats.
+Ultra-premium Telegram Bot UI with beautiful signal cards,
+live status, market overview, and multi-button navigation.
 """
 
 import logging
+from datetime import datetime
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -16,107 +18,368 @@ from shared.state import global_state
 
 logger = logging.getLogger(__name__)
 _config = get_config()
-
 router = Router()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# KEYBOARDS
+# ─────────────────────────────────────────────────────────────────────────────
+
 def get_main_keyboard() -> InlineKeyboardMarkup:
-    """Returns the main menu keyboard."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📡 Статус сканирования", callback_data="status")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="📜 История сделок", callback_data="history")],
-        [InlineKeyboardButton(text="⚙️ Настройки (v5.0)", callback_data="settings")]
+        [
+            InlineKeyboardButton(text="📡 Статус", callback_data="status"),
+            InlineKeyboardButton(text="🌡️ Рынок", callback_data="market"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+            InlineKeyboardButton(text="📜 История", callback_data="history"),
+        ],
+        [
+            InlineKeyboardButton(text="🔥 Горячие монеты", callback_data="hot"),
+            InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
+        ],
     ])
+
+def get_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
+    ])
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /start
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
-    """Handles the /start command."""
+    now = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
     text = (
-        "🤖 <b>APEX Quantum AI v5.0</b>\n\n"
-        "Добро пожаловать в панель управления снайперским алгоритмом.\n"
-        "Система работает в фоне, сканируя топ-монеты каждую 5-минутную свечу.\n\n"
-        "🌐 <b>Dashboard:</b> Откройте http://localhost:8501 в браузере\n\n"
-        "Выберите действие в меню ниже:"
+        "⚡ <b>APEX Quantum AI v5.0</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🧠 <b>Система активна</b> — сканирование 40 монет\n"
+        "📊 Анализ: SMC · MTF · VWAP · RSI Div · EMA Ribbon\n"
+        "🌐 Данные: Funding Rate · OI · Fear&Greed · BTC.D\n\n"
+        f"⏱ Запущено: <code>{now}</code>\n\n"
+        "Выберите раздел ниже 👇"
     )
     await message.answer(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# STATUS
+# ─────────────────────────────────────────────────────────────────────────────
+
 @router.callback_query(F.data == "status")
 async def process_status(callback: CallbackQuery):
-    """Shows live scanning status."""
+    regime_emoji = {
+        "BULL": "🟢", "BEAR": "🔴", "SIDEWAYS": "🟡", "CRISIS": "⚠️"
+    }.get(global_state.regime, "⚪")
+
     text = (
-        "📡 <b>Текущий статус сканирования</b>\n\n"
-        f"Анализируется монета: <b>{global_state.current_symbol}</b>\n"
-        f"Время последней проверки: <b>{global_state.last_scan_time}</b>\n"
-        f"Рыночный режим (ML): <b>{global_state.regime}</b>\n\n"
-        "<i>Нажмите кнопку еще раз, чтобы обновить статус</i>"
+        "📡 <b>Статус сканирования</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔍 Сейчас анализирую: <b>{global_state.current_symbol}</b>\n"
+        f"⏱ Последнее сканирование: <b>{global_state.last_scan_time}</b>\n"
+        f"{regime_emoji} Рыночный режим (ML): <b>{global_state.regime}</b>\n\n"
+        f"📦 Монет в списке: <b>40</b>\n"
+        f"⏳ Таймфреймов: <b>5</b> (1d · 4h · 1h · 15m · 5m)\n"
+        f"🎯 Мин. score для сигнала: <b>6.0/10</b>\n\n"
+        "<i>Обновляется автоматически каждый цикл</i>"
     )
     try:
         await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
     except Exception:
-        pass # Ignore "message is not modified" error
-    await callback.answer()
+        pass
+    await callback.answer("🔄 Обновлено!")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MARKET OVERVIEW
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "market")
+async def process_market(callback: CallbackQuery):
+    await callback.answer("⏳ Загружаю данные рынка...")
+    try:
+        from services.indicators.market_data import get_fear_greed, get_btc_dominance
+        fg, btc_d = await __import__('asyncio').gather(
+            get_fear_greed(), get_btc_dominance(), return_exceptions=True
+        )
+        fg_val = fg.get("value", 50) if isinstance(fg, dict) else 50
+        fg_label = fg.get("label", "Neutral") if isinstance(fg, dict) else "Neutral"
+        btc_dom = btc_d.get("dominance", 55.0) if isinstance(btc_d, dict) else 55.0
+
+        if fg_val <= 25:
+            fg_emoji = "😱"
+        elif fg_val <= 45:
+            fg_emoji = "😨"
+        elif fg_val <= 55:
+            fg_emoji = "😐"
+        elif fg_val <= 75:
+            fg_emoji = "😏"
+        else:
+            fg_emoji = "🤑"
+
+        alt_season = "🚀 Alt Season!" if btc_dom < 48 else ("⚖️ Нейтрально" if btc_dom < 55 else "₿ BTC доминирует")
+    except Exception:
+        fg_val, fg_label, fg_emoji, btc_dom, alt_season = 50, "Neutral", "😐", 55.0, "⚖️"
+
+    regime_emoji = {"BULL": "🟢 Бычий", "BEAR": "🔴 Медвежий",
+                    "SIDEWAYS": "🟡 Боковик", "CRISIS": "⚠️ Кризис"}.get(global_state.regime, "⚪")
+
+    text = (
+        "🌐 <b>Обзор рынка</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{fg_emoji} <b>Fear & Greed:</b> {fg_val}/100 — {fg_label}\n"
+        f"₿ <b>BTC Dominance:</b> {btc_dom}% — {alt_season}\n"
+        f"🧠 <b>ML Режим (APEX):</b> {regime_emoji}\n\n"
+        "<b>Интерпретация:</b>\n"
+        f"{'🟢 Хорошее время для покупок (страх = возможность)' if fg_val < 40 else '🔴 Осторожно — рынок перегрет' if fg_val > 70 else '🟡 Нейтральный рынок'}\n\n"
+        "<i>Данные обновляются каждый час</i>"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    except Exception:
+        pass
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STATS
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "stats")
 async def process_stats(callback: CallbackQuery):
-    """Shows PnL and Win Rate."""
     stats = await get_stats()
-    
+    wr = stats['win_rate']
+    wr_bar = "🟢" * int(wr / 20) + "⬜" * (5 - int(wr / 20))
+
     text = (
-        "📊 <b>Глобальная Статистика (Paper Trading)</b>\n\n"
-        f"Всего закрытых сделок: <b>{stats['total']}</b>\n"
-        f"Успешных (WON): <b>{stats['won']}</b>\n"
-        f"Провальных (LOST): <b>{stats['lost']}</b>\n"
-        f"Win Rate: <b>{stats['win_rate']:.1f}%</b>\n"
-        f"Чистый PnL: <b>{stats['pnl_sum']:+.2f}%</b>"
+        "📊 <b>Статистика торговли</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📈 Всего сигналов: <b>{stats['total']}</b>\n"
+        f"✅ Успешных: <b>{stats['won']}</b>\n"
+        f"❌ Убыточных: <b>{stats['lost']}</b>\n\n"
+        f"🎯 Win Rate: <b>{wr:.1f}%</b>\n"
+        f"{wr_bar}\n\n"
+        f"💰 Суммарный PnL: <b>{stats['pnl_sum']:+.2f}%</b>\n"
+        f"💵 Депозит: <b>$3,000</b>\n"
+        f"⚖️ Риск на сделку: <b>1% ($30)</b>\n\n"
+        "<i>Режим: Paper Trading (сигналы без автоисполнения)</i>"
     )
-    await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    try:
+        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HISTORY
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "history")
 async def process_history(callback: CallbackQuery):
-    """Shows the latest trades."""
     trades = await get_recent_trades(limit=5)
-    
-    if not trades:
-        text = "📜 <b>История сделок</b>\n\nПока нет сделок. Бот сканирует рынок..."
-    else:
-        text = "📜 <b>Последние 5 сделок:</b>\n\n"
-        for t in trades:
-            emoji = "🟢" if t['direction'] == "LONG" else "🔴"
-            status_emoji = "⏳" if t['status'] == "OPEN" else ("✅" if t['status'] == "WON" else "❌")
-            
-            text += f"{emoji} <b>{t['symbol']}</b> | {status_emoji} {t['status']}\n"
-            text += f"Вход: ${t['entry_price']:.2f} | PnL: {t['pnl_pct'] or 0.0:+.2f}%\n"
-            text += "──────────────\n"
 
-    await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    if not trades:
+        text = (
+            "📜 <b>История сигналов</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Сигналов пока нет.\n"
+            "Бот сканирует 40 монет — сигнал придёт как только\n"
+            "система найдёт точку входа с score 6+/10 🔍"
+        )
+    else:
+        text = "📜 <b>Последние сигналы:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for t in trades:
+            dir_emoji = "🟢 LONG" if t['direction'] == "LONG" else "🔴 SHORT"
+            status_emoji = {"OPEN": "⏳", "WON": "✅", "LOST": "❌"}.get(t['status'], "❔")
+            pnl = t['pnl_pct'] or 0.0
+            pnl_str = f"<b>{pnl:+.2f}%</b>" if pnl != 0 else "—"
+
+            text += (
+                f"{dir_emoji} <b>{t['symbol']}</b>  {status_emoji} {t['status']}\n"
+                f"💰 Вход: ${t['entry_price']:.4f}  |  PnL: {pnl_str}\n"
+                "──────────────────────\n"
+            )
+
+    try:
+        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HOT COINS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "hot")
+async def process_hot(callback: CallbackQuery):
+    hot = global_state.hot_coins if hasattr(global_state, 'hot_coins') and global_state.hot_coins else []
+
+    if not hot:
+        text = (
+            "🔥 <b>Горячие монеты</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "⏳ Данные накапливаются...\n\n"
+            "После первого полного цикла сканирования\n"
+            "здесь появятся топ монеты по силе сигнала!"
+        )
+    else:
+        text = "🔥 <b>Горячие монеты сейчас:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for i, coin in enumerate(hot[:8], 1):
+            medal = ["🥇", "🥈", "🥉"].get(i - 1, f"{i}.")
+            text += f"{medal} <b>{coin['symbol']}</b> — score {coin['score']:.1f}/10\n"
+            text += f"   RSI: {coin.get('rsi', '—')} | Режим: {coin.get('regime', '—')}\n\n"
+
+    try:
+        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "settings")
 async def process_settings(callback: CallbackQuery):
-    """Shows settings."""
     text = (
-        "⚙️ <b>Настройки системы</b>\n\n"
-        "Режим: <b>Paper Trading (Shadow Mode)</b>\n"
-        "Биржи: <b>Binance</b>\n"
-        "Фильтр: <b>Confluence >= 6.5</b>\n\n"
-        "<i>Изменение настроек пока доступно только через config.py</i>"
+        "⚙️ <b>Настройки APEX v5.0</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💵 <b>Депозит:</b> $3,000\n"
+        "⚖️ <b>Риск/сделка:</b> 1% ($30)\n"
+        "🎯 <b>Мин. score:</b> 6.0/10\n"
+        "📦 <b>Монет в скане:</b> 40\n"
+        "⏱ <b>Таймфреймы:</b> 1d · 4h · 1h · 15m · 5m\n"
+        "🏦 <b>Биржа:</b> Binance (Amsterdam)\n"
+        "🤖 <b>Режим:</b> Paper Trading\n\n"
+        "<b>Индикаторы:</b>\n"
+        "✅ SMC (BOS/CHoCH/FVG)\n"
+        "✅ MTF Alignment\n"
+        "✅ VWAP\n"
+        "✅ EMA Ribbon (5/8/13/21/34/55)\n"
+        "✅ RSI Divergence\n"
+        "✅ Bollinger Bands Squeeze\n"
+        "✅ Fibonacci Auto-Levels\n"
+        "✅ Volume Spike\n"
+        "✅ Funding Rate\n"
+        "✅ Open Interest\n"
+        "✅ Fear & Greed Index\n"
+        "✅ BTC Dominance\n"
     )
-    await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
-
-async def start_telegram_bot():
-    """Starts the Aiogram polling loop."""
-    token = _config.alerts.telegram_bot_token.get_secret_value()
-    if not token:
-        logger.warning("Telegram token missing, bot UI will not start.")
-        return
-
-    bot = Bot(token=token)
-    dp = Dispatcher()
-    dp.include_router(router)
-    
-    logger.info("Starting Telegram UI Bot Polling...")
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot)
+        await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HOME
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "home")
+async def process_home(callback: CallbackQuery):
+    await cmd_start.__wrapped__(callback.message) if hasattr(cmd_start, '__wrapped__') else None
+    await callback.answer()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SIGNAL CARD — called from main.py when signal is found
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_signal_card(signal_data: dict) -> str:
+    """
+    Build a beautiful, information-rich signal card.
+    """
+    s = signal_data
+    symbol = s.get("symbol", "???")
+    direction = s.get("direction", "LONG")
+    entry_low = s.get("entry_low", 0)
+    entry_high = s.get("entry_high", 0)
+    sl = s.get("stop_loss", 0)
+    tp1 = s.get("tp1", 0)
+    tp2 = s.get("tp2", 0)
+    tp3 = s.get("tp3", 0)
+    score = s.get("score", 0)
+    regime = s.get("regime", "UNKNOWN")
+    rsi = s.get("rsi", 50)
+    funding = s.get("funding_rate", 0)
+    oi_change = s.get("oi_change", 0)
+    fg_value = s.get("fear_greed", 50)
+    btc_dom = s.get("btc_dominance", 55)
+    position_usd = s.get("position_usd", 30)
+    risk_usd = s.get("risk_usd", 30)
+    rr = s.get("rr_ratio", 0)
+    vwap_label = s.get("vwap_label", "")
+    ema_label = s.get("ema_label", "")
+    rsi_div = s.get("rsi_divergence", "NONE")
+    bb_label = s.get("bb_label", "")
+    fib_level = s.get("fib_level", None)
+
+    dir_emoji = "🚀" if direction == "LONG" else "🔻"
+    regime_emoji = {"BULL": "🟢", "BEAR": "🔴", "SIDEWAYS": "🟡", "CRISIS": "⚠️"}.get(regime, "⚪")
+
+    # Score stars
+    stars = int(score / 2)
+    star_str = "⭐" * stars + "✩" * (5 - stars)
+
+    # Entry SL risk %
+    entry_mid = (entry_low + entry_high) / 2 if entry_high > 0 else entry_low
+    sl_pct = abs(entry_mid - sl) / entry_mid * 100 if entry_mid > 0 else 0
+    tp1_pct = abs(tp1 - entry_mid) / entry_mid * 100 if entry_mid > 0 else 0
+    tp2_pct = abs(tp2 - entry_mid) / entry_mid * 100 if entry_mid > 0 else 0
+    tp3_pct = abs(tp3 - entry_mid) / entry_mid * 100 if entry_mid > 0 else 0
+
+    # Format prices smartly (crypto can be 0.0000001 or 100000)
+    def fmt(price):
+        if price == 0:
+            return "—"
+        if price >= 1000:
+            return f"${price:,.2f}"
+        elif price >= 1:
+            return f"${price:.4f}"
+        else:
+            return f"${price:.6f}"
+
+    funding_str = f"{funding:+.3f}%" if funding != 0 else "—"
+    oi_str = f"{oi_change:+.1f}%" if oi_change != 0 else "—"
+    fib_str = f"Fib {fib_level}" if fib_level else "—"
+
+    card = (
+        f"{dir_emoji} <b>СИГНАЛ {direction} • {symbol}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💰 <b>Вход:</b>     {fmt(entry_low)} – {fmt(entry_high)}\n"
+        f"🛑 <b>Стоп-лосс:</b> {fmt(sl)}  <i>(-{sl_pct:.1f}%)</i>\n"
+        f"🎯 <b>TP1 (40%):</b>  {fmt(tp1)}  <i>(+{tp1_pct:.1f}%)</i>\n"
+        f"🎯 <b>TP2 (35%):</b>  {fmt(tp2)}  <i>(+{tp2_pct:.1f}%)</i>\n"
+        f"🎯 <b>TP3 (25%):</b>  {fmt(tp3)}  <i>(+{tp3_pct:.1f}%)</i>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Score:</b>    <b>{score:.1f}/10</b>  {star_str}\n"
+        f"{regime_emoji} <b>Режим:</b>    {regime}\n"
+        f"📈 <b>RSI(1h):</b>  {rsi:.1f}{'  🔥 Перепродан' if rsi < 30 else ''}\n"
+        f"📉 <b>VWAP:</b>     {vwap_label}\n"
+        f"🎀 <b>EMA Ribbon:</b> {ema_label}\n"
+        f"↗️ <b>RSI Div:</b>  {rsi_div}\n"
+        f"🔮 <b>Fib:</b>      {fib_str}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💸 <b>Funding:</b>  {funding_str}\n"
+        f"📦 <b>OI Change:</b> {oi_str}\n"
+        f"😱 <b>Fear&Greed:</b> {fg_value}/100\n"
+        f"₿  <b>BTC.D:</b>    {btc_dom}%\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💵 <b>Позиция:</b>  ${position_usd:.0f} (1% от $3,000)\n"
+        f"⚠️ <b>Риск $:</b>   ${risk_usd:.0f} макс потеря\n"
+        f"⚖️ <b>R/R Ratio:</b> 1:{rr:.1f}\n\n"
+        f"⏳ <b>Сигнал действителен:</b> 24 часа\n"
+        f"🕐 <i>{datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC</i>"
+    )
+    return card
+
+
+async def send_signal(bot: Bot, chat_id: int, signal_data: dict):
+    """Send a formatted signal card to Telegram."""
+    card = build_signal_card(signal_data)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+         InlineKeyboardButton(text="🏠 Меню", callback_data="home")]
+    ])
+    try:
+        await bot.send_message(chat_id, card, parse_mode="HTML", reply_markup=kb)
+        logger.info(f"Signal sent: {signal_data.get('symbol')} score={signal_data.get('score')}")
     except Exception as e:
-        logger.error(f"Telegram Bot crashed: {e}")
+        logger.error(f"Failed to send signal: {e}")
