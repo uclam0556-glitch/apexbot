@@ -210,7 +210,7 @@ class ApexSystem:
         while self.running:
             logger.info("=== STARTING SCAN CYCLE ===")
             
-            open_trades = get_open_trades()
+            open_trades = await get_open_trades()
             open_symbols = [t['symbol'] for t in open_trades]
             
             if len(open_trades) >= 5:
