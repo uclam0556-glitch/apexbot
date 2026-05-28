@@ -148,11 +148,11 @@ class TradingConfig(BaseSettings):
         # New Narratives
         "STX/USDT", "TIA/USDT", "STRK/USDT", "BLUR/USDT", "MANTA/USDT",
         # Real World Assets (RWA) & Infra (NEW)
-        "ONDO/USDT", "MKR/USDT", "PYTH/USDT", "ARKM/USDT", "GRT/USDT",
+        "ONDO/USDT", "THETA/USDT", "PYTH/USDT", "ARKM/USDT", "GRT/USDT",
         # Gaming & Metaverse (NEW)
-        "IMX/USDT", "GALA/USDT", "SAND/USDT", "BEAMX/USDT", "RONIN/USDT",
+        "IMX/USDT", "GALA/USDT", "SAND/USDT", "BEAMX/USDT", "MANA/USDT",
         # Fast L1s & Classics (NEW)
-        "KAS/USDT", "FTM/USDT", "MNT/USDT", "ATOM/USDT", "ICP/USDT",
+        "KAS/USDT", "XLM/USDT", "MNT/USDT", "ATOM/USDT", "ICP/USDT",
         # DePIN & Storage (NEW)
         "FIL/USDT", "HNT/USDT", "IOTX/USDT", "VET/USDT", "ETC/USDT",
     ]
