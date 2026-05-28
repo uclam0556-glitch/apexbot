@@ -383,3 +383,30 @@ async def send_signal(bot: Bot, chat_id: int, signal_data: dict):
         logger.info(f"Signal sent: {signal_data.get('symbol')} score={signal_data.get('score')}")
     except Exception as e:
         logger.error(f"Failed to send signal: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# START — launch bot polling (called from main.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def start_telegram_bot():
+    """Initialize and start the Telegram bot with polling."""
+    cfg = get_config()
+    token = cfg.alerts.telegram_bot_token.get_secret_value()
+
+    if not token:
+        logger.warning("No Telegram bot token configured. Bot UI disabled.")
+        return
+
+    bot = Bot(token=token)
+    dp = Dispatcher()
+    dp.include_router(router)
+
+    logger.info("Starting Telegram bot polling...")
+    try:
+        await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+    except Exception as e:
+        logger.error(f"Telegram bot error: {e}")
+    finally:
+        await bot.session.close()
+
