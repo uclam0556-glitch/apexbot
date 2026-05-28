@@ -27,6 +27,7 @@ async def init_lite_db():
                 entry_price REAL,
                 stop_loss REAL,
                 take_profit_1 REAL,
+                take_profit_3 REAL,
                 position_usd REAL,
                 status TEXT, -- 'OPEN', 'WON', 'LOST'
                 opened_at TIMESTAMP,
@@ -45,6 +46,7 @@ async def save_trade(
     entry_price: float, 
     stop_loss: float, 
     take_profit_1: float,
+    take_profit_3: float,
     position_usd: float,
     reasoning: str
 ):
@@ -53,11 +55,11 @@ async def save_trade(
         await db.execute('''
             INSERT INTO trades (
                 signal_id, symbol, direction, entry_price, stop_loss, 
-                take_profit_1, position_usd, status, opened_at, reasoning
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+                take_profit_1, take_profit_3, position_usd, status, opened_at, reasoning
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
         ''', (
             signal_id, symbol, direction, entry_price, stop_loss, 
-            take_profit_1, position_usd, datetime.utcnow(), reasoning
+            take_profit_1, take_profit_3, position_usd, datetime.utcnow(), reasoning
         ))
         await db.commit()
 
@@ -105,4 +107,14 @@ async def close_trade(trade_id: int, status: str, pnl_pct: float):
             SET status = ?, pnl_pct = ?, closed_at = ?
             WHERE id = ?
         ''', (status, pnl_pct, datetime.utcnow(), trade_id))
+        await db.commit()
+
+async def update_trade_sl(trade_id: int, new_sl: float, new_status: str = "OPEN"):
+    """Updates stop loss for a trailing stop."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            UPDATE trades 
+            SET stop_loss = ?, status = ?
+            WHERE id = ?
+        ''', (new_sl, new_status, trade_id))
         await db.commit()

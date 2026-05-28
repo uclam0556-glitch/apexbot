@@ -154,14 +154,30 @@ class ApexSystem:
                         
                         # LONG logic
                         if trade['direction'] == 'LONG':
-                            if current_price >= trade['take_profit_1']:
+                            # Breakeven / TP1 logic
+                            if current_price >= trade['take_profit_1'] and trade['status'] == 'OPEN':
+                                # Reached TP1 -> Move SL to Breakeven
+                                status = 'BREAKEVEN'
+                                pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                                new_sl = trade['entry_price'] * 1.001 # slightly above breakeven
+                                from shared.lite_db import update_trade_sl
+                                await update_trade_sl(trade['id'], new_sl, status)
+                                logger.info(f"Trade {symbol} hit TP1. SL moved to BREAKEVEN ({new_sl:.4f}).")
+                                if bot:
+                                    # We can send a partial close notification here later, for now just notify.
+                                    pass
+                            
+                            # Final TP3 logic (Trailing ATR could go here, for now it's static TP3)
+                            elif trade.get('take_profit_3') and current_price >= trade['take_profit_3']:
                                 status = 'WON'
                                 pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                                
+                            # Stop Loss hit (either original SL or Breakeven SL)
                             elif current_price <= trade['stop_loss']:
-                                status = 'LOST'
+                                status = 'LOST' if trade['status'] == 'OPEN' else 'WON_BREAKEVEN'
                                 pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
                                 
-                        if status:
+                        if status in ['WON', 'LOST', 'WON_BREAKEVEN']:
                             await close_trade(trade['id'], status, pnl_pct)
                             logger.info(f"Trade {symbol} {status} at {current_price} ({pnl_pct:+.2f}%)")
                             if bot:
@@ -471,8 +487,9 @@ class ApexSystem:
                         entry_price=current_price,
                         stop_loss=sltp.stop_loss,
                         take_profit_1=sltp.take_profit_1,
+                        take_profit_3=sltp.take_profit_3,
                         position_usd=position_usd,
-                        reasoning=f"Ultra Score {ultra_score:.1f}/10 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}"
+                        reasoning=f"Ultra Score {ultra_score:.1f}/10 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']} | ML_FEATURES: {{\"fvg_count\": {len(smc_analysis.imbalance_zones)}, \"volatility\": {atr_1h/current_price:.4f}}}"
                     )
                     logger.info(f"Signal saved to DB for {symbol}")
                     
