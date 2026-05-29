@@ -163,7 +163,7 @@ class TradingConfig(BaseSettings):
     # Risk parameters
     initial_deposit_usd: float = 3_000.0
     risk_per_trade_pct: float = 1.0          # 1% = $30 per trade
-    min_score_for_signal: float = 3.5        # Lowered to 3.5 for ML data gathering
+    min_score_for_signal: float = 6.0        # Minimum confluence score
     min_risk_pct: float = 0.5
     max_risk_pct: float = 1.0
     half_kelly: bool = True
