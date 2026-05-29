@@ -312,10 +312,6 @@ class ApexSystem:
             open_trades = await get_open_trades()
             open_symbols = [t['symbol'] for t in open_trades]
             
-            if len(open_trades) >= 7:
-                logger.info(f"Portfolio limit reached (7 open trades). Resting until a trade closes...")
-                await asyncio.sleep(60)
-                continue
             
             # ─── RS MATRIX PRE-FILTER (Top 30 Only) ──────────────────────────────────
             top_rs_coins = rs_matrix_engine.get_top_n(30)
