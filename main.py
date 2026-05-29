@@ -368,7 +368,7 @@ class ApexSystem:
                     global_state.regime = current_regime.value
                     
                     # Get dynamically optimized weights
-                    weights = self.weights_optimizer.get_weights(current_regime)
+                    weights = self.weights_optimizer.get_current_weights()
                     
                     # 2. MTF Alignment — pass ALL loaded timeframes
                     mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
