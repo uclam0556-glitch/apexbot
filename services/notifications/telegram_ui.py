@@ -16,6 +16,18 @@ from shared.config import get_config
 from shared.lite_db import get_stats, get_recent_trades, get_open_trades, reset_open_trades
 from shared.state import global_state
 
+def format_price(price: float) -> str:
+    if not price:
+        return "0.00"
+    if price >= 1000:
+        return f"{price:,.2f}"
+    elif price >= 1:
+        return f"{price:.4f}"
+    elif price >= 0.001:
+        return f"{price:.6f}"
+    else:
+        return f"{price:.8f}"
+
 logger = logging.getLogger(__name__)
 _config = get_config()
 router = Router()
@@ -259,7 +271,7 @@ async def process_history(callback: CallbackQuery):
 
             text += (
                 f"{status_emoji} <b>{t['symbol']}</b> {dir_emoji}  |  <code>{date_str}</code>\n"
-                f"   Вход: ${t['entry_price']:.4f}  →  PnL: <b>{pnl_str}</b>\n"
+                f"   Вход: ${format_price(t['entry_price'])}  →  PnL: <b>{pnl_str}</b>\n"
             )
 
     try:
@@ -442,12 +454,7 @@ def build_signal_card(signal_data: dict) -> str:
     def fmt(price):
         if price == 0:
             return "—"
-        if price >= 1000:
-            return f"${price:,.2f}"
-        elif price >= 1:
-            return f"${price:.4f}"
-        else:
-            return f"${price:.6f}"
+        return f"${format_price(price)}"
 
     funding_str = f"{funding:+.3f}%" if funding != 0 else "—"
     oi_str = f"{oi_change:+.1f}%" if oi_change != 0 else "—"
@@ -520,8 +527,8 @@ async def send_tp1_notification(bot: Bot, chat_id: int, trade_data: dict, pnl_pc
         "🛡 <b>Стоп-лосс переведен в безубыток.</b>\n"
         "Часть прибыли зафиксирована, сделка продолжается (Free Ride). 🚀\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Вход:</b>  ${trade_data.get('entry_price', 0):.4f}\n"
-        f"🏁 <b>TP1:</b>   ${trade_data.get('take_profit_1', 0):.4f}\n\n"
+        f"💰 <b>Вход:</b>  ${format_price(trade_data.get('entry_price', 0))}\n"
+        f"🏁 <b>TP1:</b>   ${format_price(trade_data.get('take_profit_1', 0))}\n\n"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
@@ -550,8 +557,8 @@ async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dic
         f"📈 <b>Направление:</b> {trade_data.get('direction', 'LONG')}\n\n"
         f"💸 <b>Итоговый PnL:</b>  <b>{pnl_text}</b> {color_emoji}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Вход:</b>  ${trade_data.get('entry_price', 0):.4f}\n"
-        f"🏁 <b>Выход:</b> ${trade_data.get('take_profit_1', 0) if status == 'WON' else trade_data.get('stop_loss', 0):.4f}\n\n"
+        f"💰 <b>Вход:</b>  ${format_price(trade_data.get('entry_price', 0))}\n"
+        f"🏁 <b>Выход:</b> ${format_price(trade_data.get('take_profit_1', 0) if status == 'WON' else trade_data.get('stop_loss', 0))}\n\n"
         f"🕒 <i>Открыта: {trade_data.get('opened_at', '—')} UTC</i>\n"
         f"🏁 <i>Закрыта: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC</i>"
     )

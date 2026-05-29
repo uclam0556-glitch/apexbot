@@ -7,6 +7,16 @@ Main Orchestrator Loop — Ultra World-Class Edition
 
 from __future__ import annotations
 
+import structlog
+
+def format_price(price: float) -> str:
+    if not price: return "0.00"
+    if price >= 1000: return f"{price:,.2f}"
+    if price >= 1: return f"{price:.4f}"
+    if price >= 0.001: return f"{price:.6f}"
+    return f"{price:.8f}"
+
+# Configure structlogging
 import asyncio
 import logging
 import os
@@ -171,7 +181,7 @@ class ApexSystem:
                                 new_sl = trade['entry_price'] * 1.001 # slightly above breakeven
                                 from shared.lite_db import update_trade_sl
                                 await update_trade_sl(trade['id'], new_sl, status)
-                                logger.info(f"Trade {symbol} hit TP1. SL moved to BREAKEVEN ({new_sl:.4f}).")
+                                logger.info(f"Trade {symbol} hit TP1. SL moved to BREAKEVEN ({format_price(new_sl)}).")
                                 if bot:
                                     try:
                                         await send_tp1_notification(bot, int(chat_id_str), trade, pnl_pct)
@@ -330,7 +340,7 @@ class ApexSystem:
                     avg_vol_3 = df_1h['volume'].iloc[-3:].mean()
                     vol_ratio = avg_vol_3 / baseline_hourly_vol if baseline_hourly_vol > 0 else 1.0
                     
-                    logger.info(f"{symbol} | Price=${current_price:,.4f} | RSI={rsi_now:.1f} | Vol={vol_ratio:.2f}x | TFs loaded={list(tf_data.keys())}")
+                    logger.info(f"{symbol} | Price=${format_price(current_price)} | RSI={rsi_now:.1f} | Vol={vol_ratio:.2f}x | TFs loaded={list(tf_data.keys())}")
 
                     # ─── FILTER 1: ADAPTIVE RSI HARD GATE ────────────────────────────────────
                     if not self.ml_classifier.is_trained:
@@ -652,7 +662,8 @@ class ApexSystem:
                             await send_signal(bot, int(chat_id_str), signal_data)
                             await bot.session.close()
                             global_state.signals_sent_today += 1
-                            logger.info(f"🚀 SIGNAL SENT: {symbol} | Score={ultra_score:.1f}/10 | Entry=${current_price:.4f}")
+                            # 9) LOG FINAL SIGNAL
+                            logger.info(f"🚀 SIGNAL SENT: {symbol} | Score={ultra_score:.1f}/10 | Entry=${format_price(current_price)}")
                     except Exception as send_err:
                         logger.error(f"Failed to send signal: {send_err}")
 
