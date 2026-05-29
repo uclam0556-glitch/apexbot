@@ -441,6 +441,84 @@
   }
   .empty-state .emoji { font-size: 40px; margin-bottom: 12px; }
 
+  /* ── MODAL (INTERACTIVITY) ── */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(5, 9, 20, 0.8);
+    backdrop-filter: blur(10px);
+    z-index: 1000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+  .modal-overlay.active {
+    display: flex;
+    opacity: 1;
+  }
+  .modal-content {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    width: 90%;
+    max-width: 1000px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    transform: scale(0.95);
+    transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+  .modal-overlay.active .modal-content {
+    transform: scale(1);
+  }
+  .modal-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .modal-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .close-btn {
+    background: rgba(255,255,255,0.05);
+    border: none;
+    color: var(--text2);
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: 0.2s;
+  }
+  .close-btn:hover {
+    background: rgba(255,255,255,0.1);
+    color: var(--text);
+  }
+  .modal-body {
+    padding: 0;
+    overflow-y: auto;
+    flex: 1;
+  }
+  
+  /* Make KPI Cards Clickable */
+  .kpi-card { cursor: pointer; }
+  .kpi-card:hover { 
+    transform: translateY(-4px); 
+    box-shadow: 0 10px 20px -10px var(--accent);
+  }
+
   /* ── RESPONSIVE ── */
   @media (max-width: 1200px) {
     .kpi-grid { grid-template-columns: repeat(3, 1fr); }
@@ -487,32 +565,32 @@
 
   <!-- KPI CARDS -->
   <div class="kpi-grid">
-    <div class="kpi-card cyan-accent">
+    <div class="kpi-card cyan-accent" onclick="openModal('Все завершенные сделки', 'CLOSED')">
       <div class="kpi-label">💰 Общий PnL</div>
       <div class="kpi-value" id="kpi-pnl">—</div>
       <div class="kpi-sub" id="kpi-pnl-sub">Накопленный</div>
     </div>
-    <div class="kpi-card green-accent">
+    <div class="kpi-card green-accent" onclick="openModal('Прибыльные сделки', 'WON')">
       <div class="kpi-label">🎯 Win Rate</div>
       <div class="kpi-value" id="kpi-wr">—</div>
       <div class="kpi-sub" id="kpi-wr-sub">Процент побед</div>
     </div>
-    <div class="kpi-card purple-accent">
+    <div class="kpi-card purple-accent" onclick="openModal('Все завершенные сделки', 'CLOSED')">
       <div class="kpi-label">📊 Всего сделок</div>
       <div class="kpi-value" id="kpi-total">—</div>
       <div class="kpi-sub" id="kpi-trades-sub">Завершённых</div>
     </div>
-    <div class="kpi-card cyan-accent">
+    <div class="kpi-card cyan-accent" onclick="openModal('Открытые позиции', 'OPEN')">
       <div class="kpi-label">⏳ Открытых</div>
       <div class="kpi-value text-cyan" id="kpi-open">—</div>
       <div class="kpi-sub">Активных позиций</div>
     </div>
-    <div class="kpi-card green-accent">
+    <div class="kpi-card green-accent" onclick="openModal('Прибыльные сделки', 'WON')">
       <div class="kpi-label">🏆 Лучшая</div>
       <div class="kpi-value text-green" id="kpi-best">—</div>
       <div class="kpi-sub">Максимальная прибыль</div>
     </div>
-    <div class="kpi-card red-accent">
+    <div class="kpi-card red-accent" onclick="openModal('Убыточные сделки', 'LOST')">
       <div class="kpi-label">📉 Худшая</div>
       <div class="kpi-value text-red" id="kpi-worst">—</div>
       <div class="kpi-sub">Максимальный убыток</div>
@@ -612,6 +690,21 @@
   </div>
 
 </main>
+</div>
+
+<!-- MODAL OVERLAY -->
+<div class="modal-overlay" id="interactive-modal" onclick="closeModal(event)">
+  <div class="modal-content" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-title">
+        <span class="icon">📊</span> Сделки
+      </div>
+      <button class="close-btn" onclick="closeModal(event)">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body">
+      <div class="empty-state"><div class="emoji">⏳</div>Загрузка данных...</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1067,6 +1160,87 @@ async function loadLivePrices() {
     }
 
   } catch(e) { console.error('Live prices error', e); }
+}
+
+// ── MODAL LOGIC ─────────────────────────────────────────────────────────────
+
+function closeModal(e) {
+  if (e) {
+    if (e.target.classList.contains('modal-overlay') || e.target.classList.contains('close-btn')) {
+      document.getElementById('interactive-modal').classList.remove('active');
+    }
+  } else {
+    document.getElementById('interactive-modal').classList.remove('active');
+  }
+}
+
+async function openModal(title, filterType) {
+  const modal = document.getElementById('interactive-modal');
+  const titleEl = document.getElementById('modal-title');
+  const bodyEl = document.getElementById('modal-body');
+  
+  titleEl.innerHTML = `<span class="icon">📊</span> ${title}`;
+  bodyEl.innerHTML = `<div class="empty-state"><div class="emoji">⏳</div>Загрузка данных...</div>`;
+  modal.classList.add('active');
+
+  try {
+    const res = await fetch(`/api/trades?limit=500&filter_type=${filterType}`);
+    const data = await res.json();
+    
+    if (!data || data.length === 0) {
+      bodyEl.innerHTML = `<div class="empty-state"><div class="emoji">📭</div>Сделок не найдено</div>`;
+      return;
+    }
+
+    let html = `
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Монета</th>
+            <th>Направление</th>
+            <th>Вход</th>
+            <th>Выход / Цена</th>
+            <th>PnL %</th>
+            <th>Дата</th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+
+    data.forEach(t => {
+      let isUp = t.direction === 'LONG';
+      let dirClass = isUp ? 'up' : 'dn';
+      
+      let pnlText = "—";
+      let pnlClass = "";
+      if (t.pnl_pct !== null) {
+        pnlClass = t.pnl_pct > 0 ? 'text-green' : (t.pnl_pct < 0 ? 'text-red' : '');
+        pnlText = `${t.pnl_pct > 0 ? '+' : ''}${t.pnl_pct.toFixed(2)}%`;
+      } else if (t.status === 'OPEN') {
+        pnlClass = 'text-cyan';
+        pnlText = "Открыта";
+      }
+
+      const dateStr = new Date(t.opened_at).toLocaleString('ru-RU', {day: '2-digit', month: '2-digit', hour: '2-digit', minute:'2-digit'});
+
+      html += `
+        <tr>
+          <td><strong>${t.symbol}</strong></td>
+          <td><span class="status-badge ${dirClass}">${t.direction}</span></td>
+          <td style="font-family: 'JetBrains Mono', monospace;">$${t.entry_price.toFixed(4)}</td>
+          <td style="font-family: 'JetBrains Mono', monospace;">${t.status === 'OPEN' ? '—' : (t.closed_at ? '$' + (t.pnl_pct > 0 ? t.take_profit_1.toFixed(4) : t.stop_loss.toFixed(4)) : '—')}</td>
+          <td class="${pnlClass}"><strong>${pnlText}</strong></td>
+          <td style="color: var(--text3);">${dateStr}</td>
+        </tr>
+      `;
+    });
+
+    html += `</tbody></table>`;
+    bodyEl.innerHTML = html;
+
+  } catch(e) {
+    bodyEl.innerHTML = `<div class="empty-state"><div class="emoji">❌</div>Ошибка загрузки</div>`;
+  }
 }
 
 // ── FACTORY RESET ─────────────────────────────────────────────────────────────

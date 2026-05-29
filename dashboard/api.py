@@ -100,13 +100,26 @@ def create_app() -> FastAPI:
             return []
 
     @app.get("/api/trades")
-    async def get_trades(limit: int = 30):
+    async def get_trades(limit: int = 500, filter_type: str = "ALL"):
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
-                async with db.execute(
-                    "SELECT * FROM trades ORDER BY opened_at DESC LIMIT ?", (limit,)
-                ) as cur:
+                query = "SELECT * FROM trades"
+                params = []
+                
+                if filter_type == "WON":
+                    query += " WHERE status IN ('WON', 'WON_BREAKEVEN') OR (status = 'TIMEOUT' AND pnl_pct > 0)"
+                elif filter_type == "LOST":
+                    query += " WHERE status = 'LOST' OR (status = 'TIMEOUT' AND pnl_pct <= 0)"
+                elif filter_type == "OPEN":
+                    query += " WHERE status IN ('OPEN', 'BREAKEVEN')"
+                elif filter_type == "CLOSED":
+                    query += " WHERE status NOT IN ('OPEN', 'BREAKEVEN')"
+
+                query += " ORDER BY opened_at DESC LIMIT ?"
+                params.append(limit)
+
+                async with db.execute(query, tuple(params)) as cur:
                     rows = await cur.fetchall()
             return [dict(r) for r in rows]
         except Exception as e:
