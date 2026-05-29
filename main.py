@@ -385,6 +385,16 @@ class ApexSystem:
                     cvd_signal = cvd_result.get("cvd_signal", "NEUTRAL")
                     cvd_score_val = cvd_result.get("score", 0)
 
+                    # ─── REAL ORDER FLOW IMBALANCE (OFI) ───────────────────────────────────────
+                    try:
+                        orderbook = await self.exchange.fetch_order_book(symbol, limit=20)
+                        from services.intelligence.ofi_engine import calculate_orderbook_imbalance
+                        ofi_real = calculate_orderbook_imbalance(orderbook, depth=20)
+                    except Exception as e:
+                        logger.warning(f"{symbol} - Failed to fetch orderbook for OFI: {e}. Using neutral OFI.")
+                        from services.intelligence.ofi_engine import OFIResult
+                        ofi_real = OFIResult(0.0, 0.0, 0.0)
+
                     # ─── SPOT ONLY: определяем стратегию (только LONG) ────────────────────────
                     # BEAR режим → пропускаем, ждем разворота (спот, не шортим)
                     # SIDEWAYS + RSI<35 → Mean Reversion (отскок от поддержки)
@@ -395,8 +405,19 @@ class ApexSystem:
                     regime_val      = current_regime.value
 
                     if regime_val == "BEAR":
-                        logger.info(f"{symbol} - [BLOCKED] BEAR режим: спот не торгуем, ждем разворота.")
-                        continue
+                        # Capitulation Catcher
+                        # Only top assets
+                        if symbol not in ["BTC/USDT", "ETH/USDT", "SOL/USDT"]:
+                            logger.info(f"{symbol} - [BLOCKED] BEAR regime: non-major asset. Skipping.")
+                            continue
+                            
+                        # Extreme oversold + real buyers stepping in
+                        if rsi_now < 25 and ofi_real.ofi_score > 0:
+                            trade_strategy = "CAPITULATION"
+                            logger.info(f"{symbol} - [CAPITULATION CATCHER] BEAR + RSI={rsi_now:.1f} + OFI={ofi_real.ofi_score:.2f} (Buyers stepping in)")
+                        else:
+                            logger.info(f"{symbol} - [BLOCKED] BEAR regime: Not a capitulation setup (RSI={rsi_now:.1f}, OFI={ofi_real.ofi_score:.2f}). Waiting.")
+                            continue
 
                     elif regime_val == "SIDEWAYS" and rsi_now < 35:
                         cvd_reversing = cvd_score_val >= -1
@@ -429,10 +450,10 @@ class ApexSystem:
                         last3 = df_15m_check.iloc[-4:-1]  # last 3 CLOSED candles
                         last1 = df_15m_check.iloc[-2]      # last CLOSED candle
 
-                        if trade_strategy == "MEAN_REVERSION":
+                        if trade_strategy == "MEAN_REVERSION" or trade_strategy == "CAPITULATION":
                             green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
                             if green_count == 0:
-                                logger.info(f"{symbol} - [BLOCKED] Entry Candle (MR): No green candle in last 3. Waiting for reversal.")
+                                logger.info(f"{symbol} - [BLOCKED] Entry Candle ({trade_strategy}): No green candle in last 3. Waiting for reversal.")
                                 continue
 
                         elif regime_val == "SIDEWAYS":
@@ -472,7 +493,7 @@ class ApexSystem:
                     weights = self.weights_optimizer.get_current_weights()
                     mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
 
-                    # For MEAN REVERSION, we skip MTF requirement (it will show downtrend)
+                    # For MEAN REVERSION and CAPITULATION, we skip MTF requirement (it will show downtrend)
                     if trade_strategy == "TREND":
                         expected_mtf = "STRONG_LONG" if trade_direction == "LONG" else "STRONG_SHORT"
                         if mtf_score.signal not in (expected_mtf, "NO_SIGNAL") and abs(mtf_score.score) < 4.0:
@@ -500,15 +521,6 @@ class ApexSystem:
 
                     # ─── CONFLUENCE SCORING ────────────────────────────────────────────────────
                     dir_enum  = Direction.LONG if trade_direction == "LONG" else Direction.SHORT
-                    
-                    # ─── REAL ORDER FLOW IMBALANCE (OFI) ───────────────────────────────────────
-                    try:
-                        orderbook = await self.exchange.fetch_order_book(symbol, limit=20)
-                        ofi_real = calculate_orderbook_imbalance(orderbook, depth=20)
-                    except Exception as e:
-                        logger.warning(f"{symbol} - Failed to fetch orderbook for OFI: {e}. Using neutral OFI.")
-                        from services.intelligence.ofi_engine import OFIResult
-                        ofi_real = OFIResult(0.0, 0.0, 0.0)
 
                     confluence = await self.confluence_engine.calculate_score(
                         symbol=symbol,
@@ -647,6 +659,12 @@ class ApexSystem:
                         sltp.take_profit_2     = sltp.take_profit_3 * 0.95
                         sltp.take_profit_3     = current_price * 1.20
 
+                    if trade_strategy == "CAPITULATION":
+                        logger.info(f"{symbol} - CAPITULATION trade: enforcing tight TP (max +5%).")
+                        sltp.take_profit_1 = current_price * 1.02
+                        sltp.take_profit_2 = current_price * 1.03
+                        sltp.take_profit_3 = current_price * 1.05
+
                     # ─── KELLY SIZING ──────────────────────────────────────────────────────────
                     deposit  = self.config.trading.initial_deposit_usd
                     from shared.models import VolatilityRegime
@@ -664,6 +682,11 @@ class ApexSystem:
                         current_drawdown_pct=0.0
                     )
                     risk_pct = kelly_result.final_size_pct
+                    
+                    if trade_strategy == "CAPITULATION":
+                        logger.info(f"{symbol} - Capitulation trade: halving Kelly size.")
+                        risk_pct *= 0.5
+                        
                     risk_usd = deposit * risk_pct / 100
 
                     # Mean Reversion: reduce risk (shorter TP, tighter market)

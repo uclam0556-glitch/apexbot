@@ -477,7 +477,12 @@ def build_signal_card(signal_data: dict) -> str:
         
     squeeze_alert = "🚨 <b>SHORT SQUEEZE DETECTED</b>\n<i>Лимиты сняты, ловим ракету 🚀</i>\n━━━━━━━━━━━━━━━━━━━━━━━━\n" if s.get("is_squeeze") else ""
 
-    strat_emoji = "🔄" if strategy == "Mean Reversion" else "📈" if direction == "LONG" else "📉"
+    if strategy == "MEAN_REVERSION":
+        strat_emoji = "🔄"
+    elif strategy == "CAPITULATION":
+        strat_emoji = "🩸"
+    else:
+        strat_emoji = "📈" if direction == "LONG" else "📉"
 
     card = (
         f"{dir_emoji} <b>СИГНАЛ {direction} • {symbol}</b>\n"
