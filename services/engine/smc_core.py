@@ -436,6 +436,42 @@ class FormalizedSMCCore:
         total_volume = bin_volumes.sum()
         nodes: list[VolumeNode] = []
 
+        if total_volume > 0:
+            poc_idx = np.argmax(bin_volumes)
+            poc_price = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2.0
+            poc_vol = bin_volumes[poc_idx]
+            nodes.append(
+                VolumeNode(
+                    price=round(float(poc_price), 8),
+                    volume=round(float(poc_vol), 2),
+                    type="POC",
+                    percentile=100.0,
+                )
+            )
+
+            # Calculate Value Area (70% of total volume)
+            va_volume = poc_vol
+            lower_idx = poc_idx - 1
+            upper_idx = poc_idx + 1
+            target_va_vol = total_volume * 0.70
+
+            while va_volume < target_va_vol and (lower_idx >= 0 or upper_idx < bins):
+                vol_lower = bin_volumes[lower_idx] if lower_idx >= 0 else -1
+                vol_upper = bin_volumes[upper_idx] if upper_idx < bins else -1
+
+                if vol_lower > vol_upper:
+                    va_volume += vol_lower
+                    lower_idx -= 1
+                else:
+                    va_volume += vol_upper
+                    upper_idx += 1
+
+            vah_price = (bin_edges[min(upper_idx, bins - 1)] + bin_edges[min(upper_idx + 1, bins)]) / 2.0
+            val_price = (bin_edges[max(lower_idx, 0)] + bin_edges[max(lower_idx + 1, 1)]) / 2.0
+
+            nodes.append(VolumeNode(price=round(float(vah_price), 8), volume=0, type="VAH", percentile=70.0))
+            nodes.append(VolumeNode(price=round(float(val_price), 8), volume=0, type="VAL", percentile=70.0))
+
         for i in range(bins):
             bin_centre = (bin_edges[i] + bin_edges[i + 1]) / 2.0
             bin_vol = bin_volumes[i]

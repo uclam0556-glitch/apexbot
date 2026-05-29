@@ -62,6 +62,7 @@ from shared.state import global_state
 # 🌟 NEW: Ultra indicators
 from services.indicators.technical import run_all_indicators
 from services.indicators.market_data import get_market_context
+from services.intelligence.ofi_engine import calculate_orderbook_imbalance
 
 # Setup basic logging
 logging.basicConfig(
@@ -499,7 +500,15 @@ class ApexSystem:
 
                     # ─── CONFLUENCE SCORING ────────────────────────────────────────────────────
                     dir_enum  = Direction.LONG if trade_direction == "LONG" else Direction.SHORT
-                    ofi_mock  = type('obj', (object,), {'ofi_score': min(vol_ratio / 2, 1.0), 'delta_usd': 50000})()
+                    
+                    # ─── REAL ORDER FLOW IMBALANCE (OFI) ───────────────────────────────────────
+                    try:
+                        orderbook = await self.exchange.fetch_order_book(symbol, limit=20)
+                        ofi_real = calculate_orderbook_imbalance(orderbook, depth=20)
+                    except Exception as e:
+                        logger.warning(f"{symbol} - Failed to fetch orderbook for OFI: {e}. Using neutral OFI.")
+                        from services.intelligence.ofi_engine import OFIResult
+                        ofi_real = OFIResult(0.0, 0.0, 0.0)
 
                     confluence = await self.confluence_engine.calculate_score(
                         symbol=symbol,
@@ -509,7 +518,7 @@ class ApexSystem:
                         rsi_series=rsi_series,
                         smc=smc_analysis,
                         mtf_score=mtf_score,
-                        ofi=ofi_mock,
+                        ofi=ofi_real,
                         regime=current_regime,
                         macro_bias=self.macro_state.macro_bias.value,
                         rotation_signal=self.rotation_state
