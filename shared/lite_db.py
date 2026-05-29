@@ -13,7 +13,8 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "apex_lite.db"
+import os
+DB_PATH = os.getenv("SQLITE_DB_PATH", "apex_lite.db")
 
 async def init_lite_db():
     """Initializes the SQLite tables."""
