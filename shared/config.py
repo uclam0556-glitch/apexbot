@@ -170,11 +170,11 @@ class TradingConfig(BaseSettings):
     paper_trading_mode: bool = True
 
     # Circuit breakers
-    daily_loss_stop_pct: float = 3.0
-    drawdown_stop_pct: float = 15.0
-    max_open_positions: int = 3
-    max_daily_signals: int = 5
-    max_position_pct: float = 2.0
+    daily_loss_stop_pct: float = 30.0
+    drawdown_stop_pct: float = 50.0
+    max_open_positions: int = 20
+    max_daily_signals: int = 50
+    max_position_pct: float = 5.0
     btc_crash_stop_pct: float = -10.0
     consecutive_losses_stop: int = 4
     var_portfolio_stop_pct: float = 8.0
