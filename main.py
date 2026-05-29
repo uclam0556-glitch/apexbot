@@ -570,7 +570,7 @@ class ApexSystem:
                     # Convert percentage to USD allocation
                     # Kelly returns % of capital to RISK.
                     # Position Size USD = Risk USD / Stop Loss %
-                    risk_pct = kelly_result.final_position_size_pct
+                    risk_pct = kelly_result.final_size_pct
                     risk_usd = deposit * risk_pct / 100
                     
                     # Squeeze Engine modifier: reduce risk if RSI is extreme
