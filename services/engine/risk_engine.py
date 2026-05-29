@@ -595,8 +595,19 @@ class RiskEngine:
 
         # Calculate Stop Loss distance
         sl_distance = abs(entry - stop_loss)
-        if sl_distance < 1e-10:
-            sl_distance = atr * 0.5  # safety fallback
+        
+        # MINIMUM SL CHECK (Protection against wicks and noise)
+        # 1. At least 1.5% absolute minimum for crypto volatility
+        min_sl_pct_dist = entry * 0.015
+        # 2. At least 1.5x ATR minimum for current market noise
+        min_sl_atr_dist = atr * 1.5
+        
+        min_required_distance = max(min_sl_pct_dist, min_sl_atr_dist)
+        
+        if sl_distance < min_required_distance:
+            self._log.debug("sl_too_tight_widening", original=sl_distance, new=min_required_distance)
+            sl_distance = min_required_distance
+            stop_loss = entry - sl_distance if is_long else entry + sl_distance
             
         # Hard Cap SL at 5%
         max_sl_distance = entry * 0.05
