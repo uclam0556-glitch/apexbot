@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
-import sys
 from datetime import datetime
 from typing import Any
 
@@ -622,6 +622,17 @@ def handle_shutdown(sys_obj: ApexSystem):
     logger.info("Received termination signal!")
     asyncio.create_task(sys_obj.stop())
 
+async def start_dashboard_server():
+    """Runs the FastAPI dashboard on PORT env var (Railway compatibility)."""
+    import uvicorn
+    from dashboard.api import create_app
+    port = int(os.getenv("PORT", "8080"))
+    app = create_app()
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    logger.info(f"Dashboard server starting on port {port}...")
+    await server.serve()
+
 async def main():
     await init_lite_db()
     apex = ApexSystem()
@@ -632,10 +643,11 @@ async def main():
         loop.add_signal_handler(sig, lambda: handle_shutdown(apex))
         
     try:
-        # Run system and telegram bot concurrently
+        # Run system, telegram bot, and dashboard concurrently
         await asyncio.gather(
             apex.start(),
-            start_telegram_bot()
+            start_telegram_bot(),
+            start_dashboard_server(),
         )
     except asyncio.CancelledError:
         pass

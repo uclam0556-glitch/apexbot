@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>APEX v5.1 — Quantum Trading Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+<style>
+  :root {
+    --bg:       #050914;
+    --bg2:      #0b1120;
+    --bg3:      #111827;
+    --glass:    rgba(255,255,255,0.04);
+    --border:   rgba(255,255,255,0.08);
+    --cyan:     #00d4ff;
+    --cyan2:    #0099bb;
+    --green:    #00e676;
+    --green2:   #00c853;
+    --red:      #ff4757;
+    --red2:     #c62828;
+    --gold:     #ffd700;
+    --purple:   #7c3aed;
+    --text:     #e2e8f0;
+    --text2:    #94a3b8;
+    --text3:    #475569;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  
+  body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── BACKGROUND ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0,212,255,0.08) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 80% 80%, rgba(124,58,237,0.06) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .grid-bg {
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+    background-size: 50px 50px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrapper { position: relative; z-index: 1; }
+
+  /* ── HEADER ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 32px;
+    background: rgba(5,9,20,0.9);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(20px);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo-icon {
+    width: 40px; height: 40px;
+    background: linear-gradient(135deg, var(--cyan), var(--purple));
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    box-shadow: 0 0 20px rgba(0,212,255,0.4);
+  }
+
+  .logo-text { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
+  .logo-text span { color: var(--cyan); }
+  .logo-version { font-size: 11px; color: var(--text2); font-weight: 500; margin-top: 1px; }
+
+  .header-center {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .live-badge {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: rgba(0,230,118,0.1);
+    border: 1px solid rgba(0,230,118,0.3);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--green);
+  }
+
+  .live-dot {
+    width: 7px; height: 7px;
+    background: var(--green);
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0,230,118,0.4); }
+    50% { opacity: 0.8; box-shadow: 0 0 0 6px rgba(0,230,118,0); }
+  }
+
+  .regime-badge {
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid;
+  }
+  .regime-BULL { background: rgba(0,230,118,0.1); border-color: rgba(0,230,118,0.3); color: var(--green); }
+  .regime-BEAR { background: rgba(255,71,87,0.1); border-color: rgba(255,71,87,0.3); color: var(--red); }
+  .regime-SIDEWAYS { background: rgba(255,215,0,0.1); border-color: rgba(255,215,0,0.3); color: var(--gold); }
+  .regime-UNKNOWN { background: rgba(148,163,184,0.1); border-color: rgba(148,163,184,0.3); color: var(--text2); }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .last-update { font-size: 12px; color: var(--text3); font-family: 'JetBrains Mono', monospace; }
+
+  .refresh-btn {
+    background: var(--glass);
+    border: 1px solid var(--border);
+    color: var(--text2);
+    padding: 7px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: 'Inter', sans-serif;
+  }
+  .refresh-btn:hover { background: rgba(0,212,255,0.1); border-color: var(--cyan); color: var(--cyan); }
+
+  /* ── MAIN LAYOUT ── */
+  main { padding: 28px 32px; max-width: 1600px; margin: 0 auto; }
+
+  /* ── KPI CARDS ── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .kpi-card {
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px;
+    backdrop-filter: blur(20px);
+    transition: transform 0.2s, border-color 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+  .kpi-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent, var(--cyan)), transparent);
+  }
+  .kpi-card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.15); }
+
+  .kpi-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--text3);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .kpi-value {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+  .kpi-sub { font-size: 12px; color: var(--text3); margin-top: 4px; }
+
+  .green-accent { --accent: var(--green); }
+  .cyan-accent  { --accent: var(--cyan); }
+  .red-accent   { --accent: var(--red); }
+  .gold-accent  { --accent: var(--gold); }
+  .purple-accent{ --accent: var(--purple); }
+
+  .text-green { color: var(--green); }
+  .text-red   { color: var(--red); }
+  .text-cyan  { color: var(--cyan); }
+  .text-gold  { color: var(--gold); }
+
+  /* ── ROW LAYOUT ── */
+  .row { display: grid; gap: 20px; margin-bottom: 20px; }
+  .row-7-3  { grid-template-columns: 7fr 3fr; }
+  .row-6-4  { grid-template-columns: 6fr 4fr; }
+  .row-3col { grid-template-columns: 1fr 1fr 1fr; }
+  .row-2col { grid-template-columns: 1fr 1fr; }
+
+  /* ── PANEL ── */
+  .panel {
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    backdrop-filter: blur(20px);
+    overflow: hidden;
+  }
+
+  .panel-header {
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .panel-title {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .panel-title .icon { font-size: 16px; }
+
+  .panel-body { padding: 20px 24px; }
+
+  /* ── TABLE ── */
+  .trade-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .trade-table th {
+    text-align: left;
+    padding: 10px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text3);
+    border-bottom: 1px solid var(--border);
+  }
+  .trade-table td {
+    padding: 12px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+  }
+  .trade-table tr:last-child td { border-bottom: none; }
+  .trade-table tr:hover td { background: rgba(255,255,255,0.03); }
+
+  .symbol-cell {
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+  }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .badge-open { background: rgba(0,212,255,0.12); color: var(--cyan); }
+  .badge-won  { background: rgba(0,230,118,0.12); color: var(--green); }
+  .badge-lost { background: rgba(255,71,87,0.12); color: var(--red); }
+  .badge-cancelled { background: rgba(148,163,184,0.1); color: var(--text3); }
+
+  .pnl-positive { color: var(--green); font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+  .pnl-negative { color: var(--red); font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+  .pnl-neutral  { color: var(--text2); font-family: 'JetBrains Mono', monospace; }
+
+  .price-cell { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text2); }
+
+  /* ── RS MATRIX ── */
+  .rs-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .rs-row:last-child { border-bottom: none; }
+
+  .rs-rank {
+    width: 26px; height: 26px;
+    background: linear-gradient(135deg, var(--cyan), var(--purple));
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 800;
+    flex-shrink: 0;
+  }
+  .rs-rank.gold-rank { background: linear-gradient(135deg, #ffd700, #ff8c00); }
+  .rs-rank.silver-rank { background: linear-gradient(135deg, #c0c0c0, #808080); }
+  .rs-rank.bronze-rank { background: linear-gradient(135deg, #cd7f32, #a0522d); }
+
+  .rs-name {
+    flex: 1;
+    font-weight: 700;
+    font-size: 13px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .rs-bar-wrap { flex: 2; }
+  .rs-bar-bg {
+    height: 4px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .rs-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--cyan), var(--green));
+    transition: width 1s ease;
+  }
+
+  .rs-pct {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: right;
+    min-width: 65px;
+  }
+
+  /* ── SYSTEM STATUS ── */
+  .status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 13px;
+  }
+  .status-row:last-child { border-bottom: none; }
+  .status-key { color: var(--text3); font-weight: 500; }
+  .status-val { font-weight: 600; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+
+  /* ── WIN RATE RING ── */
+  .win-ring-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 0;
+  }
+
+  /* ── TICKER TAPE ── */
+  .ticker-wrap {
+    overflow: hidden;
+    background: rgba(0,212,255,0.04);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 0;
+    margin-bottom: 24px;
+    white-space: nowrap;
+  }
+
+  .ticker-inner {
+    display: inline-flex;
+    gap: 48px;
+    animation: ticker 30s linear infinite;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500;
+  }
+
+  @keyframes ticker {
+    0%  { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+  }
+
+  .ticker-item { display: flex; align-items: center; gap: 8px; }
+  .ticker-item .t-sym { color: var(--cyan); font-weight: 700; }
+  .ticker-item .t-chg.up { color: var(--green); }
+  .ticker-item .t-chg.dn { color: var(--red); }
+
+  /* ── SCROLLBAR ── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+
+  /* ── LOADING SKELETON ── */
+  .skeleton {
+    background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 6px;
+    display: inline-block;
+  }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text3);
+    font-size: 13px;
+  }
+  .empty-state .emoji { font-size: 40px; margin-bottom: 12px; }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 1200px) {
+    .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+    .row-7-3, .row-6-4, .row-3col { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 768px) {
+    main { padding: 16px; }
+    header { padding: 14px 16px; }
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="grid-bg"></div>
+<div class="wrapper">
+
+<!-- HEADER -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">⚡</div>
+    <div>
+      <div class="logo-text">APEX <span>Quantum</span></div>
+      <div class="logo-version">AI Trading System v5.1</div>
+    </div>
+  </div>
+
+  <div class="header-center">
+    <div class="live-badge">
+      <div class="live-dot"></div>
+      LIVE
+    </div>
+    <div id="regime-badge" class="regime-badge regime-UNKNOWN">🔄 Загрузка...</div>
+  </div>
+
+  <div class="header-right">
+    <div class="last-update" id="last-update">Обновление...</div>
+    <button class="refresh-btn" onclick="loadAll()">↻ Обновить</button>
+  </div>
+</header>
+
+<!-- MAIN -->
+<main>
+
+  <!-- KPI CARDS -->
+  <div class="kpi-grid">
+    <div class="kpi-card cyan-accent">
+      <div class="kpi-label">💰 Общий PnL</div>
+      <div class="kpi-value" id="kpi-pnl">—</div>
+      <div class="kpi-sub" id="kpi-pnl-sub">Накопленный</div>
+    </div>
+    <div class="kpi-card green-accent">
+      <div class="kpi-label">🎯 Win Rate</div>
+      <div class="kpi-value" id="kpi-wr">—</div>
+      <div class="kpi-sub" id="kpi-wr-sub">Процент побед</div>
+    </div>
+    <div class="kpi-card purple-accent">
+      <div class="kpi-label">📊 Всего сделок</div>
+      <div class="kpi-value" id="kpi-total">—</div>
+      <div class="kpi-sub" id="kpi-trades-sub">Завершённых</div>
+    </div>
+    <div class="kpi-card cyan-accent">
+      <div class="kpi-label">⏳ Открытых</div>
+      <div class="kpi-value text-cyan" id="kpi-open">—</div>
+      <div class="kpi-sub">Активных позиций</div>
+    </div>
+    <div class="kpi-card green-accent">
+      <div class="kpi-label">🏆 Лучшая</div>
+      <div class="kpi-value text-green" id="kpi-best">—</div>
+      <div class="kpi-sub">Максимальная прибыль</div>
+    </div>
+    <div class="kpi-card red-accent">
+      <div class="kpi-label">📉 Худшая</div>
+      <div class="kpi-value text-red" id="kpi-worst">—</div>
+      <div class="kpi-sub">Максимальный убыток</div>
+    </div>
+  </div>
+
+  <!-- EQUITY CURVE + WIN RATE -->
+  <div class="row row-7-3">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title"><span class="icon">📈</span> Кривая капитала (Equity Curve)</div>
+        <div style="font-size:12px;color:var(--text3);font-family:'JetBrains Mono',monospace" id="equity-note">Накопленный PnL %</div>
+      </div>
+      <div id="equity-chart" style="min-height:280px;"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title"><span class="icon">🎯</span> Win / Loss</div>
+      </div>
+      <div style="min-height:280px; display:flex;flex-direction:column;align-items:center;justify-content:center;">
+        <div id="donut-chart"></div>
+        <div style="display:flex;gap:20px;margin-top:8px;font-size:12px;">
+          <div style="display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;background:var(--green);border-radius:50%;display:inline-block"></span><span style="color:var(--text2)">Победы</span></div>
+          <div style="display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;background:var(--red);border-radius:50%;display:inline-block"></span><span style="color:var(--text2)">Убытки</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- OPEN POSITIONS + RS MATRIX + STATUS -->
+  <div class="row row-3col">
+
+    <!-- Open Positions -->
+    <div class="panel" style="grid-column: span 2;">
+      <div class="panel-header">
+        <div class="panel-title"><span class="icon">⏳</span> Открытые позиции</div>
+        <div style="font-size:12px;color:var(--text3);" id="open-count-label">—</div>
+      </div>
+      <div class="panel-body" style="padding:0;">
+        <div id="open-trades-container">
+          <div class="empty-state"><div class="emoji">🔍</div>Загрузка...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RS Matrix + System Status -->
+    <div style="display:flex;flex-direction:column;gap:20px;">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span class="icon">🔥</span> RS Matrix</div>
+          <div style="font-size:11px;color:var(--text3)" id="rs-updated">—</div>
+        </div>
+        <div class="panel-body" id="rs-matrix-container">
+          <div class="empty-state"><div class="emoji">📡</div>Загрузка...</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span class="icon">🖥️</span> Состояние системы</div>
+        </div>
+        <div class="panel-body" id="system-status-container">
+          <div class="empty-state" style="padding:20px;">Загрузка...</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- TRADE HISTORY -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title"><span class="icon">📜</span> История сделок</div>
+      <div style="font-size:12px;color:var(--text3);">Последние 30</div>
+    </div>
+    <div class="panel-body" style="padding:0;">
+      <div id="history-container">
+        <div class="empty-state"><div class="emoji">📋</div>Загрузка...</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+</div>
+
+<script>
+// ── CHARTS ──────────────────────────────────────────────────────────────────
+
+let equityChart = null;
+let donutChart = null;
+
+function initEquityChart(data) {
+  const categories = data.map(d => d.date);
+  const values = data.map(d => d.pnl);
+  const lastVal = values[values.length - 1] || 0;
+  const color = lastVal >= 0 ? '#00e676' : '#ff4757';
+
+  const options = {
+    series: [{ name: 'PnL %', data: values }],
+    chart: {
+      type: 'area',
+      height: 280,
+      background: 'transparent',
+      toolbar: { show: false },
+      animations: { enabled: true, easing: 'easeinout', speed: 800 },
+    },
+    theme: { mode: 'dark' },
+    colors: [color],
+    fill: {
+      type: 'gradient',
+      gradient: {
+        shadeIntensity: 1,
+        opacityFrom: 0.5,
+        opacityTo: 0.02,
+        stops: [0, 100],
+      },
+    },
+    stroke: { curve: 'smooth', width: 2.5 },
+    dataLabels: { enabled: false },
+    grid: {
+      borderColor: 'rgba(255,255,255,0.05)',
+      strokeDashArray: 4,
+    },
+    xaxis: {
+      categories,
+      labels: { style: { colors: '#475569', fontSize: '11px', fontFamily: 'JetBrains Mono' }, rotate: 0, hideOverlappingLabels: true },
+      axisBorder: { show: false },
+      axisTicks: { show: false },
+    },
+    yaxis: {
+      labels: {
+        style: { colors: '#475569', fontSize: '11px', fontFamily: 'JetBrains Mono' },
+        formatter: v => v.toFixed(1) + '%',
+      },
+    },
+    tooltip: {
+      theme: 'dark',
+      y: { formatter: v => v.toFixed(2) + '%' },
+    },
+    markers: { size: 0 },
+  };
+
+  if (equityChart) {
+    equityChart.updateOptions(options);
+  } else {
+    equityChart = new ApexCharts(document.getElementById('equity-chart'), options);
+    equityChart.render();
+  }
+}
+
+function initDonutChart(won, lost) {
+  if (won === 0 && lost === 0) { won = 1; lost = 1; }
+  const options = {
+    series: [won, lost],
+    chart: {
+      type: 'donut',
+      height: 200,
+      background: 'transparent',
+      toolbar: { show: false },
+      animations: { enabled: true, speed: 800 },
+    },
+    theme: { mode: 'dark' },
+    colors: ['#00e676', '#ff4757'],
+    labels: ['Победы', 'Убытки'],
+    dataLabels: { enabled: false },
+    legend: { show: false },
+    plotOptions: {
+      pie: {
+        donut: {
+          size: '72%',
+          labels: {
+            show: true,
+            total: {
+              show: true,
+              label: 'Win Rate',
+              fontSize: '13px',
+              fontFamily: 'Inter',
+              color: '#94a3b8',
+              formatter: () => {
+                const total = won + lost;
+                return total > 0 ? Math.round(won / total * 100) + '%' : '—';
+              },
+            },
+            value: {
+              color: '#e2e8f0',
+              fontSize: '22px',
+              fontWeight: '800',
+              fontFamily: 'Inter',
+            },
+          },
+        },
+      },
+    },
+    stroke: { show: false },
+    tooltip: { theme: 'dark' },
+  };
+
+  if (donutChart) {
+    donutChart.updateSeries([won, lost]);
+  } else {
+    donutChart = new ApexCharts(document.getElementById('donut-chart'), options);
+    donutChart.render();
+  }
+}
+
+// ── HELPERS ─────────────────────────────────────────────────────────────────
+
+function fmt(price) {
+  if (!price) return '—';
+  if (price >= 1000) return '$' + price.toLocaleString('en', {maximumFractionDigits: 2});
+  if (price >= 1) return '$' + price.toFixed(4);
+  return '$' + price.toFixed(6);
+}
+
+function fmtPnl(pnl) {
+  if (pnl === null || pnl === undefined) return '<span class="pnl-neutral">—</span>';
+  const cls = pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+  const sign = pnl >= 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${pnl.toFixed(2)}%</span>`;
+}
+
+function fmtDate(dt) {
+  if (!dt) return '—';
+  try {
+    const d = new Date(dt.replace(' ', 'T') + 'Z');
+    return d.toLocaleDateString('ru', {day:'2-digit', month:'2-digit'}) + ' ' +
+           d.toLocaleTimeString('ru', {hour:'2-digit', minute:'2-digit'});
+  } catch { return String(dt).slice(0, 16); }
+}
+
+// ── LOADERS ─────────────────────────────────────────────────────────────────
+
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats');
+    const d = await r.json();
+
+    const pnlEl = document.getElementById('kpi-pnl');
+    const pnlVal = d.pnl_sum || 0;
+    pnlEl.textContent = (pnlVal >= 0 ? '+' : '') + pnlVal.toFixed(2) + '%';
+    pnlEl.className = 'kpi-value ' + (pnlVal >= 0 ? 'text-green' : 'text-red');
+    document.getElementById('kpi-pnl-sub').textContent = d.total + ' закрытых сделок';
+
+    const wr = d.win_rate || 0;
+    const wrEl = document.getElementById('kpi-wr');
+    wrEl.textContent = wr.toFixed(1) + '%';
+    wrEl.className = 'kpi-value ' + (wr >= 55 ? 'text-green' : wr >= 45 ? 'text-gold' : 'text-red');
+    document.getElementById('kpi-wr-sub').textContent = `${d.won} / ${d.won + d.lost}`;
+
+    document.getElementById('kpi-total').textContent = d.total;
+    document.getElementById('kpi-trades-sub').textContent = `${d.won} побед, ${d.lost} убытков`;
+
+    const openEl = document.getElementById('kpi-open');
+    openEl.textContent = d.open;
+
+    const bestEl = document.getElementById('kpi-best');
+    bestEl.textContent = '+' + (d.best_trade || 0).toFixed(2) + '%';
+
+    const worstEl = document.getElementById('kpi-worst');
+    worstEl.textContent = (d.worst_trade || 0).toFixed(2) + '%';
+
+    initDonutChart(d.won, d.lost);
+  } catch (e) { console.error('Stats error', e); }
+}
+
+async function loadEquity() {
+  try {
+    const r = await fetch('/api/equity-curve');
+    const data = await r.json();
+    if (data && data.length > 1) {
+      initEquityChart(data);
+    } else {
+      initEquityChart([{date:'Start',pnl:0},{date:'Ожидание',pnl:0}]);
+    }
+  } catch (e) { console.error('Equity error', e); }
+}
+
+async function loadOpenTrades() {
+  try {
+    const r = await fetch('/api/open-trades');
+    const trades = await r.json();
+    const el = document.getElementById('open-trades-container');
+    const label = document.getElementById('open-count-label');
+
+    label.textContent = trades.length + ' позиций';
+
+    if (!trades.length) {
+      el.innerHTML = '<div class="empty-state"><div class="emoji">🔍</div>Нет открытых позиций.<br>Бот ищет новые входы...</div>';
+      return;
+    }
+
+    let html = `<table class="trade-table"><thead><tr>
+      <th>Монета</th><th>Вход</th><th>Стоп</th><th>TP1</th><th>Позиция</th><th>Открыта</th>
+    </tr></thead><tbody>`;
+
+    for (const t of trades) {
+      html += `<tr>
+        <td><span class="symbol-cell">${t.symbol.replace('/USDT','')}</span></td>
+        <td class="price-cell">${fmt(t.entry_price)}</td>
+        <td class="price-cell text-red">${fmt(t.stop_loss)}</td>
+        <td class="price-cell text-green">${fmt(t.take_profit_1)}</td>
+        <td class="price-cell">$${(t.position_usd||0).toFixed(0)}</td>
+        <td class="price-cell">${fmtDate(t.opened_at)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch (e) { console.error('Open trades error', e); }
+}
+
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/trades');
+    const trades = await r.json();
+    const el = document.getElementById('history-container');
+
+    if (!trades.length) {
+      el.innerHTML = '<div class="empty-state"><div class="emoji">📋</div>Сделок пока нет.<br>Бот уже сканирует рынок...</div>';
+      return;
+    }
+
+    let html = `<table class="trade-table"><thead><tr>
+      <th>Монета</th><th>Статус</th><th>Вход</th><th>PnL</th><th>Позиция $</th><th>Открыта</th><th>Закрыта</th>
+    </tr></thead><tbody>`;
+
+    for (const t of trades) {
+      let statusHtml = '';
+      if (t.status === 'OPEN')      statusHtml = '<span class="status-badge badge-open">⏳ OPEN</span>';
+      else if (t.status === 'WON')  statusHtml = '<span class="status-badge badge-won">✅ WIN</span>';
+      else if (t.status === 'LOST') statusHtml = '<span class="status-badge badge-lost">❌ LOSS</span>';
+      else                          statusHtml = '<span class="status-badge badge-cancelled">— CANCEL</span>';
+
+      html += `<tr>
+        <td><span class="symbol-cell">${t.symbol}</span></td>
+        <td>${statusHtml}</td>
+        <td class="price-cell">${fmt(t.entry_price)}</td>
+        <td>${fmtPnl(t.pnl_pct)}</td>
+        <td class="price-cell">$${(t.position_usd||0).toFixed(0)}</td>
+        <td class="price-cell">${fmtDate(t.opened_at)}</td>
+        <td class="price-cell">${fmtDate(t.closed_at)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch (e) { console.error('History error', e); }
+}
+
+async function loadRsMatrix() {
+  try {
+    const r = await fetch('/api/rs-matrix');
+    const d = await r.json();
+    const el = document.getElementById('rs-matrix-container');
+    document.getElementById('rs-updated').textContent = d.last_updated || '—';
+
+    if (!d.top || !d.top.length) {
+      el.innerHTML = '<div class="empty-state" style="padding:16px;"><div class="emoji">📡</div>Данные загружаются...</div>';
+      return;
+    }
+
+    const maxRs = Math.max(...d.top.map(c => Math.abs(c.rs_score || 0)), 1);
+    const medals = ['gold-rank', 'silver-rank', 'bronze-rank'];
+    const rankNums = ['1', '2', '3', '4', '5', '6', '7', '8'];
+
+    let html = '';
+    for (let i = 0; i < Math.min(d.top.length, 6); i++) {
+      const c = d.top[i];
+      const rs = c.rs_score || 0;
+      const barW = Math.min(100, Math.abs(rs) / maxRs * 100);
+      const cls = medals[i] || '';
+      const chg = c.change_24h || 0;
+      const chgColor = chg >= 0 ? 'var(--green)' : 'var(--red)';
+      const chgSign = chg >= 0 ? '+' : '';
+
+      html += `
+      <div class="rs-row">
+        <div class="rs-rank ${cls}">${rankNums[i]}</div>
+        <div class="rs-name">${c.symbol.replace('/USDT','')}</div>
+        <div class="rs-bar-wrap">
+          <div class="rs-bar-bg">
+            <div class="rs-bar-fill" style="width:${barW}%"></div>
+          </div>
+        </div>
+        <div class="rs-pct" style="color:${chgColor}">${chgSign}${chg.toFixed(1)}%</div>
+      </div>`;
+    }
+    el.innerHTML = html;
+  } catch (e) { console.error('RS Matrix error', e); }
+}
+
+async function loadSystemStatus() {
+  try {
+    const r = await fetch('/api/system-status');
+    const d = await r.json();
+
+    const regimeEl = document.getElementById('regime-badge');
+    const regimeMap = {
+      'BULL': ['🟢 BULL', 'regime-BULL'],
+      'BEAR': ['🔴 BEAR', 'regime-BEAR'],
+      'SIDEWAYS': ['🟡 SIDEWAYS', 'regime-SIDEWAYS'],
+    };
+    const [label, cls] = regimeMap[d.regime] || ['⚪ UNKNOWN', 'regime-UNKNOWN'];
+    regimeEl.textContent = label;
+    regimeEl.className = 'regime-badge ' + cls;
+
+    const el = document.getElementById('system-status-container');
+    const pauseColor = d.is_paused ? 'var(--gold)' : 'var(--green)';
+    const pauseText  = d.is_paused ? '⏸ ПАУЗА' : '▶️ АКТИВЕН';
+
+    el.innerHTML = `
+      <div class="status-row">
+        <span class="status-key">Статус</span>
+        <span class="status-val" style="color:${pauseColor}">${pauseText}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-key">Текущая монета</span>
+        <span class="status-val text-cyan">${d.current_symbol || '—'}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-key">Режим рынка</span>
+        <span class="status-val">${d.regime || '—'}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-key">Сигналов сегодня</span>
+        <span class="status-val">${d.signals_today || 0}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-key">Последний скан</span>
+        <span class="status-val" style="font-size:10px;color:var(--text3)">${d.last_scan || '—'}</span>
+      </div>
+    `;
+
+    document.getElementById('last-update').textContent =
+      'Обновлено: ' + new Date().toLocaleTimeString('ru');
+  } catch (e) { console.error('Status error', e); }
+}
+
+// ── MAIN LOAD ────────────────────────────────────────────────────────────────
+
+async function loadAll() {
+  await Promise.all([
+    loadStats(),
+    loadEquity(),
+    loadOpenTrades(),
+    loadHistory(),
+    loadRsMatrix(),
+    loadSystemStatus(),
+  ]);
+}
+
+// Initial load + auto-refresh every 30s
+loadAll();
+setInterval(loadAll, 30000);
+</script>
+</body>
+</html>
