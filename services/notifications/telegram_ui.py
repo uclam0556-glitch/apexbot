@@ -9,7 +9,7 @@ live status, market overview, and multi-button navigation.
 import logging
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 from aiogram.filters import Command
 
 from shared.config import get_config
@@ -49,18 +49,22 @@ def get_persistent_keyboard() -> ReplyKeyboardMarkup:
 def get_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
+            InlineKeyboardButton(text="🌐 Открыть Дашборд (App)", web_app=WebAppInfo(url="https://apex-quantum.up.railway.app/"))
+        ],
+        [
+            InlineKeyboardButton(text="🟢 Live Portfolio", callback_data="live_pnl"),
             InlineKeyboardButton(text="📡 Статус системы", callback_data="status"),
+        ],
+        [
             InlineKeyboardButton(text="🌡 Рынок", callback_data="market"),
-        ],
-        [
             InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+        ],
+        [
             InlineKeyboardButton(text="📜 История", callback_data="history"),
-        ],
-        [
             InlineKeyboardButton(text="🔥 Hot Coins", callback_data="hot"),
-            InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
         ],
         [
+            InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
             InlineKeyboardButton(text="🔄 Сброс ордеров", callback_data="reset_orders"),
         ]
     ])
@@ -198,6 +202,56 @@ async def process_market(callback: CallbackQuery):
         await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     except Exception:
         pass
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE PORTFOLIO
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "live_pnl")
+async def process_live_portfolio(callback: CallbackQuery):
+    await callback.answer("⏳ Считаю Live PnL...")
+    try:
+        open_trades = await get_open_trades()
+        if not open_trades:
+            text = (
+                "🟢 <b>Live Portfolio</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "Сейчас нет открытых позиций.\n"
+                "Ожидайте сигналов 🚀"
+            )
+            await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+            return
+
+        total_pnl = 0.0
+        active_count = len(open_trades)
+        
+        for t in open_trades:
+            symbol = t['symbol']
+            entry = float(t['entry_price'])
+            direction = t['direction']
+            
+            current_price = global_state.live_prices.get(symbol)
+            if not current_price:
+                continue
+                
+            if direction == "LONG":
+                pnl = (current_price - entry) / entry * 100
+            else:
+                pnl = (entry - current_price) / entry * 100
+            total_pnl += pnl
+
+        sign = "+" if total_pnl > 0 else ""
+        text = (
+            "🟢 <b>Live Portfolio Tracker</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Открытых позиций: <b>{active_count}</b>\n\n"
+            f"Текущий Live PnL: <b>{sign}{total_pnl:.2f}%</b> 🚀\n\n"
+            "<i>Все позиции ведутся автоматически.\nБот сам переводит стопы в б/у и фиксирует прибыль.</i>"
+        )
+        await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error in Live Portfolio: {e}")
+        await callback.message.edit_text("Ошибка загрузки Live PnL.", reply_markup=get_back_keyboard(), parse_mode="HTML")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STATS
@@ -412,7 +466,7 @@ async def process_confirm_reset(callback: CallbackQuery):
 
 def build_signal_card(signal_data: dict) -> str:
     """
-    Build a beautiful, information-rich signal card.
+    Build a beautiful, information-rich, institutional-grade signal card.
     """
     s = signal_data
     symbol = s.get("symbol", "???")
@@ -423,8 +477,6 @@ def build_signal_card(signal_data: dict) -> str:
     vwap_label = s.get("vwap_label", "")
     ema_label = s.get("ema_label", "")
     rsi_div = s.get("rsi_divergence", "NONE")
-    bb_label = s.get("bb_label", "")
-    fib_level = s.get("fib_level", None)
     strategy = s.get("strategy", "Trend Following")
     
     def safe_float(v):
@@ -445,14 +497,8 @@ def build_signal_card(signal_data: dict) -> str:
     risk_usd = safe_float(s.get("risk_usd", 30))
     rr = safe_float(s.get("rr_ratio", 0))
 
-    dir_emoji = "🚀" if direction == "LONG" else "🔻"
-    regime_emoji = {"BULL": "🟢", "BEAR": "🔴", "SIDEWAYS": "🟡", "CRISIS": "⚠️"}.get(regime, "⚪")
-
-    # Score stars (V7 scale is 0-100)
-    stars = int(score / 20)
-    if stars > 5: stars = 5
-    if stars < 0: stars = 0
-    star_str = "⭐" * stars + "✩" * (5 - stars)
+    dir_emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
+    regime_emoji = {"BULL": "🟢 Бычий", "BEAR": "🔴 Медвежий", "SIDEWAYS": "🟡 Боковик", "CRISIS": "⚠️ Кризис"}.get(regime, "⚪")
 
     # Entry SL risk %
     entry_mid = (entry_low + entry_high) / 2 if entry_high > 0 else entry_low
@@ -461,64 +507,49 @@ def build_signal_card(signal_data: dict) -> str:
     tp2_pct = abs(tp2 - entry_mid) / entry_mid * 100 if entry_mid > 0 else 0
     tp3_pct = abs(tp3 - entry_mid) / entry_mid * 100 if entry_mid > 0 else 0
 
-    # Format prices smartly (crypto can be 0.0000001 or 100000)
     def fmt(price):
-        if price == 0:
-            return "—"
+        if price == 0: return "—"
         return f"${format_price(price)}"
 
     funding_str = f"{funding:+.3f}%" if funding != 0 else "—"
     oi_str = f"{oi_change:+.1f}%" if oi_change != 0 else "—"
-    fib_str = f"Fib {fib_level}" if fib_level else "—"
     
     # Confidence Calibration
     conf_bucket = s.get("confidence_bucket", "N/A")
     conf_win = s.get("confidence_win_rate", 0)
     conf_size = s.get("confidence_sample_size", 0)
-    if conf_size >= 10:
-        conf_str = f"{conf_win:.1f}% (по {conf_size} сдел.)"
-    else:
-        conf_str = f"UNVERIFIED (менее 10 сдел.)"
+    conf_str = f"{conf_win:.1f}% Win Rate ({conf_size} trades)" if conf_size >= 10 else "Calibrating..."
         
-    squeeze_alert = "🚨 <b>SHORT SQUEEZE DETECTED</b>\n<i>Лимиты сняты, ловим ракету 🚀</i>\n━━━━━━━━━━━━━━━━━━━━━━━━\n" if s.get("is_squeeze") else ""
-
-    if strategy == "MEAN_REVERSION":
-        strat_emoji = "🔄"
-    elif strategy == "CAPITULATION":
-        strat_emoji = "🩸"
-    else:
-        strat_emoji = "📈" if direction == "LONG" else "📉"
+    squeeze_alert = "🚨 <b>VOLATILITY SQUEEZE DETECTED</b>\n" if s.get("is_squeeze") else ""
 
     card = (
-        f"{dir_emoji} <b>СИГНАЛ {direction} • {symbol}</b>\n"
-        f"<i>{strat_emoji} {strategy}</i>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{squeeze_alert}"
-        f"💰 <b>Вход:</b>     {fmt(entry_low)} – {fmt(entry_high)}\n"
-        f"🛑 <b>Стоп-лосс:</b> {fmt(sl)}  <i>(-{sl_pct:.1f}%)</i>\n"
-        f"🎯 <b>TP1 (40%):</b>  {fmt(tp1)}  <i>(+{tp1_pct:.1f}%)</i>\n"
-        f"🎯 <b>TP2 (35%):</b>  {fmt(tp2)}  <i>(+{tp2_pct:.1f}%)</i>\n"
-        f"🎯 <b>TP3 (25%):</b>  {fmt(tp3)}  <i>(+{tp3_pct:.1f}%)</i>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Score:</b>    <b>{score:.1f}/100</b>  {star_str}\n"
-        f"🤖 <b>Confid.:</b>  {conf_str}\n"
-        f"{regime_emoji} <b>Режим:</b>    {regime}\n"
-        f"📈 <b>RSI(1h):</b>  {rsi:.1f}{'  🔥 Перепродан' if rsi < 30 else ''}\n"
-        f"📉 <b>VWAP:</b>     {vwap_label}\n"
-        f"🎀 <b>EMA Ribbon:</b> {ema_label}\n"
-        f"↗️ <b>RSI Div:</b>  {rsi_div}\n"
-        f"🔮 <b>Fib:</b>      {fib_str}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💸 <b>Funding:</b>  {funding_str}\n"
-        f"📦 <b>OI Change:</b> {oi_str}\n"
-        f"😱 <b>Fear&Greed:</b> {fg_value}/100\n"
-        f"₿  <b>BTC.D:</b>    {btc_dom}%\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💵 <b>Позиция:</b>  ${position_usd:.0f} (1% от $3,000)\n"
-        f"⚠️ <b>Риск $:</b>   ${risk_usd:.0f} макс потеря\n"
-        f"⚖️ <b>R/R Ratio:</b> 1:{rr:.1f}\n\n"
-        f"⏳ <b>Сигнал действителен:</b> 24 часа\n"
-        f"🕐 <i>{datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC</i>"
+        f"⚡ <b>APEX SIGNAL | {symbol}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 <b>ACTION:</b> {dir_emoji}\n"
+        f"🧠 <b>STRAT:</b>  <code>[{strategy}]</code>\n"
+        f"{squeeze_alert}\n"
+        f"📥 <b>ENTRY ZONE</b>\n"
+        f"   {fmt(entry_low)} — {fmt(entry_high)}\n\n"
+        f"🛑 <b>STOP LOSS</b>\n"
+        f"   {fmt(sl)} <i>(-{sl_pct:.1f}%)</i>\n\n"
+        f"🏁 <b>TAKE PROFIT</b>\n"
+        f"   TP1: {fmt(tp1)} <i>(+{tp1_pct:.1f}%)</i>\n"
+        f"   TP2: {fmt(tp2)} <i>(+{tp2_pct:.1f}%)</i>\n"
+        f"   TP3: {fmt(tp3)} <i>(+{tp3_pct:.1f}%)</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔬 <b>AI ENGINE SCORE: {score:.1f}/100</b>\n"
+        f"📊 <b>Calibration:</b> {conf_str}\n"
+        f"⚖️ <b>Regime:</b> {regime_emoji}\n\n"
+        f"<b>MARKET CONTEXT:</b>\n"
+        f"• RSI (1h): <b>{rsi:.1f}</b>\n"
+        f"• VWAP: <b>{vwap_label}</b>\n"
+        f"• Funding: <b>{funding_str}</b>\n"
+        f"• OI Flow: <b>{oi_str}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💼 <b>EXECUTION PLAN</b>\n"
+        f"Position: <b>${position_usd:.0f}</b>\n"
+        f"Max Risk: <b>${risk_usd:.0f}</b>\n"
+        f"R/R Ratio: <b>1:{rr:.1f}</b>\n"
     )
     return card
 
@@ -528,8 +559,11 @@ async def send_signal(bot: Bot, chat_id: int, signal_data: dict):
     try:
         card = build_signal_card(signal_data)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
-             InlineKeyboardButton(text="🏠 Меню", callback_data="home")]
+            [InlineKeyboardButton(text="🌐 Открыть Дашборд", web_app=WebAppInfo(url="https://apex-quantum.up.railway.app/"))],
+            [
+                InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+                InlineKeyboardButton(text="🏠 Меню", callback_data="home")
+            ]
         ])
         await bot.send_message(chat_id=chat_id, text=card, reply_markup=kb, parse_mode="HTML")
         logger.info(f"Signal sent: {signal_data.get('symbol')} score={signal_data.get('score')}")
