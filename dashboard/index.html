@@ -578,6 +578,18 @@
 
   </div>
 
+  <!-- ML FEATURE STATS -->
+  <div class="row row-2col">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title"><span class="icon">🤖</span> Win-Rate by ML Regime</div>
+      </div>
+      <div class="panel-body" id="ml-regime-container" style="padding:0;">
+        <div class="empty-state"><div class="emoji">📊</div>Загрузка...</div>
+      </div>
+    </div>
+  </div>
+
   <!-- TRADE HISTORY -->
   <div class="panel">
     <div class="panel-header">
@@ -945,17 +957,42 @@ async function loadSystemStatus() {
   } catch (e) { console.error('Status error', e); }
 }
 
+async function loadFeaturesStats() {
+  try {
+    const r = await fetch('/api/features-stats');
+    const data = await r.json();
+    const stats = data.regime_stats;
+    const el = document.getElementById('ml-regime-container');
+    
+    if (!stats || !stats.length) {
+      el.innerHTML = '<div class="empty-state" style="padding: 20px;">Пока нет закрытых сделок в Feature Store</div>';
+      return;
+    }
+    
+    let html = '<table class="trade-table"><tr><th>Режим рынка (ML)</th><th>Размер выборки</th><th>Historical Win-Rate</th></tr>';
+    stats.forEach(s => {
+      const color = s.win_rate >= 50 ? 'var(--green)' : 'var(--red)';
+      html += `<tr>
+        <td style="font-weight:700">${s.regime}</td>
+        <td>${s.total} шт.</td>
+        <td style="color:${color}; font-weight:700; font-family:\\'JetBrains Mono\\'">${s.win_rate.toFixed(1)}%</td>
+      </tr>`;
+    });
+    html += '</table>';
+    el.innerHTML = html;
+  } catch (e) { console.error('Features stats error', e); }
+}
+
 // ── MAIN LOAD ────────────────────────────────────────────────────────────────
 
 async function loadAll() {
-  await Promise.all([
-    loadStats(),
-    loadEquity(),
-    loadOpenTrades(),
-    loadHistory(),
-    loadRsMatrix(),
-    loadSystemStatus(),
-  ]);
+  loadStats();
+  loadEquity();
+  loadOpenTrades();
+  loadHistory();
+  loadRsMatrix();
+  loadSystemStatus();
+  loadFeaturesStats();
 }
 
 // Initial load + auto-refresh every 30s

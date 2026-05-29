@@ -154,6 +154,38 @@ def create_app() -> FastAPI:
             return {"regime": "UNKNOWN", "current_symbol": "—",
                     "last_scan": "—", "is_paused": False, "signals_today": 0}
 
+    @app.get("/api/features-stats")
+    async def get_features_stats():
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                # Group by Regime
+                async with db.execute('''
+                    SELECT 
+                        regime,
+                        COUNT(*) as total,
+                        SUM(CASE WHEN outcome = 'WON' THEN 1 ELSE 0 END) as won
+                    FROM feature_store 
+                    WHERE outcome != 'OPEN'
+                    GROUP BY regime
+                ''') as cur:
+                    regime_rows = await cur.fetchall()
+                    
+                regime_stats = []
+                for r in regime_rows:
+                    total = r['total']
+                    won = r['won']
+                    regime_stats.append({
+                        "regime": r['regime'],
+                        "total": total,
+                        "win_rate": round((won/total)*100, 1) if total > 0 else 0
+                    })
+                    
+            return {"regime_stats": regime_stats}
+        except Exception as e:
+            logger.error(f"Features stats error: {e}")
+            return {"regime_stats": []}
+
     # ──────────────────────────────────────────────────────────────
     # SERVE DASHBOARD HTML
     # ──────────────────────────────────────────────────────────────
