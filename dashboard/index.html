@@ -820,13 +820,17 @@ async function loadOpenTrades() {
     }
 
     let html = `<table class="trade-table"><thead><tr>
-      <th>Монета</th><th>Направление</th><th>Вход</th><th>Стоп</th><th>TP1</th><th>Позиция</th><th>Лайв Цена</th><th>PnL %</th><th>Открыта</th>
+      <th>Монета</th><th>Статус</th><th>Вход</th><th>Стоп</th><th>TP1</th><th>Позиция</th><th>Лайв Цена</th><th>PnL %</th><th>Открыта</th>
     </tr></thead><tbody>`;
 
     for (const t of trades) {
       const symClean = t.symbol.replace('/USDT','');
       const dirCls = t.direction === 'LONG' ? 'text-green' : 'text-red';
-      const dirTxt = t.direction === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
+      let dirTxt = t.direction === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
+      
+      if (t.status === 'BREAKEVEN') {
+          dirTxt += ' <span style="color:var(--gold); margin-left:6px; padding:2px 6px; background:rgba(255,215,0,0.1); border-radius:4px;">🛡 B/E</span>';
+      }
       
       html += `<tr>
         <td><span class="symbol-cell">${symClean}</span></td>
