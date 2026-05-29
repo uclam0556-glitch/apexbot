@@ -753,7 +753,7 @@ class ApexSystem:
 
                     # ─── BUILD SIGNAL PACKAGE ─────────────────────────────────────────────────
                     dir_emoji   = "🚀" if trade_direction == "LONG" else "🔻"
-                    strat_label = "Mean Reversion" if trade_strategy == "MEAN_REVERSION" else "Trend Following"
+                    strat_label = trade_strategy if trade_strategy else "TREND"
 
                     signal_data = {
                         "symbol":               symbol,
@@ -824,7 +824,7 @@ class ApexSystem:
                         take_profit_1=sltp.take_profit_1,
                         take_profit_3=sltp.take_profit_3,
                         position_usd=position_usd,
-                        reasoning=f"{strat_label} | Ultra Score {ultra_score:.1f}/10 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}",
+                        reasoning=f"{strat_label} | Score {ultra_score:.1f}/100 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}",
                         strategy=trade_strategy,
                         features_dict=features_dict
                     )

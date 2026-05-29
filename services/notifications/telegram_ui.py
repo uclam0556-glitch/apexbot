@@ -445,8 +445,10 @@ def build_signal_card(signal_data: dict) -> str:
     dir_emoji = "🚀" if direction == "LONG" else "🔻"
     regime_emoji = {"BULL": "🟢", "BEAR": "🔴", "SIDEWAYS": "🟡", "CRISIS": "⚠️"}.get(regime, "⚪")
 
-    # Score stars
-    stars = int(score / 2)
+    # Score stars (V7 scale is 0-100)
+    stars = int(score / 20)
+    if stars > 5: stars = 5
+    if stars < 0: stars = 0
     star_str = "⭐" * stars + "✩" * (5 - stars)
 
     # Entry SL risk %
@@ -495,7 +497,7 @@ def build_signal_card(signal_data: dict) -> str:
         f"🎯 <b>TP2 (35%):</b>  {fmt(tp2)}  <i>(+{tp2_pct:.1f}%)</i>\n"
         f"🎯 <b>TP3 (25%):</b>  {fmt(tp3)}  <i>(+{tp3_pct:.1f}%)</i>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Score:</b>    <b>{score:.1f}/10</b>  {star_str}\n"
+        f"📊 <b>Score:</b>    <b>{score:.1f}/100</b>  {star_str}\n"
         f"🤖 <b>Confid.:</b>  {conf_str}\n"
         f"{regime_emoji} <b>Режим:</b>    {regime}\n"
         f"📈 <b>RSI(1h):</b>  {rsi:.1f}{'  🔥 Перепродан' if rsi < 30 else ''}\n"
