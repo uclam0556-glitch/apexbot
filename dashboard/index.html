@@ -707,6 +707,21 @@
   </div>
 </div>
 
+<!-- TRADE DETAILS MODAL -->
+<div class="modal-overlay" id="trade-details-modal" onclick="closeDetailsModal(event)" style="z-index: 1010;">
+  <div class="modal-content" style="max-width: 600px;" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div class="modal-title" id="details-title">
+        <span class="icon">🔍</span> Детали Ордера
+      </div>
+      <button class="close-btn" onclick="closeDetailsModal(event)">✕</button>
+    </div>
+    <div class="modal-body" id="details-body" style="padding: 24px;">
+      <!-- Details will be injected here -->
+    </div>
+  </div>
+</div>
+
 <script>
 // ── CHARTS ──────────────────────────────────────────────────────────────────
 
@@ -926,7 +941,7 @@ async function loadOpenTrades() {
           dirTxt += ' <span style="color:var(--gold); margin-left:6px; padding:2px 6px; background:rgba(255,215,0,0.1); border-radius:4px;">🎯 TP1 HIT</span>';
       }
       
-      html += `<tr>
+      html += `<tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t))}')">
         <td><span class="symbol-cell">${symClean}</span></td>
         <td style="font-weight:700;font-size:11px;" class="${dirCls}">${dirTxt}</td>
         <td class="price-cell">${fmt(t.entry_price)}</td>
@@ -971,7 +986,7 @@ async function loadHistory() {
       else if (t.status === 'TIMEOUT')   statusHtml = '<span class="status-badge badge-cancelled">⏱ TIMEOUT</span>';
       else                               statusHtml = '<span class="status-badge badge-cancelled">— CANCEL</span>';
 
-      html += `<tr>
+      html += `<tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t))}')">
         <td><span class="symbol-cell">${t.symbol}</span></td>
         <td>${statusHtml}</td>
         <td class="price-cell">${fmt(t.entry_price)}</td>
@@ -1172,7 +1187,94 @@ function closeModal(e) {
   } else {
     document.getElementById('interactive-modal').classList.remove('active');
   }
+function closeDetailsModal(e) {
+  if (e) {
+    if (e.target.classList.contains('modal-overlay') || e.target.classList.contains('close-btn')) {
+      document.getElementById('trade-details-modal').classList.remove('active');
+    }
+  } else {
+    document.getElementById('trade-details-modal').classList.remove('active');
+  }
 }
+
+function showTradeDetails(tradeJson) {
+  const t = JSON.parse(decodeURIComponent(tradeJson));
+  const modal = document.getElementById('trade-details-modal');
+  const bodyEl = document.getElementById('details-body');
+  
+  let statusHtml = '';
+  if (t.status === 'OPEN') statusHtml = '<span class="status-badge badge-open">⏳ OPEN</span>';
+  else if (t.status === 'BREAKEVEN') statusHtml = '<span class="status-badge badge-open" style="color:var(--gold);">🎯 TP1 HIT (BREAKEVEN)</span>';
+  else if (t.status === 'WON') statusHtml = '<span class="status-badge badge-won">✅ WIN</span>';
+  else if (t.status === 'LOST') statusHtml = '<span class="status-badge badge-lost">❌ LOSS</span>';
+  else if (t.status === 'WON_BREAKEVEN') statusHtml = '<span class="status-badge badge-won" style="background:rgba(255,215,0,0.1);color:var(--gold);">🎯 TP1 EXIT</span>';
+  else statusHtml = `<span class="status-badge badge-cancelled">${t.status}</span>`;
+
+  let pnlHtml = '—';
+  if (t.pnl_pct !== null) {
+    let cls = t.pnl_pct > 0 ? 'text-green' : (t.pnl_pct < 0 ? 'text-red' : '');
+    pnlHtml = `<strong class="${cls}">${t.pnl_pct > 0 ? '+' : ''}${t.pnl_pct.toFixed(2)}%</strong>`;
+  }
+
+  bodyEl.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
+      <div style="font-size:24px; font-weight:800; color:var(--text);">${t.symbol}</div>
+      <div>${statusHtml}</div>
+    </div>
+    
+    <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:20px;">
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+        <div>
+          <div style="color:var(--text3); font-size:12px; margin-bottom:4px;">Направление</div>
+          <div style="font-weight:700; color:${t.direction==='LONG'?'var(--green)':'var(--red)'}">${t.direction}</div>
+        </div>
+        <div>
+          <div style="color:var(--text3); font-size:12px; margin-bottom:4px;">Стратегия</div>
+          <div style="font-weight:700; color:var(--text2);">${t.strategy || 'TREND'}</div>
+        </div>
+        <div>
+          <div style="color:var(--text3); font-size:12px; margin-bottom:4px;">Цена Входа</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:var(--cyan); font-weight:600;">$${t.entry_price.toFixed(5)}</div>
+        </div>
+        <div>
+          <div style="color:var(--text3); font-size:12px; margin-bottom:4px;">Текущий PnL</div>
+          <div>${pnlHtml}</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:20px;">
+      <div style="color:var(--text); font-weight:600; margin-bottom:12px; font-size:14px;">🎯 Цели и Защита</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div style="padding:10px; background:rgba(255,71,87,0.1); border-radius:8px; border:1px solid rgba(255,71,87,0.2);">
+          <div style="color:var(--red); font-size:11px; font-weight:700;">🛑 STOP LOSS</div>
+          <div style="font-family:'JetBrains Mono'; font-weight:600; color:var(--text); margin-top:4px;">$${t.stop_loss ? t.stop_loss.toFixed(5) : '—'}</div>
+        </div>
+        <div style="padding:10px; background:rgba(46,213,115,0.1); border-radius:8px; border:1px solid rgba(46,213,115,0.2);">
+          <div style="color:var(--green); font-size:11px; font-weight:700;">🎯 TAKE PROFIT 1</div>
+          <div style="font-family:'JetBrains Mono'; font-weight:600; color:var(--text); margin-top:4px;">$${t.take_profit_1 ? t.take_profit_1.toFixed(5) : '—'}</div>
+        </div>
+        <div style="padding:10px; background:rgba(46,213,115,0.1); border-radius:8px; border:1px solid rgba(46,213,115,0.2);">
+          <div style="color:var(--green); font-size:11px; font-weight:700;">🎯 TAKE PROFIT 2</div>
+          <div style="font-family:'JetBrains Mono'; font-weight:600; color:var(--text); margin-top:4px;">$${t.take_profit_2 ? t.take_profit_2.toFixed(5) : '—'}</div>
+        </div>
+        <div style="padding:10px; background:rgba(46,213,115,0.1); border-radius:8px; border:1px solid rgba(46,213,115,0.2);">
+          <div style="color:var(--green); font-size:11px; font-weight:700;">🚀 TAKE PROFIT 3</div>
+          <div style="font-family:'JetBrains Mono'; font-weight:600; color:var(--text); margin-top:4px;">$${t.take_profit_3 ? t.take_profit_3.toFixed(5) : '—'}</div>
+        </div>
+      </div>
+    </div>
+
+    ${t.reasoning ? `
+    <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px; padding:16px;">
+      <div style="color:var(--text); font-weight:600; margin-bottom:8px; font-size:14px;">🧠 Логика входа</div>
+      <div style="color:var(--text3); font-size:13px; line-height:1.5;">${t.reasoning}</div>
+    </div>
+    ` : ''}
+  `;
+  modal.classList.add('active');
+}
+
 
 async function openModal(title, filterType) {
   const modal = document.getElementById('interactive-modal');
@@ -1224,7 +1326,7 @@ async function openModal(title, filterType) {
       const dateStr = new Date(t.opened_at).toLocaleString('ru-RU', {day: '2-digit', month: '2-digit', hour: '2-digit', minute:'2-digit'});
 
       html += `
-        <tr>
+        <tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t))}')">
           <td><strong>${t.symbol}</strong></td>
           <td><span class="status-badge ${dirClass}">${t.direction}</span></td>
           <td style="font-family: 'JetBrains Mono', monospace;">$${t.entry_price.toFixed(4)}</td>

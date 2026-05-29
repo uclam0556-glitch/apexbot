@@ -29,6 +29,7 @@ async def init_lite_db():
                 entry_price REAL,
                 stop_loss REAL,
                 take_profit_1 REAL,
+                take_profit_2 REAL,
                 take_profit_3 REAL,
                 position_usd REAL,
                 status TEXT, -- 'OPEN', 'WON', 'LOST'
@@ -38,6 +39,12 @@ async def init_lite_db():
                 reasoning TEXT
             )
         ''')
+        
+        # In case table exists without take_profit_2, add it
+        try:
+            await db.execute("ALTER TABLE trades ADD COLUMN take_profit_2 REAL;")
+        except aiosqlite.OperationalError:
+            pass # Column already exists
         try:
             await db.execute('ALTER TABLE trades ADD COLUMN strategy TEXT DEFAULT "TREND"')
         except Exception:
@@ -88,6 +95,7 @@ async def save_trade(
     entry_price: float, 
     stop_loss: float, 
     take_profit_1: float,
+    take_profit_2: float,
     take_profit_3: float,
     position_usd: float,
     reasoning: str,
@@ -99,11 +107,11 @@ async def save_trade(
         cursor = await db.execute('''
             INSERT INTO trades (
                 signal_id, symbol, direction, strategy, entry_price, stop_loss, 
-                take_profit_1, take_profit_3, position_usd, status, opened_at, reasoning
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+                take_profit_1, take_profit_2, take_profit_3, position_usd, status, opened_at, reasoning
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
         ''', (
             signal_id, symbol, direction, strategy, entry_price, stop_loss, 
-            take_profit_1, take_profit_3, position_usd, datetime.utcnow(), reasoning
+            take_profit_1, take_profit_2, take_profit_3, position_usd, datetime.utcnow(), reasoning
         ))
         trade_id = cursor.lastrowid
         

@@ -919,6 +919,7 @@ class ApexSystem:
                         entry_price=current_price,
                         stop_loss=sltp.stop_loss,
                         take_profit_1=sltp.take_profit_1,
+                        take_profit_2=sltp.take_profit_2,
                         take_profit_3=sltp.take_profit_3,
                         position_usd=position_usd,
                         reasoning=f"{strat_label} | Score {ultra_score:.1f}/100 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}",
