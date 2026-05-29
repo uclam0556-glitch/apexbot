@@ -293,6 +293,36 @@ class ApexSystem:
                     vol_ratio = df_1h['volume'].iloc[-1] / vol_sma20.iloc[-1] if vol_sma20.iloc[-1] > 0 else 1.0
                     
                     logger.info(f"{symbol} | Price=${current_price:,.4f} | RSI={rsi_now:.1f} | Vol={vol_ratio:.2f}x | TFs loaded={list(tf_data.keys())}")
+
+                    # ─── FILTER 1: RSI HARD GATE ─────────────────────────────────────────────
+                    # Block LONG if 1h RSI is overbought (buying into overheated market)
+                    if rsi_now > 73:
+                        logger.info(f"{symbol} - [BLOCKED] RSI Hard Gate: RSI={rsi_now:.1f} > 73 (overheated). Skipping.")
+                        continue
+
+                    # ─── FILTER 2: SESSION FILTER ────────────────────────────────────────────
+                    # Dead zone 22:00-01:00 UTC: low liquidity, high fakeout risk
+                    utc_hour = datetime.utcnow().hour
+                    if 22 <= utc_hour or utc_hour < 1:
+                        logger.info(f"{symbol} - [BLOCKED] Session Filter: Dead zone {utc_hour}:00 UTC. Skipping.")
+                        continue
+
+                    # ─── FILTER 3: VOLUME GATE ───────────────────────────────────────────────
+                    # Block entry if recent volume is below 70% of 20-day average (fakeout)
+                    avg_vol_3 = df_1h['volume'].iloc[-3:].mean()
+                    vol_avg_20 = vol_sma20.iloc[-1] if vol_sma20.iloc[-1] > 0 else 1.0
+                    if avg_vol_3 < vol_avg_20 * 0.70:
+                        logger.info(f"{symbol} - [BLOCKED] Volume Gate: Vol={avg_vol_3:.0f} < 70% of avg={vol_avg_20:.0f}. Skipping.")
+                        continue
+
+                    # ─── FILTER 4: ENTRY CANDLE CONFIRMATION (15m) ───────────────────────────
+                    # Do not enter LONG if the last closed 15m candle is bearish
+                    df_15m_check = tf_data.get('15m', pd.DataFrame())
+                    if not df_15m_check.empty and len(df_15m_check) >= 2:
+                        last_15m = df_15m_check.iloc[-2]  # Last CLOSED candle
+                        if last_15m['close'] < last_15m['open']:  # Bearish candle
+                            logger.info(f"{symbol} - [BLOCKED] Entry Candle: Last 15m candle is bearish. Waiting for confirmation.")
+                            continue
                     
                     # v5.0: Dynamically classify regime
                     if not self.ml_classifier.is_trained:
@@ -428,6 +458,24 @@ class ApexSystem:
                     except Exception as adv_err:
                         logger.debug(f"{symbol} - Adversarial check skipped: {adv_err}")
 
+                    # ─── FILTER 5: BTC CORRELATION GATE ─────────────────────────────────────
+                    # Block altcoin longs if BTC is showing bearish RSI pressure (< 40)
+                    if 'BTC' not in symbol:
+                        btc_df = tf_data.get('1h', df_1h)  # Use current symbol 1h as fallback
+                        try:
+                            btc_1h = await self.fetch_market_data('BTC/USDT', '1h', 50)
+                            if not btc_1h.empty:
+                                btc_delta = btc_1h['close'].diff()
+                                btc_gain = btc_delta.clip(lower=0).rolling(14).mean()
+                                btc_loss = (-btc_delta.clip(upper=0)).rolling(14).mean()
+                                btc_rs = btc_gain / btc_loss.replace(0, 1e-9)
+                                btc_rsi = (100 - (100 / (1 + btc_rs))).iloc[-1]
+                                if btc_rsi < 42:
+                                    logger.info(f"{symbol} - [BLOCKED] BTC Correlation Gate: BTC RSI={btc_rsi:.1f} < 42 (bearish). Skipping alts.")
+                                    continue
+                        except Exception as btc_err:
+                            logger.debug(f"BTC correlation check failed (non-fatal): {btc_err}")
+
                     # 8. Risk Engine — SL/TP
                     sltp = self.risk_engine.calculate_sl_tp(
                         entry=current_price,
@@ -438,6 +486,18 @@ class ApexSystem:
                         volume_nodes=smc_analysis.volume_nodes,
                         key_levels=[]
                     )
+
+                    # ─── FILTER 6: TIGHT ATR STOP CAP ───────────────────────────────────────
+                    # If structural SL is too far (> 3%), cap it at entry - 2.0 * ATR_15m
+                    sl_pct_check = abs(current_price - sltp.stop_loss) / current_price
+                    if sl_pct_check > 0.030:
+                        atr_15m = pd.DataFrame()
+                        df_15m_atr = tf_data.get('15m', pd.DataFrame())
+                        if not df_15m_atr.empty:
+                            atr_15m_val = (df_15m_atr['high'] - df_15m_atr['low']).rolling(14).mean().iloc[-1]
+                            tight_sl = current_price - (2.0 * atr_15m_val)
+                            logger.info(f"{symbol} - ATR Stop Cap: structural SL {sl_pct_check:.1%} too wide → tightened to ATR-based SL.")
+                            sltp.stop_loss = max(tight_sl, sltp.stop_loss)  # Use the tighter (higher) of the two
                     
                     # 8.5 Squeeze Engine Override
                     funding_rate_val = market_ctx["funding"]["rate_pct"]
