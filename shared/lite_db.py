@@ -253,13 +253,13 @@ async def reset_open_trades():
     logger.info("All open trades have been reset (CANCELLED).")
 
 async def factory_reset_db():
-    """Wipes ALL data (trades and ML features) for a complete clean slate."""
+    """Wipes closed trades and ML features, keeping OPEN trades."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('DELETE FROM trades')
-        await db.execute('DELETE FROM feature_store')
+        await db.execute("DELETE FROM trades WHERE status != 'OPEN'")
+        await db.execute("DELETE FROM feature_store WHERE outcome != 'OPEN'")
         await db.execute('VACUUM')
         await db.commit()
-    logger.warning("FACTORY RESET: All stats, trades, and ML data wiped.")
+    logger.warning("FACTORY RESET: Historical stats, trades, and ML data wiped (Open trades kept).")
 
 async def get_confidence_calibration(ultra_score: float) -> dict:
     """Calculates historical win rate probability using Isotonic Regression (ML)."""
