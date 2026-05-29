@@ -296,5 +296,5 @@ async def get_market_context(symbol: str, price_change_pct: float = 0.0) -> dict
             "label": dom_label,
             "score": dom_score,
         },
-        "total_context_score": fg_score + fund_score + oi_score_val + dom_score,
+        "total_context_score": 0 if (funding.get("is_valid", True) is False and oi.get("is_valid", True) is False) else (fg_score + fund_score + oi_score_val + dom_score),
     }

@@ -46,7 +46,7 @@ from services.engine.risk_engine import RiskEngine
 from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
-from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration
+from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
@@ -71,6 +71,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ApexMain")
 _config = get_config()
+
+def check_mtf_gate(symbol: str, mtf_score: float, direction: str, regime: str) -> bool:
+    """
+    MTF Hard Gate: blocks trading against the trend.
+    """
+    if direction == "LONG":
+        if regime == "BULL" and mtf_score < 0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < 0 for LONG in BULL. Trend is against us.")
+            return False
+        if regime in ("SIDEWAYS", "BEAR", "CRISIS") and mtf_score < 2.0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < 2.0 for LONG in {regime}. Need strong confirmation.")
+            return False
+    if direction == "SHORT":
+        if regime == "BEAR" and mtf_score > 0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} > 0 for SHORT in BEAR. Trend is against us.")
+            return False
+        if regime in ("SIDEWAYS", "BULL", "CRISIS") and mtf_score > -2.0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} > -2.0 for SHORT in {regime}. Need strong confirmation.")
+            return False
+    return True
 
 class ApexSystem:
     def __init__(self):
@@ -427,7 +447,12 @@ class ApexSystem:
                     if not self.ml_classifier.is_trained:
                         self.ml_classifier.train_hmm(df_1h)
                     current_regime = self.ml_classifier.classify_current_regime(df_1h)
-                    global_state.regime = current_regime.value
+                    regime_val = current_regime.value
+                    global_state.regime = regime_val
+
+                    # ─── FILTER 1.1: CIRCUIT BREAKER ──────────────────────────────────────
+                    if not await can_open_new_position(regime_val):
+                        continue
 
                     # ─── FILTER 2: SESSION FILTER ────────────────────────────────────────────
                     utc_hour = datetime.utcnow().hour
@@ -514,16 +539,12 @@ class ApexSystem:
                     else:
                         trade_strategy = "TREND"
                         
-                    # ─── MTF ALIGNMENT ────────────────────────────────────────────────────────
+                    # ─── MTF ALIGNMENT (HARD GATE) ────────────────────────────────────────────
                     weights = self.weights_optimizer.get_current_weights()
                     mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
 
-                    # For MEAN REVERSION and CAPITULATION, we skip MTF requirement (it will show downtrend)
-                    if trade_strategy == "TREND":
-                        expected_mtf = "STRONG_LONG" if trade_direction == "LONG" else "STRONG_SHORT"
-                        if mtf_score.signal not in (expected_mtf, "NO_SIGNAL") and abs(mtf_score.score) < 4.0:
-                            logger.debug(f"{symbol} - MTF: {mtf_score.signal} (score={mtf_score.score:.2f}). Insufficient for {trade_direction}. Skipping.")
-                            continue
+                    if not check_mtf_gate(symbol, mtf_score.score, trade_direction, regime_val):
+                        continue
 
                     # ─── SMC + INDICATORS ─────────────────────────────────────────────────────
                     smc_analysis = self.smc_core.analyze(df_1h, symbol=symbol, lookback=10)
@@ -581,11 +602,24 @@ class ApexSystem:
                     # Mean Reversion gets a bonus for deep oversold
                     mr_bonus = 0.5 if trade_strategy == "MEAN_REVERSION" and rsi_now < 30 else 0.0
 
-                    ultra_score = max(0, min(10.0, confluence.raw_score + ind_bonus + ctx_bonus + cvd_bonus + mr_bonus))
+                    # ─── MTF MULTIPLIER ────────────────────────────────────────────────────────
+                    mtf_val = mtf_score.score if trade_direction == "LONG" else -mtf_score.score
+                    if mtf_val >= 6.0:   mtf_mult = 1.15   # сильный тренд = бонус
+                    elif mtf_val >= 3.0: mtf_mult = 1.05   # умеренный тренд
+                    elif mtf_val >= 0.0: mtf_mult = 1.00   # нейтрально
+                    elif mtf_val >= -2.0: mtf_mult = 0.70  # слабо против = сильный штраф
+                    else:                 mtf_mult = 0.40  # явно против = почти блок
+
+                    base_score = confluence.raw_score + ind_bonus + ctx_bonus + cvd_bonus + mr_bonus
+                    ultra_score = max(0, min(10.0, base_score * mtf_mult))
                     
                     # ─── V7 ADAPTIVE SCORING (0-100) ───────────────────────────────────────────
                     v7_score = ultra_score * 10.0
                     
+                    # ─── MTF HARD CAP ──────────────────────────────────────────────────────────
+                    if mtf_val < 0:
+                        v7_score = min(v7_score, 50.0)  # Максимум 50/100 против тренда
+
                     # 1. Entry Candle Penalty
                     df_15m_check = tf_data.get('15m', pd.DataFrame())
                     if not df_15m_check.empty and len(df_15m_check) >= 3:

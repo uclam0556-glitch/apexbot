@@ -198,6 +198,32 @@ async def close_trade(
         
         await db.commit()
 
+async def can_open_new_position(regime: str) -> bool:
+    """
+    Circuit breaker for maximum open positions based on regime.
+    BULL: 7, SIDEWAYS: 4, BEAR: 2, CRISIS: 0
+    """
+    limits = {
+        "BULL": 7,
+        "SIDEWAYS": 4,
+        "BEAR": 2,
+        "CRISIS": 0
+    }
+    max_positions = limits.get(regime, 0)
+    if max_positions == 0:
+        logger.warning(f"Position limit reached for {regime}: 0 allowed. Blocking new signal.")
+        return False
+        
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM trades WHERE status IN ('OPEN', 'BREAKEVEN')") as cursor:
+            count = (await cursor.fetchone())[0]
+            
+    if count >= max_positions:
+        logger.warning(f"Position limit reached for {regime}: {count}/{max_positions}. Blocking new signal.")
+        return False
+    return True
+
+
 async def update_trade_sl(trade_id: int, new_sl: float, new_status: str = "OPEN", pnl_pct: float = None):
     """Updates stop loss for a trailing stop and optionally records PnL."""
     async with aiosqlite.connect(DB_PATH) as db:
