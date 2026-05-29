@@ -62,6 +62,22 @@ async def init_lite_db():
                 created_at TIMESTAMP
             )
         ''')
+        # V7 Institutional ML Features
+        new_columns = [
+            ("max_profit_pct", "REAL"),
+            ("max_drawdown_pct", "REAL"),
+            ("duration_minutes", "REAL"),
+            ("slippage", "REAL"),
+            ("spread_at_entry", "REAL"),
+            ("btc_trend_strength", "REAL"),
+            ("volume_spike_score", "REAL")
+        ]
+        for col_name, col_type in new_columns:
+            try:
+                await db.execute(f'ALTER TABLE feature_store ADD COLUMN {col_name} {col_type}')
+            except Exception:
+                pass
+                
         await db.commit()
     logger.info("Lite DB (SQLite) initialized with Feature Store.")
 
@@ -96,8 +112,10 @@ async def save_trade(
             await db.execute('''
                 INSERT INTO feature_store (
                     trade_id, symbol, regime, ultra_score, fvg_count, btc_rsi,
-                    funding_rate, oi_change, fg_index, mtf_score, cvd_score, outcome, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                    funding_rate, oi_change, fg_index, mtf_score, cvd_score, 
+                    slippage, spread_at_entry, btc_trend_strength, volume_spike_score,
+                    outcome, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
             ''', (
                 trade_id,
                 symbol,
@@ -110,6 +128,10 @@ async def save_trade(
                 features_dict.get('fg_index', 50.0),
                 features_dict.get('mtf_score', 0.0),
                 features_dict.get('cvd_score', 0.0),
+                features_dict.get('slippage', 0.0),
+                features_dict.get('spread_at_entry', 0.0),
+                features_dict.get('btc_trend_strength', 0.0),
+                features_dict.get('volume_spike_score', 0.0),
                 datetime.utcnow()
             ))
             
@@ -151,8 +173,15 @@ async def get_open_trades():
         async with db.execute('SELECT * FROM trades WHERE status IN ("OPEN", "BREAKEVEN")') as cursor:
             return await cursor.fetchall()
 
-async def close_trade(trade_id: int, status: str, pnl_pct: float):
-    """Marks a trade as WON or LOST and records PnL."""
+async def close_trade(
+    trade_id: int, 
+    status: str, 
+    pnl_pct: float,
+    max_profit_pct: float = None,
+    max_drawdown_pct: float = None,
+    duration_minutes: float = None
+):
+    """Marks a trade as WON or LOST and records PnL along with institutional metrics."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('''
             UPDATE trades 
@@ -160,12 +189,12 @@ async def close_trade(trade_id: int, status: str, pnl_pct: float):
             WHERE id = ?
         ''', (status, pnl_pct, datetime.utcnow(), trade_id))
         
-        # V6.2 Feature Store Update
+        # V6.2 Feature Store Update (Now with V7 Institutional metrics)
         await db.execute('''
             UPDATE feature_store
-            SET outcome = ?, pnl_pct = ?
+            SET outcome = ?, pnl_pct = ?, max_profit_pct = ?, max_drawdown_pct = ?, duration_minutes = ?
             WHERE trade_id = ?
-        ''', (status, pnl_pct, trade_id))
+        ''', (status, pnl_pct, max_profit_pct, max_drawdown_pct, duration_minutes, trade_id))
         
         await db.commit()
 

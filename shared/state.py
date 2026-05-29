@@ -12,6 +12,7 @@ class SystemState:
     total_symbols: int = 40
     is_paused: bool = False
     live_prices: dict = {}
+    trade_excursions: dict = {}
 
     def __init__(self):
         self.hot_coins = []

@@ -169,6 +169,29 @@ class ApexSystem:
                         if not current_price:
                             continue
                             
+                        # ─── MFE/MAE TRACKING ────────────────────────────────────────────────
+                        from shared.state import global_state
+                        trade_id = trade['id']
+                        if trade_id not in global_state.trade_excursions:
+                            global_state.trade_excursions[trade_id] = {
+                                "high": current_price,
+                                "low": current_price
+                            }
+                        
+                        excursions = global_state.trade_excursions[trade_id]
+                        if current_price > excursions["high"]:
+                            excursions["high"] = current_price
+                        if current_price < excursions["low"]:
+                            excursions["low"] = current_price
+
+                        entry = trade['entry_price']
+                        if trade['direction'] == 'LONG':
+                            max_profit_pct = (excursions["high"] - entry) / entry * 100
+                            max_drawdown_pct = (excursions["low"] - entry) / entry * 100
+                        else:
+                            max_profit_pct = (entry - excursions["low"]) / entry * 100
+                            max_drawdown_pct = (entry - excursions["high"]) / entry * 100
+                            
                         status = None
                         pnl_pct = 0.0
 
@@ -238,8 +261,31 @@ class ApexSystem:
                                 pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
                                 
                         if status in ['WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT']:
-                            await close_trade(trade['id'], status, pnl_pct)
-                            logger.info(f"Trade {symbol} {status} at {current_price} ({pnl_pct:+.2f}%)")
+                            duration_minutes = 0.0
+                            if 'opened_at' in trade and trade['opened_at']:
+                                try:
+                                    from datetime import datetime
+                                    dt_str = trade['opened_at'].replace(' ', 'T')
+                                    if '.' in dt_str: dt_str = dt_str.split('.')[0]
+                                    opened_dt = datetime.fromisoformat(dt_str)
+                                    duration_minutes = (datetime.utcnow() - opened_dt).total_seconds() / 60.0
+                                except Exception:
+                                    pass
+
+                            await close_trade(
+                                trade['id'], 
+                                status, 
+                                pnl_pct,
+                                max_profit_pct=max_profit_pct,
+                                max_drawdown_pct=max_drawdown_pct,
+                                duration_minutes=duration_minutes
+                            )
+                            # Cleanup memory
+                            from shared.state import global_state
+                            if trade['id'] in global_state.trade_excursions:
+                                del global_state.trade_excursions[trade['id']]
+                                
+                            logger.info(f"Trade {symbol} {status} at {current_price} ({pnl_pct:+.2f}%) | MFE: {max_profit_pct:+.2f}% | MAE: {max_drawdown_pct:+.2f}% | Dur: {duration_minutes:.1f}m")
                             if bot:
                                 try:
                                     await send_trade_result_notification(bot, int(chat_id_str), trade, status, pnl_pct)
