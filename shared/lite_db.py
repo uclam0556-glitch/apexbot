@@ -218,3 +218,10 @@ async def get_confidence_calibration(ultra_score: float) -> dict:
         "win_rate": win_rate
     }
 
+async def get_recent_features(limit: int = 20):
+    """Fetches recent ML feature store records."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('SELECT * FROM feature_store ORDER BY created_at DESC LIMIT ?', (limit,)) as cursor:
+            return await cursor.fetchall()
+

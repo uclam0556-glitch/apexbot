@@ -217,4 +217,13 @@ def create_app() -> FastAPI:
             return HTMLResponse(html_path.read_text(encoding="utf-8"))
         return HTMLResponse("<h1>Dashboard loading...</h1>")
 
+    @app.get("/api/feature-store")
+    async def api_feature_store(limit: int = 20):
+        from shared.lite_db import get_recent_features
+        try:
+            records = await get_recent_features(limit)
+            return [dict(r) for r in records]
+        except Exception as e:
+            return {"error": str(e)}
+
     return app
