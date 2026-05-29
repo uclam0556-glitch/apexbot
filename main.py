@@ -375,7 +375,7 @@ class ApexSystem:
                         logger.info(f"{symbol} - [BLOCKED] Volume Gate: Vol={avg_vol_3:.0f} < 50% of 24h baseline {baseline_hourly_vol:.0f}. Skipping.")
                         continue
 
-                    # ─── CVD ANALYSIS (shared for all directions) ─────────────────────────────
+                    # ─── CVD ANALYSIS ─────────────────────────────────────────────────────────
                     cvd_result = {"score": 0, "divergence": False, "cvd_signal": "NEUTRAL"}
                     df_5m_cvd = tf_data.get('5m', pd.DataFrame())
                     if not df_5m_cvd.empty:
@@ -384,94 +384,63 @@ class ApexSystem:
                     cvd_signal = cvd_result.get("cvd_signal", "NEUTRAL")
                     cvd_score_val = cvd_result.get("score", 0)
 
-                    # ─── DETERMINE TRADE DIRECTION & STRATEGY ─────────────────────────────────
-                    # Three possible strategies:
-                    # 1. LONG  — BULL regime OR SIDEWAYS with MTF STRONG_LONG
-                    # 2. SHORT — BEAR regime with bearish momentum
-                    # 3. MEAN_REVERSION_LONG — SIDEWAYS with RSI < 35 oversold bounce
+                    # ─── SPOT ONLY: определяем стратегию (только LONG) ────────────────────────
+                    # BEAR режим → пропускаем, ждем разворота (спот, не шортим)
+                    # SIDEWAYS + RSI<35 → Mean Reversion (отскок от поддержки)
+                    # BULL / SIDEWAYS   → Trend LONG (следование тренду)
 
-                    trade_direction = None    # "LONG" or "SHORT"
-                    trade_strategy  = None    # "TREND" or "MEAN_REVERSION"
+                    trade_direction = "LONG"
+                    trade_strategy  = None
+                    regime_val      = current_regime.value
 
-                    regime_val = current_regime.value
-
-                    # ── Strategy A: SHORT in BEAR ───────────────────────────────────────────
                     if regime_val == "BEAR":
-                        # RSI > 60 = still pumping into downtrend = perfect short entry
-                        rsi_ok_short    = rsi_now > 55  # overextended bounce in downtrend
-                        cvd_ok_short    = cvd_signal in ("BEARISH", "NEUTRAL") and cvd_score_val <= 0
-                        no_squeeze      = not (market_ctx["funding"]["rate_pct"] > 0.05 and market_ctx["open_interest"]["change_pct"] > 2.0)
+                        logger.info(f"{symbol} - [BLOCKED] BEAR режим: спот не торгуем, ждем разворота.")
+                        continue
 
-                        if rsi_ok_short and cvd_ok_short and no_squeeze:
-                            trade_direction = "SHORT"
-                            trade_strategy  = "TREND"
-                            logger.info(f"{symbol} - [SHORT CANDIDATE] BEAR regime | RSI={rsi_now:.1f} | CVD={cvd_signal}")
-                        else:
-                            logger.info(f"{symbol} - [BLOCKED] BEAR regime but SHORT conditions not met (RSI={rsi_now:.1f}, CVD={cvd_signal}, squeeze={not no_squeeze}). Skipping.")
-                            continue
-
-                    # ── Strategy B: MEAN REVERSION LONG in SIDEWAYS ────────────────────────
                     elif regime_val == "SIDEWAYS" and rsi_now < 35:
-                        cvd_reversing = cvd_score_val >= -1  # CVD not strongly bearish
+                        cvd_reversing = cvd_score_val >= -1
                         if cvd_reversing:
-                            trade_direction = "LONG"
-                            trade_strategy  = "MEAN_REVERSION"
+                            trade_strategy = "MEAN_REVERSION"
                             logger.info(f"{symbol} - [MEAN REVERSION LONG] SIDEWAYS + RSI={rsi_now:.1f} (oversold) | CVD={cvd_signal}")
                         else:
                             logger.info(f"{symbol} - [BLOCKED] Mean reversion blocked: CVD still strongly bearish ({cvd_score_val}). Skipping.")
                             continue
 
-                    # ── Strategy C: TREND LONG in BULL / SIDEWAYS ──────────────────────────
                     else:
-                        # RSI gate: BULL up to 80, SIDEWAYS up to 73
                         rsi_max = 80 if regime_val == "BULL" else 73
                         if rsi_now > rsi_max:
                             logger.info(f"{symbol} - [BLOCKED] Adaptive RSI Gate: RSI={rsi_now:.1f} > {rsi_max} (overheated for {regime_val}). Skipping.")
                             continue
-
-                        # Block if CVD is strongly bearish
                         if cvd_result.get("divergence"):
                             logger.info(f"{symbol} - [BLOCKED] CVD Divergence: Price rising but net selling detected. Skipping.")
                             continue
                         if cvd_signal == "BEARISH" and cvd_score_val <= -2:
                             logger.info(f"{symbol} - [BLOCKED] CVD Bearish: Strong net selling pressure. Skipping.")
                             continue
-
-                        trade_direction = "LONG"
-                        trade_strategy  = "TREND"
+                        trade_strategy = "TREND"
 
                     # ─── FILTER 4: REGIME-AWARE ENTRY CANDLE CONFIRMATION (15m) ──────────────
-                    # BULL / TREND LONG   → 1 green candle required
-                    # SIDEWAYS TREND LONG → 2 of last 3 candles must be green
-                    # SHORT               → 1 red candle required
-                    # MEAN REVERSION LONG → 1 green candle (catching the bounce, be flexible)
+                    # BULL (тренд)        → 1 зеленая свеча
+                    # SIDEWAYS (тренд)    → 2 из 3 последних зеленые
+                    # MEAN REVERSION LONG → хотя бы 1 зеленая из 3
                     df_15m_check = tf_data.get('15m', pd.DataFrame())
                     if not df_15m_check.empty and len(df_15m_check) >= 3:
                         last3 = df_15m_check.iloc[-4:-1]  # last 3 CLOSED candles
                         last1 = df_15m_check.iloc[-2]      # last CLOSED candle
 
-                        if trade_direction == "SHORT":
-                            # Need last candle to be red (bearish)
-                            if last1['close'] >= last1['open']:
-                                logger.info(f"{symbol} - [BLOCKED] Entry Candle (SHORT): Last 15m candle is bullish. Waiting for red candle.")
-                                continue
-
-                        elif trade_strategy == "MEAN_REVERSION":
-                            # At least 1 green candle in last 3 (flexible — catching bounce)
+                        if trade_strategy == "MEAN_REVERSION":
                             green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
                             if green_count == 0:
                                 logger.info(f"{symbol} - [BLOCKED] Entry Candle (MR): No green candle in last 3. Waiting for reversal.")
                                 continue
 
                         elif regime_val == "SIDEWAYS":
-                            # 2 of last 3 must be green
                             green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
                             if green_count < 2:
                                 logger.info(f"{symbol} - [BLOCKED] Entry Candle (SIDEWAYS): Only {green_count}/3 green. Need 2. Skipping.")
                                 continue
 
                         else:
-                            # BULL trend: standard 1 green candle
                             if last1['close'] < last1['open']:
                                 logger.info(f"{symbol} - [BLOCKED] Entry Candle: Last 15m candle is bearish. Waiting for confirmation.")
                                 continue
