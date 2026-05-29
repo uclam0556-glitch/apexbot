@@ -320,6 +320,10 @@ class ApexSystem:
                     logger.info(f"{symbol} | Price=${current_price:,.4f} | RSI={rsi_now:.1f} | Vol={vol_ratio:.2f}x | TFs loaded={list(tf_data.keys())}")
 
                     # ─── FILTER 1: ADAPTIVE RSI HARD GATE ────────────────────────────────────
+                    if not self.ml_classifier.is_trained:
+                        self.ml_classifier.train_hmm(df_1h)
+                    current_regime = self.ml_classifier.classify_current_regime(df_1h)
+                    
                     # In BULL regime, allow up to RSI 80 (trend following). Else cap at 73.
                     rsi_max = 80 if current_regime.value == "BULL" else 73
                     if rsi_now > rsi_max:
@@ -361,15 +365,10 @@ class ApexSystem:
                             logger.info(f"{symbol} - [BLOCKED] CVD Bearish: Strong net selling pressure. Skipping.")
                             continue
                     
-                    # v5.0: Dynamically classify regime
-                    if not self.ml_classifier.is_trained:
-                        self.ml_classifier.train_hmm(df_1h)
-                        
-                    current_regime = self.ml_classifier.classify_current_regime(df_1h)
                     global_state.regime = current_regime.value
                     
                     # Get dynamically optimized weights
-                    weights = self.weights_optimizer.get_current_weights()
+                    weights = self.weights_optimizer.get_weights(current_regime)
                     
                     # 2. MTF Alignment — pass ALL loaded timeframes
                     mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
