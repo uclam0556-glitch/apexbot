@@ -1,3 +1,4 @@
+import asyncio
 import aiohttp
 import structlog
 from datetime import datetime
