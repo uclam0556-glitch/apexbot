@@ -25,8 +25,10 @@ def format_price(price: float) -> str:
         return f"{price:.4f}"
     elif price >= 0.001:
         return f"{price:.6f}"
-    else:
+    elif price >= 0.00001:
         return f"{price:.8f}"
+    else:
+        return f"{price:.10f}"
 
 logger = logging.getLogger(__name__)
 _config = get_config()

@@ -14,7 +14,8 @@ def format_price(price: float) -> str:
     if price >= 1000: return f"{price:,.2f}"
     if price >= 1: return f"{price:.4f}"
     if price >= 0.001: return f"{price:.6f}"
-    return f"{price:.8f}"
+    if price >= 0.00001: return f"{price:.8f}"
+    return f"{price:.10f}"
 
 # Configure structlogging
 import asyncio
