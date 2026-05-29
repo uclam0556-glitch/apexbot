@@ -14,7 +14,7 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-DB_PATH = "apex_lite.db"
+DB_PATH = os.getenv("SQLITE_DB_PATH", "apex_lite.db")
 
 
 def create_app() -> FastAPI:
@@ -36,9 +36,9 @@ def create_app() -> FastAPI:
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
-                async with db.execute("SELECT * FROM trades WHERE status != 'OPEN' AND status != 'CANCELLED'") as cur:
+                async with db.execute("SELECT * FROM trades WHERE status IN ('WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT')") as cur:
                     rows = await cur.fetchall()
-                async with db.execute("SELECT COUNT(*) FROM trades WHERE status = 'OPEN'") as cur:
+                async with db.execute("SELECT COUNT(*) FROM trades WHERE status IN ('OPEN', 'BREAKEVEN')") as cur:
                     open_count = (await cur.fetchone())[0]
 
             rows = [dict(r) for r in rows]
@@ -48,8 +48,8 @@ def create_app() -> FastAPI:
                         "win_rate": 0, "pnl_sum": 0.0, "best_trade": 0.0,
                         "worst_trade": 0.0, "avg_win": 0.0, "avg_loss": 0.0}
 
-            won = [r for r in rows if r['status'] == 'WON']
-            lost = [r for r in rows if r['status'] == 'LOST']
+            won = [r for r in rows if r['status'] in ('WON', 'WON_BREAKEVEN') or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and r['pnl_pct'] > 0)]
+            lost = [r for r in rows if r['status'] == 'LOST' or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and r['pnl_pct'] <= 0)]
             pnl_vals = [r['pnl_pct'] for r in rows if r['pnl_pct'] is not None]
 
             return {
@@ -76,7 +76,7 @@ def create_app() -> FastAPI:
             async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
                 async with db.execute(
-                    "SELECT closed_at, pnl_pct FROM trades WHERE status IN ('WON','LOST') AND pnl_pct IS NOT NULL ORDER BY closed_at ASC"
+                    "SELECT closed_at, pnl_pct FROM trades WHERE status IN ('WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT') AND pnl_pct IS NOT NULL ORDER BY closed_at ASC"
                 ) as cur:
                     rows = await cur.fetchall()
 
@@ -119,7 +119,7 @@ def create_app() -> FastAPI:
             async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
                 async with db.execute(
-                    "SELECT * FROM trades WHERE status = 'OPEN' ORDER BY opened_at DESC"
+                    "SELECT * FROM trades WHERE status IN ('OPEN', 'BREAKEVEN') ORDER BY opened_at DESC"
                 ) as cur:
                     rows = await cur.fetchall()
             return [dict(r) for r in rows]

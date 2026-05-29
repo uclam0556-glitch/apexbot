@@ -475,7 +475,7 @@ def build_signal_card(signal_data: dict) -> str:
     if conf_size >= 10:
         conf_str = f"{conf_win:.1f}% (по {conf_size} сдел.)"
     else:
-        conf_str = f"UNVERIFIED (<10 сдел.)"
+        conf_str = f"UNVERIFIED (менее 10 сдел.)"
         
     squeeze_alert = "🚨 <b>SHORT SQUEEZE DETECTED</b>\n<i>Лимиты сняты, ловим ракету 🚀</i>\n━━━━━━━━━━━━━━━━━━━━━━━━\n" if s.get("is_squeeze") else ""
 

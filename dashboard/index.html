@@ -848,10 +848,13 @@ async function loadHistory() {
 
     for (const t of trades) {
       let statusHtml = '';
-      if (t.status === 'OPEN')      statusHtml = '<span class="status-badge badge-open">⏳ OPEN</span>';
-      else if (t.status === 'WON')  statusHtml = '<span class="status-badge badge-won">✅ WIN</span>';
-      else if (t.status === 'LOST') statusHtml = '<span class="status-badge badge-lost">❌ LOSS</span>';
-      else                          statusHtml = '<span class="status-badge badge-cancelled">— CANCEL</span>';
+      if (t.status === 'OPEN')           statusHtml = '<span class="status-badge badge-open">⏳ OPEN</span>';
+      else if (t.status === 'BREAKEVEN') statusHtml = '<span class="status-badge badge-open" style="color:var(--gold);">🛡 B/E</span>';
+      else if (t.status === 'WON')       statusHtml = '<span class="status-badge badge-won">✅ WIN</span>';
+      else if (t.status === 'LOST')      statusHtml = '<span class="status-badge badge-lost">❌ LOSS</span>';
+      else if (t.status === 'WON_BREAKEVEN') statusHtml = '<span class="status-badge badge-won" style="background:rgba(255,215,0,0.1);color:var(--gold);">🛡 B/E WIN</span>';
+      else if (t.status === 'TIMEOUT')   statusHtml = '<span class="status-badge badge-cancelled">⏱ TIMEOUT</span>';
+      else                               statusHtml = '<span class="status-badge badge-cancelled">— CANCEL</span>';
 
       html += `<tr>
         <td><span class="symbol-cell">${t.symbol}</span></td>

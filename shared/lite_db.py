@@ -117,7 +117,7 @@ async def save_trade(
 async def get_stats():
     """Calculates win rate and PnL from SQLite."""
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute('SELECT status, pnl_pct FROM trades WHERE status != "OPEN"') as cursor:
+        async with db.execute('SELECT status, pnl_pct FROM trades WHERE status IN ("WON", "LOST", "WON_BREAKEVEN", "TIMEOUT")') as cursor:
             rows = await cursor.fetchall()
             
     total = len(rows)
@@ -144,10 +144,10 @@ async def get_recent_trades(limit: int = 5):
             return await cursor.fetchall()
 
 async def get_open_trades():
-    """Fetches all currently OPEN trades."""
+    """Fetches all currently OPEN or BREAKEVEN trades."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute('SELECT * FROM trades WHERE status = "OPEN"') as cursor:
+        async with db.execute('SELECT * FROM trades WHERE status IN ("OPEN", "BREAKEVEN")') as cursor:
             return await cursor.fetchall()
 
 async def close_trade(trade_id: int, status: str, pnl_pct: float):
