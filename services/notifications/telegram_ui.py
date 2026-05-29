@@ -13,7 +13,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command
 
 from shared.config import get_config
-from shared.lite_db import get_stats, get_recent_trades, get_open_trades, reset_open_trades
+from shared.lite_db import get_stats, get_recent_trades, get_open_trades, reset_open_trades, factory_reset_db
 from shared.state import global_state
 
 def format_price(price: float) -> str:
@@ -66,6 +66,9 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
             InlineKeyboardButton(text="🔄 Сброс ордеров", callback_data="reset_orders"),
+        ],
+        [
+            InlineKeyboardButton(text="⚠️ Полный сброс (Wipe)", callback_data="factory_reset")
         ]
     ])
 
@@ -458,7 +461,48 @@ async def process_confirm_reset(callback: CallbackQuery):
         pass
     await callback.answer("Готово! Ордера сброшены ✅")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FACTORY RESET (WIPE DATA)
+# ─────────────────────────────────────────────────────────────────────────────
 
+@router.callback_query(F.data == "factory_reset")
+async def process_factory_reset(callback: CallbackQuery):
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⚠️ ДА, СТЕРЕТЬ ВСЕ ДАННЫЕ", callback_data="confirm_factory_reset"),
+        ],
+        [
+            InlineKeyboardButton(text="❌ Отмена", callback_data="home"),
+        ]
+    ])
+    try:
+        await callback.message.edit_text(
+            "⚠️ <b>ВНИМАНИЕ: ПОЛНЫЙ СБРОС (WIPE)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Это действие удалит <b>ВСЕ</b> исторические сделки, открытые ордера и обнулит ML Feature Store.\n"
+            "Статистика дашборда начнется с нуля (0%).\n\n"
+            "<b>Ты уверен, что хочешь полностью стереть базу данных?</b>",
+            reply_markup=confirm_kb,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+@router.callback_query(F.data == "confirm_factory_reset")
+async def process_confirm_factory_reset(callback: CallbackQuery):
+    await factory_reset_db()
+    try:
+        await callback.message.edit_text(
+            "✅ <b>База данных полностью очищена! (Factory Reset)</b>\n\n"
+            "Вся история, открытые ордера и ML-данные удалены.\n"
+            "Статистика дашборда обнулена. Бот начинает жизнь с чистого листа. 🚀",
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await callback.answer("Wipe Complete! ✅")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIGNAL CARD — called from main.py when signal is found
