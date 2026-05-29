@@ -85,8 +85,8 @@ CORRELATION_THRESHOLD: float = 0.85
 # Round-number proximity warning (±0.1%)
 ROUND_NUMBER_PROXIMITY_PCT: float = 0.1
 
-# TP allocation: 40% at TP1, 35% at TP2, 25% at TP3
-DEFAULT_TP_ALLOCATION: list[float] = [0.40, 0.35, 0.25]
+# TP allocation: 75% at TP1 (Aggressive Scalp), 15% at TP2, 10% at TP3 (Runner)
+DEFAULT_TP_ALLOCATION: list[float] = [0.75, 0.15, 0.10]
 
 # SL structural buffer (% beyond swing point)
 SL_BUFFER_PCT: float = 0.003   # 0.3%
