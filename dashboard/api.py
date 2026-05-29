@@ -142,7 +142,22 @@ def create_app() -> FastAPI:
     @app.get("/api/live-prices")
     async def get_live_prices():
         from shared.state import global_state
-        return getattr(global_state, 'live_prices', {})
+        from services.intelligence.rs_matrix import rs_matrix_engine
+        
+        ws_prices = getattr(global_state, 'live_prices', {})
+        result = {}
+        
+        # Combine WS prices with RS Matrix (Binance 24h data)
+        for item in rs_matrix_engine.matrix:
+            sym = item['symbol']
+            # If WS has a more recent price, use it, but keep the official Binance 24h change
+            ws_data = ws_prices.get(sym, {})
+            result[sym] = {
+                "price": ws_data.get('price') or item.get('price', 0.0),
+                "change": item.get('change_24h', 0.0)
+            }
+            
+        return result
 
     @app.get("/api/system-status")
     async def get_system_status():

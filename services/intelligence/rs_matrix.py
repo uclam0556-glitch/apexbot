@@ -30,16 +30,22 @@ class RSMatrix:
                     data = await resp.json()
                     
             # Create a lookup dictionary
-            ticker_map = {item["symbol"]: float(item["priceChangePercent"]) for item in data}
+            ticker_map = {item["symbol"]: {
+                "change": float(item["priceChangePercent"]),
+                "price": float(item["lastPrice"])
+            } for item in data}
             
             # Get BTC change
-            self.btc_change = ticker_map.get("BTCUSDT", 0.0)
+            btc_data = ticker_map.get("BTCUSDT", {"change": 0.0})
+            self.btc_change = btc_data["change"]
             
             # Filter and calculate RS
             scored_symbols = []
             for symbol in symbol_list:
                 binance_symbol = symbol.replace("/", "")
-                change_24h = ticker_map.get(binance_symbol, 0.0)
+                data_point = ticker_map.get(binance_symbol, {"change": 0.0, "price": 0.0})
+                change_24h = data_point["change"]
+                price = data_point["price"]
                 
                 # Relative Strength: How much it outperformed BTC
                 rs_score = change_24h - self.btc_change
@@ -47,6 +53,7 @@ class RSMatrix:
                 scored_symbols.append({
                     "symbol": symbol,
                     "change_24h": change_24h,
+                    "price": price,
                     "rs_score": rs_score
                 })
                 
