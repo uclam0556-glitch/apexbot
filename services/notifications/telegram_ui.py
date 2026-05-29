@@ -256,15 +256,18 @@ async def process_history(callback: CallbackQuery):
         for t in trades:
             dir_emoji = "🟢 L" if t['direction'] == "LONG" else "🔴 S"
             
-            if t['status'] == "OPEN":
-                status_emoji = "⏳"
+            if t['status'] in ("OPEN", "BREAKEVEN"):
+                status_emoji = "⏳" if t['status'] == "OPEN" else "🛡"
                 pnl_str = "В процессе..."
-            elif t['status'] == "WON":
-                status_emoji = "✅"
-                pnl_str = f"+{t['pnl_pct']:.2f}%"
+            elif t['status'] in ("WON", "WON_BREAKEVEN"):
+                status_emoji = "✅" if t['status'] == "WON" else "🛡"
+                pnl_str = f"+{t['pnl_pct']:.2f}%" if t['pnl_pct'] else "+0.00%"
+            elif t['status'] == "TIMEOUT":
+                status_emoji = "⏱"
+                pnl_str = f"{t['pnl_pct']:.2f}%" if t['pnl_pct'] else "0.00%"
             else:
                 status_emoji = "❌"
-                pnl_str = f"{t['pnl_pct']:.2f}%"
+                pnl_str = f"{t['pnl_pct']:.2f}%" if t['pnl_pct'] else "0.00%"
                 
             open_dt = datetime.strptime(t['opened_at'], '%Y-%m-%d %H:%M:%S.%f') if '.' in t['opened_at'] else datetime.strptime(t['opened_at'], '%Y-%m-%d %H:%M:%S')
             date_str = open_dt.strftime("%d.%m %H:%M")
@@ -559,8 +562,16 @@ async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dic
     """Sends a notification when a trade hits TP or SL."""
     if status == "WON":
         header = "✅ <b>ТЕЙК-ПРОФИТ ДОСТИГНУТ</b>"
-        pnl_text = f"+{pnl_pct:.2f}%"
+        pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
         color_emoji = "🟢"
+    elif status == "WON_BREAKEVEN":
+        header = "🛡 <b>ЗАКРЫТО ПО БЕЗУБЫТКУ</b>"
+        pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
+        color_emoji = "🟡"
+    elif status == "TIMEOUT":
+        header = "⏱ <b>ЗАКРЫТО ПО ТАЙМ-АУТУ (>6ч)</b>"
+        pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
+        color_emoji = "⚪"
     else:
         header = "❌ <b>СДЕЛКА ЗАКРЫТА ПО СТОПУ</b>"
         pnl_text = f"{pnl_pct:.2f}%"
@@ -574,7 +585,7 @@ async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dic
         f"💸 <b>Итоговый PnL:</b>  <b>{pnl_text}</b> {color_emoji}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Вход:</b>  ${format_price(trade_data.get('entry_price', 0))}\n"
-        f"🏁 <b>Выход:</b> ${format_price(trade_data.get('take_profit_1', 0) if status == 'WON' else trade_data.get('stop_loss', 0))}\n\n"
+        f"🏁 <b>Выход:</b> ${format_price(trade_data.get('take_profit_3', 0) if status == 'WON' else trade_data.get('stop_loss', 0))}\n\n"
         f"🕒 <i>Открыта: {trade_data.get('opened_at', '—')} UTC</i>\n"
         f"🏁 <i>Закрыта: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC</i>"
     )

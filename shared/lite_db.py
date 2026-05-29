@@ -17,8 +17,9 @@ import os
 DB_PATH = os.getenv("SQLITE_DB_PATH", "apex_lite.db")
 
 async def init_lite_db():
-    """Initializes the SQLite tables."""
+    """Initializes the SQLite tables and enables WAL mode."""
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('PRAGMA journal_mode=WAL;')
         await db.execute('''
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,8 +125,8 @@ async def get_stats():
     if total == 0:
         return {"total": 0, "win_rate": 0, "pnl_sum": 0, "won": 0, "lost": 0}
         
-    won = sum(1 for r in rows if r[0] == 'WON')
-    lost = sum(1 for r in rows if r[0] == 'LOST')
+    won = sum(1 for r in rows if r[0] in ('WON', 'WON_BREAKEVEN') or (r[0] == 'TIMEOUT' and r[1] and r[1] > 0))
+    lost = sum(1 for r in rows if r[0] == 'LOST' or (r[0] == 'TIMEOUT' and r[1] and r[1] <= 0))
     pnl_sum = sum(r[1] for r in rows if r[1] is not None)
     
     return {

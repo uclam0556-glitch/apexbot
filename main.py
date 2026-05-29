@@ -796,7 +796,7 @@ class ApexSystem:
                             await send_signal(bot, int(chat_id_str), signal_data)
                             await bot.session.close()
                             global_state.signals_sent_today += 1
-                            logger.info(f"{dir_emoji} SIGNAL SENT: {symbol} {trade_direction} [{strat_label}] | Score={ultra_score:.1f}/10 | Entry=${format_price(current_price)}")
+                            logger.info(f"{dir_emoji} 🚀 SIGNAL SENT: {symbol} {trade_direction} [{strat_label}] | Score={ultra_score:.1f}/100 | Entry=${format_price(current_price)}")
                     except Exception as send_err:
                         logger.error(f"Failed to send signal: {send_err}")
 
