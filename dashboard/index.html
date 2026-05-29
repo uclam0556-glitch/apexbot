@@ -384,35 +384,39 @@
     padding: 8px 0;
   }
 
-  /* ── TICKER TAPE ── */
-  .ticker-wrap {
-    overflow: hidden;
-    background: rgba(0,212,255,0.04);
-    border-top: 1px solid var(--border);
-    border-bottom: 1px solid var(--border);
-    padding: 8px 0;
-    margin-bottom: 24px;
-    white-space: nowrap;
+  /* ── LIVE MARKET GRID ── */
+  .market-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 10px;
+    max-height: 200px;
+    overflow-y: auto;
+    padding-right: 6px;
   }
-
-  .ticker-inner {
-    display: inline-flex;
-    gap: 48px;
-    animation: ticker 30s linear infinite;
-    font-size: 12px;
-    font-family: 'JetBrains Mono', monospace;
-    font-weight: 500;
+  .market-card {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: all 0.2s;
   }
-
-  @keyframes ticker {
-    0%  { transform: translateX(0); }
-    100% { transform: translateX(-50%); }
+  .market-card:hover {
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.15);
   }
-
-  .ticker-item { display: flex; align-items: center; gap: 8px; }
-  .ticker-item .t-sym { color: var(--cyan); font-weight: 700; }
-  .ticker-item .t-chg.up { color: var(--green); }
-  .ticker-item .t-chg.dn { color: var(--red); }
+  .market-card .mc-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .market-card .mc-sym { font-weight: 700; color: var(--text); font-size: 12px; }
+  .market-card .mc-chg { font-size: 11px; font-weight: 600; }
+  .market-card .mc-chg.up { color: var(--green); }
+  .market-card .mc-chg.dn { color: var(--red); }
+  .market-card .mc-price { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--cyan); }
 
   /* ── SCROLLBAR ── */
   ::-webkit-scrollbar { width: 6px; }
@@ -477,15 +481,21 @@
   </div>
 </header>
 
-<!-- TICKER TAPE -->
-<div class="ticker-wrap">
-  <div class="ticker-inner" id="ticker-tape">
-    <div class="ticker-item"><span class="t-sym">Ожидание...</span></div>
-  </div>
-</div>
-
 <!-- MAIN -->
 <main>
+
+  <!-- LIVE MARKET -->
+  <div class="panel" style="margin-bottom: 24px;">
+    <div class="panel-header">
+      <div class="panel-title"><span class="icon">🌍</span> Live Market (40 монет)</div>
+      <div style="font-size:11px;color:var(--text3)">Реалтайм Binance + WebSocket</div>
+    </div>
+    <div class="panel-body" style="padding: 12px 16px;">
+      <div id="ticker-tape" class="market-grid">
+        <div class="empty-state">Ожидание...</div>
+      </div>
+    </div>
+  </div>
 
   <!-- KPI CARDS -->
   <div class="kpi-grid">
@@ -1009,15 +1019,16 @@ async function loadLivePrices() {
       const cls = isUp ? 'up' : 'dn';
       const sign = isUp ? '+' : '';
       const priceStr = fmt(info.price);
-      html += `<div class="ticker-item">
-        <span class="t-sym">${sym.replace('/USDT','')}</span>
-        <span>${priceStr}</span>
-        <span class="t-chg ${cls}">(${sign}${info.change.toFixed(2)}%)</span>
+      html += `<div class="market-card">
+        <div class="mc-head">
+          <span class="mc-sym">${sym.replace('/USDT','')}</span>
+          <span class="mc-chg ${cls}">${sign}${info.change.toFixed(2)}%</span>
+        </div>
+        <div class="mc-price">${priceStr}</div>
       </div>`;
     }
     
-    // Duplicate for smooth infinite scroll
-    el.innerHTML = html + html;
+    el.innerHTML = html;
   } catch(e) { console.error('Live prices error', e); }
 }
 
