@@ -290,7 +290,7 @@ class ApexSystem:
                                 status = 'LOST' if trade['status'] == 'OPEN' else 'WON_BREAKEVEN'
                                 pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
                                 
-                        if status in ['WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT']:
+                        if status in ['WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'TIMEOUT_BREAKEVEN']:
                             duration_minutes = 0.0
                             if 'opened_at' in trade and trade['opened_at']:
                                 try:
