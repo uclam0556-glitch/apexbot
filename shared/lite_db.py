@@ -253,32 +253,65 @@ async def reset_open_trades():
     logger.info("All open trades have been reset (CANCELLED).")
 
 async def get_confidence_calibration(ultra_score: float) -> dict:
-    """Calculates historical win rate for the score's bucket."""
-    # Buckets: 5.0-5.9, 6.0-6.9, 7.0-7.9, 8.0-8.9, 9.0+
-    bucket_min = float(int(ultra_score))
-    bucket_max = bucket_min + 0.99
-    
+    """Calculates historical win rate probability using Isotonic Regression (ML)."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
+        # Fetch all closed trades from feature store
         async with db.execute('''
-            SELECT 
-                COUNT(*) as sample_size,
-                SUM(CASE WHEN outcome = 'WON' THEN 1 ELSE 0 END) as won_count
+            SELECT ultra_score, outcome
             FROM feature_store
-            WHERE ultra_score >= ? AND ultra_score <= ? AND outcome != 'OPEN'
-        ''', (bucket_min, bucket_max)) as cursor:
-            row = await cursor.fetchone()
-            
-    sample_size = row['sample_size'] if row and row['sample_size'] else 0
-    won_count = row['won_count'] if row and row['won_count'] else 0
+            WHERE outcome IN ('WON', 'WON_BREAKEVEN', 'LOST')
+        ''') as cursor:
+            rows = await cursor.fetchall()
+
+    sample_size = len(rows)
     
-    win_rate = (won_count / sample_size * 100) if sample_size > 0 else 0.0
-    
-    return {
-        "bucket": f"{bucket_min:.1f}-{bucket_max:.1f}",
-        "sample_size": sample_size,
-        "win_rate": win_rate
-    }
+    # Fallback to simple bucket if not enough data for ML
+    if sample_size < 30:
+        bucket_min = float(int(ultra_score))
+        bucket_max = bucket_min + 0.99
+        won_count = sum(1 for r in rows if r['outcome'] in ('WON', 'WON_BREAKEVEN') and bucket_min <= r['ultra_score'] <= bucket_max)
+        bucket_size = sum(1 for r in rows if bucket_min <= r['ultra_score'] <= bucket_max)
+        win_rate = (won_count / bucket_size * 100) if bucket_size > 0 else 0.0
+        return {
+            "bucket": f"{bucket_min:.1f}-{bucket_max:.1f}",
+            "sample_size": sample_size,
+            "win_rate": win_rate,
+            "ml_calibrated": False
+        }
+
+    try:
+        import numpy as np
+        from sklearn.isotonic import IsotonicRegression
+        
+        # Prepare training data
+        X = np.array([r['ultra_score'] for r in rows])
+        # WON and WON_BREAKEVEN are considered positive outcomes (1), LOST is 0
+        y = np.array([1 if r['outcome'] in ('WON', 'WON_BREAKEVEN') else 0 for r in rows])
+        
+        # Train Isotonic Regression model (out-of-core bounds [0, 1])
+        iso_reg = IsotonicRegression(y_min=0, y_max=1, out_of_bounds='clip')
+        iso_reg.fit(X, y)
+        
+        # Predict probability for the current score
+        predicted_prob = iso_reg.predict([ultra_score])[0]
+        win_rate = predicted_prob * 100.0
+        
+        return {
+            "bucket": "ML_Isotonic",
+            "sample_size": sample_size,
+            "win_rate": win_rate,
+            "ml_calibrated": True
+        }
+    except Exception as e:
+        logger.error(f"ML Calibration failed: {e}")
+        # Ultimate fallback
+        return {
+            "bucket": "Fallback",
+            "sample_size": sample_size,
+            "win_rate": 50.0,
+            "ml_calibrated": False
+        }
 
 async def get_recent_features(limit: int = 20):
     """Fetches recent ML feature store records."""

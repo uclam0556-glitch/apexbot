@@ -215,25 +215,35 @@ class ApexSystem:
                         status = None
                         pnl_pct = 0.0
 
-                        # ─── TIME-BASED EXIT (6 hours) ──────────────────────────
+                        # ─── V7 SMART TIME-BASED EXIT ──────────────────────────
                         if 'opened_at' in trade and trade['opened_at']:
                             try:
                                 from datetime import datetime
-                                # SQLite timestamp may have space or T, parse accordingly
                                 dt_str = trade['opened_at'].replace(' ', 'T')
                                 if '.' in dt_str: dt_str = dt_str.split('.')[0]
                                 opened_dt = datetime.fromisoformat(dt_str)
-                                hours_open = (datetime.utcnow() - opened_dt).total_seconds() / 3600
+                                minutes_open = (datetime.utcnow() - opened_dt).total_seconds() / 60
                                 trade_strat = trade.get('strategy', 'TREND')
                                 
-                                if trade_strat in ['CAPITULATION', 'MEAN_REVERSION'] and hours_open > 6.0:
+                                if trade['direction'] == 'LONG':
+                                    curr_pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                                else:
+                                    curr_pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
+                                
+                                # 1. Smart Early Exit: 120 mins and stuck in sideways (-1% to 1%)
+                                if minutes_open > 120 and abs(curr_pnl_pct) <= 1.0:
+                                    if trade['status'] == 'OPEN':
+                                        status = 'TIMEOUT_BREAKEVEN'
+                                        pnl_pct = curr_pnl_pct
+                                        logger.info(f"⌛ {symbol} - Open for {int(minutes_open)}m. Stuck at {pnl_pct:.2f}%. Smart Exit applied.")
+                                
+                                # 2. Hard Timeout: 6 hours for mean reversion / capitulation
+                                elif trade_strat in ['CAPITULATION', 'MEAN_REVERSION'] and minutes_open > 360:
                                     if trade['status'] == 'OPEN':
                                         status = 'TIMEOUT'
-                                        if trade['direction'] == 'LONG':
-                                            pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
-                                        else:
-                                            pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
-                                        logger.info(f"⌛ {symbol} - {trade_strat} open for >6h. Force closing (Time-Based Exit).")
+                                        pnl_pct = curr_pnl_pct
+                                        logger.info(f"⌛ {symbol} - {trade_strat} open for >6h. Force closing.")
+                                        
                             except Exception as parse_err:
                                 logger.debug(f"Time-based exit parse error: {parse_err}")
 
@@ -402,14 +412,16 @@ class ApexSystem:
                         logger.warning(f"🚨 {symbol} - [BLOCKED] Liquidation Cascade in progress. Skipping.")
                         continue
                     
-                    # 1. Fetch Multi-Timeframe Data (ALL 5 TFs)
+                    # 1. Fetch Multi-Timeframe Data (ALL 5 TFs) concurrently
                     timeframes_to_fetch = ['1d', '4h', '1h', '15m', '5m']
-                    tf_data = {}
+                    limits = [100 if tf in ['1d', '4h'] else 200 for tf in timeframes_to_fetch]
                     
-                    for tf in timeframes_to_fetch:
-                        limit = 100 if tf in ['1d', '4h'] else 200
-                        df_tf = await self.fetch_market_data(symbol, tf, limit)
-                        if not df_tf.empty:
+                    tasks = [self.fetch_market_data(symbol, tf, limit) for tf, limit in zip(timeframes_to_fetch, limits)]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    tf_data = {}
+                    for tf, df_tf in zip(timeframes_to_fetch, results):
+                        if isinstance(df_tf, pd.DataFrame) and not df_tf.empty:
                             tf_data[tf] = df_tf
                     
                     if '1h' not in tf_data:
