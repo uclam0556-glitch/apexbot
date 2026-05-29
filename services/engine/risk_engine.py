@@ -609,10 +609,10 @@ class RiskEngine:
             sl_distance = min_required_distance
             stop_loss = entry - sl_distance if is_long else entry + sl_distance
             
-        # Hard Cap SL at 5%
-        max_sl_distance = entry * 0.05
+        # Hard Cap SL at 2% (User requested: bounded between 1.5% and 2.0%)
+        max_sl_distance = entry * 0.02
         if sl_distance > max_sl_distance:
-            # Cap the SL to 5% exactly
+            # Cap the SL to 2% exactly
             sl_distance = max_sl_distance
             stop_loss = entry - sl_distance if is_long else entry + sl_distance
 
