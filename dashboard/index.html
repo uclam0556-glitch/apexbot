@@ -996,6 +996,7 @@ async function loadLivePrices() {
     if (!data || Object.keys(data).length === 0) return;
 
     let totalLivePnlUsd = 0;
+    let totalLivePnlPct = 0;
 
     // Update Open Trades table rows directly
     const pnlCells = document.querySelectorAll('td[id^="live-pnl-"]');
@@ -1021,8 +1022,10 @@ async function loadLivePrices() {
         } else {
           pnlPct = ((entry - livePrice) / entry) * 100;
         }
-    // Add to total
+        
+        // Add to total
         totalLivePnlUsd += posUsd * (pnlPct / 100);
+        totalLivePnlPct += pnlPct;
         
         const isUp = pnlPct >= 0;
         const color = isUp ? 'var(--green)' : 'var(--red)';
@@ -1036,18 +1039,23 @@ async function loadLivePrices() {
     // Update Total Live PnL indicator
     const totalPnlEl = document.getElementById('live-total-pnl');
     if (totalPnlEl && pnlCells.length > 0) {
-      const isUp = totalLivePnlUsd >= 0;
+      const isUp = totalLivePnlPct >= 0;
       const color = isUp ? 'var(--green)' : 'var(--red)';
       const sign = isUp ? '+' : '';
       const bg = isUp ? 'rgba(0, 255, 136, 0.1)' : 'rgba(255, 68, 68, 0.1)';
       const border = isUp ? 'var(--green)' : 'var(--red)';
       
-      totalPnlEl.textContent = `Live: ${sign}$${Math.abs(totalLivePnlUsd).toFixed(2)}`;
+      // If we have actual USD size, show it, otherwise just show %
+      let displayValue = totalLivePnlUsd !== 0 ? 
+                         `$${Math.abs(totalLivePnlUsd).toFixed(2)} (${sign}${Math.abs(totalLivePnlPct).toFixed(2)}%)` : 
+                         `${sign}${Math.abs(totalLivePnlPct).toFixed(2)}%`;
+                         
+      totalPnlEl.textContent = `Live: ${sign}${displayValue.replace('+', '')}`;
       totalPnlEl.style.color = color;
       totalPnlEl.style.background = bg;
       totalPnlEl.style.borderColor = border;
     } else if (totalPnlEl) {
-      totalPnlEl.textContent = `Live: $0.00`;
+      totalPnlEl.textContent = `Live: 0.00%`;
       totalPnlEl.style.color = 'var(--text3)';
       totalPnlEl.style.background = 'rgba(255,255,255,0.03)';
       totalPnlEl.style.borderColor = 'var(--border)';
