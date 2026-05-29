@@ -547,9 +547,12 @@
 
     <!-- Open Positions -->
     <div class="panel" style="grid-column: span 2;">
-      <div class="panel-header">
-        <div class="panel-title"><span class="icon">⏳</span> Открытые позиции</div>
-        <div style="font-size:12px;color:var(--text3);" id="open-count-label">—</div>
+      <div class="panel-header" style="justify-content: space-between;">
+        <div style="display:flex; align-items:center; gap: 12px;">
+          <div class="panel-title"><span class="icon">⏳</span> Открытые позиции</div>
+          <div style="font-size:12px;color:var(--text3);" id="open-count-label">—</div>
+        </div>
+        <div id="live-total-pnl" style="font-size: 14px; font-weight: 700; font-family: 'JetBrains Mono', monospace; padding: 4px 10px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); transition: all 0.3s;">Live: $0.00</div>
       </div>
       <div class="panel-body" style="padding:0;">
         <div id="open-trades-container">
@@ -992,12 +995,15 @@ async function loadLivePrices() {
     const data = await r.json();
     if (!data || Object.keys(data).length === 0) return;
 
+    let totalLivePnlUsd = 0;
+
     // Update Open Trades table rows directly
     const pnlCells = document.querySelectorAll('td[id^="live-pnl-"]');
     pnlCells.forEach(cell => {
       const sym = cell.getAttribute('data-sym');
       const entry = parseFloat(cell.getAttribute('data-entry'));
       const dir = cell.getAttribute('data-dir');
+      const posUsd = parseFloat(cell.getAttribute('data-pos') || 0);
       const cleanSym = sym.replace('/USDT', '');
       
       const liveData = data[sym];
@@ -1015,6 +1021,8 @@ async function loadLivePrices() {
         } else {
           pnlPct = ((entry - livePrice) / entry) * 100;
         }
+    // Add to total
+        totalLivePnlUsd += posUsd * (pnlPct / 100);
         
         const isUp = pnlPct >= 0;
         const color = isUp ? 'var(--green)' : 'var(--red)';
@@ -1025,25 +1033,26 @@ async function loadLivePrices() {
       }
     });
 
-    const el = document.getElementById('ticker-tape');
-    let html = '';
-    const sorted = Object.entries(data).sort((a, b) => b[1].change - a[1].change);
-    
-    for (const [sym, info] of sorted) {
-      const isUp = info.change >= 0;
-      const cls = isUp ? 'up' : 'dn';
+    // Update Total Live PnL indicator
+    const totalPnlEl = document.getElementById('live-total-pnl');
+    if (totalPnlEl && pnlCells.length > 0) {
+      const isUp = totalLivePnlUsd >= 0;
+      const color = isUp ? 'var(--green)' : 'var(--red)';
       const sign = isUp ? '+' : '';
-      const priceStr = fmt(info.price);
-      html += `<div class="market-card">
-        <div class="mc-head">
-          <span class="mc-sym">${sym.replace('/USDT','')}</span>
-          <span class="mc-chg ${cls}">${sign}${info.change.toFixed(2)}%</span>
-        </div>
-        <div class="mc-price">${priceStr}</div>
-      </div>`;
+      const bg = isUp ? 'rgba(0, 255, 136, 0.1)' : 'rgba(255, 68, 68, 0.1)';
+      const border = isUp ? 'var(--green)' : 'var(--red)';
+      
+      totalPnlEl.textContent = `Live: ${sign}$${Math.abs(totalLivePnlUsd).toFixed(2)}`;
+      totalPnlEl.style.color = color;
+      totalPnlEl.style.background = bg;
+      totalPnlEl.style.borderColor = border;
+    } else if (totalPnlEl) {
+      totalPnlEl.textContent = `Live: $0.00`;
+      totalPnlEl.style.color = 'var(--text3)';
+      totalPnlEl.style.background = 'rgba(255,255,255,0.03)';
+      totalPnlEl.style.borderColor = 'var(--border)';
     }
-    
-    el.innerHTML = html;
+
   } catch(e) { console.error('Live prices error', e); }
 }
 
