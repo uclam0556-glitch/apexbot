@@ -941,7 +941,7 @@ async function loadOpenTrades() {
           dirTxt += ' <span style="color:var(--gold); margin-left:6px; padding:2px 6px; background:rgba(255,215,0,0.1); border-radius:4px;">🎯 TP1 HIT</span>';
       }
       
-      html += `<tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t))}')">
+      html += `<tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t)).replace(/'/g, "%27")}')">
         <td><span class="symbol-cell">${symClean}</span></td>
         <td style="font-weight:700;font-size:11px;" class="${dirCls}">${dirTxt}</td>
         <td class="price-cell">${fmt(t.entry_price)}</td>
@@ -986,7 +986,7 @@ async function loadHistory() {
       else if (t.status === 'TIMEOUT')   statusHtml = '<span class="status-badge badge-cancelled">⏱ TIMEOUT</span>';
       else                               statusHtml = '<span class="status-badge badge-cancelled">— CANCEL</span>';
 
-      html += `<tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t))}')">
+      html += `<tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t)).replace(/'/g, "%27")}')">
         <td><span class="symbol-cell">${t.symbol}</span></td>
         <td>${statusHtml}</td>
         <td class="price-cell">${fmt(t.entry_price)}</td>
@@ -1326,7 +1326,7 @@ async function openModal(title, filterType) {
       const dateStr = new Date(t.opened_at).toLocaleString('ru-RU', {day: '2-digit', month: '2-digit', hour: '2-digit', minute:'2-digit'});
 
       html += `
-        <tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t))}')">
+        <tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t)).replace(/'/g, "%27")}')">
           <td><strong>${t.symbol}</strong></td>
           <td><span class="status-badge ${dirClass}">${t.direction}</span></td>
           <td style="font-family: 'JetBrains Mono', monospace;">$${t.entry_price.toFixed(4)}</td>
