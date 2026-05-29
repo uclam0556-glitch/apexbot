@@ -37,7 +37,7 @@ from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
 from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade
-from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification
+from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
 from services.data.macro_calendar import is_macro_blackout_window
@@ -173,8 +173,10 @@ class ApexSystem:
                                 await update_trade_sl(trade['id'], new_sl, status)
                                 logger.info(f"Trade {symbol} hit TP1. SL moved to BREAKEVEN ({new_sl:.4f}).")
                                 if bot:
-                                    # We can send a partial close notification here later, for now just notify.
-                                    pass
+                                    try:
+                                        await send_tp1_notification(bot, int(chat_id_str), trade, pnl_pct)
+                                    except Exception as e:
+                                        logger.error(f"Failed to send TP1 notification: {e}")
                             
                             # Final TP3 logic (Trailing ATR could go here, for now it's static TP3)
                             elif trade.get('take_profit_3') and current_price >= trade['take_profit_3']:
@@ -197,7 +199,7 @@ class ApexSystem:
             except Exception as e:
                 logger.error(f"Error in trade tracker: {e}")
                 
-            await asyncio.sleep(60)  # Check every 60 seconds
+            await asyncio.sleep(15)  # Check every 15 seconds (reduced from 60s for faster TP detection)
 
         if bot:
             await bot.session.close()

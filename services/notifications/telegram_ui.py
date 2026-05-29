@@ -486,7 +486,29 @@ async def send_signal(bot: Bot, chat_id: int, signal_data: dict):
         await bot.send_message(chat_id=chat_id, text=card, reply_markup=kb, parse_mode="HTML")
         logger.info(f"Signal sent: {signal_data.get('symbol')} score={signal_data.get('score')}")
     except Exception as e:
-        logger.error(f"Failed to send signal: {e}")
+        logger.error(f"Failed to send result notification: {e}")
+
+async def send_tp1_notification(bot: Bot, chat_id: int, trade_data: dict, pnl_pct: float):
+    """Sends a notification when TP1 is hit and SL is moved to Breakeven."""
+    text = (
+        "🟢 <b>ПЕРВЫЙ ТЕЙК ВЗЯТ (TP1)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🪙 <b>Монета:</b> {trade_data.get('symbol')}\n"
+        f"💸 <b>PnL:</b>  <b>+{pnl_pct:.2f}%</b>\n\n"
+        "🛡 <b>Стоп-лосс переведен в безубыток.</b>\n"
+        "Часть прибыли зафиксирована, сделка продолжается (Free Ride). 🚀\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Вход:</b>  ${trade_data.get('entry_price', 0):.4f}\n"
+        f"🏁 <b>TP1:</b>   ${trade_data.get('take_profit_1', 0):.4f}\n\n"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+         InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
+    ])
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Failed to send TP1 notification: {e}")
 
 async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dict, status: str, pnl_pct: float):
     """Sends a notification when a trade hits TP or SL."""
