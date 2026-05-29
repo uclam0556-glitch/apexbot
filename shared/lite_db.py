@@ -36,7 +36,11 @@ async def init_lite_db():
                 reasoning TEXT
             )
         ''')
-        
+        try:
+            await db.execute('ALTER TABLE trades ADD COLUMN strategy TEXT DEFAULT "TREND"')
+        except Exception:
+            pass
+
         # V6.2 Feature Store
         await db.execute('''
             CREATE TABLE IF NOT EXISTS feature_store (
@@ -69,17 +73,18 @@ async def save_trade(
     take_profit_3: float,
     position_usd: float,
     reasoning: str,
+    strategy: str = "TREND",
     features_dict: dict = None
 ):
     """Saves a new open trade to SQLite."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute('''
             INSERT INTO trades (
-                signal_id, symbol, direction, entry_price, stop_loss, 
+                signal_id, symbol, direction, strategy, entry_price, stop_loss, 
                 take_profit_1, take_profit_3, position_usd, status, opened_at, reasoning
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
         ''', (
-            signal_id, symbol, direction, entry_price, stop_loss, 
+            signal_id, symbol, direction, strategy, entry_price, stop_loss, 
             take_profit_1, take_profit_3, position_usd, datetime.utcnow(), reasoning
         ))
         trade_id = cursor.lastrowid

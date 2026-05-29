@@ -172,8 +172,30 @@ class ApexSystem:
                         status = None
                         pnl_pct = 0.0
 
-                        # LONG logic
-                        if trade['direction'] == 'LONG':
+                        # ─── TIME-BASED EXIT (6 hours) ──────────────────────────
+                        if 'opened_at' in trade and trade['opened_at']:
+                            try:
+                                from datetime import datetime
+                                # SQLite timestamp may have space or T, parse accordingly
+                                dt_str = trade['opened_at'].replace(' ', 'T')
+                                if '.' in dt_str: dt_str = dt_str.split('.')[0]
+                                opened_dt = datetime.fromisoformat(dt_str)
+                                hours_open = (datetime.utcnow() - opened_dt).total_seconds() / 3600
+                                trade_strat = trade.get('strategy', 'TREND')
+                                
+                                if trade_strat in ['CAPITULATION', 'MEAN_REVERSION'] and hours_open > 6.0:
+                                    if trade['status'] == 'OPEN':
+                                        status = 'TIMEOUT'
+                                        if trade['direction'] == 'LONG':
+                                            pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                                        else:
+                                            pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
+                                        logger.info(f"⌛ {symbol} - {trade_strat} open for >6h. Force closing (Time-Based Exit).")
+                            except Exception as parse_err:
+                                logger.debug(f"Time-based exit parse error: {parse_err}")
+
+                        # Standard TP/SL logic (only if not already TIMEOUT)
+                        if not status and trade['direction'] == 'LONG':
                             if current_price >= trade['take_profit_1'] and trade['status'] == 'OPEN':
                                 status = 'BREAKEVEN'
                                 pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
@@ -194,7 +216,7 @@ class ApexSystem:
                                 pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
 
                         # SHORT logic (mirror of LONG)
-                        elif trade['direction'] == 'SHORT':
+                        elif not status and trade['direction'] == 'SHORT':
                             if current_price <= trade['take_profit_1'] and trade['status'] == 'OPEN':
                                 # SHORT hit TP1 → move SL to breakeven (slightly below entry)
                                 status = 'BREAKEVEN'
@@ -215,7 +237,7 @@ class ApexSystem:
                                 status = 'LOST' if trade['status'] == 'OPEN' else 'WON_BREAKEVEN'
                                 pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
                                 
-                        if status in ['WON', 'LOST', 'WON_BREAKEVEN']:
+                        if status in ['WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT']:
                             await close_trade(trade['id'], status, pnl_pct)
                             logger.info(f"Trade {symbol} {status} at {current_price} ({pnl_pct:+.2f}%)")
                             if bot:
@@ -411,12 +433,31 @@ class ApexSystem:
                             logger.info(f"{symbol} - [BLOCKED] BEAR regime: non-major asset. Skipping.")
                             continue
                             
-                        # Extreme oversold + real buyers stepping in
-                        if rsi_now < 25 and ofi_real.ofi_score > 0:
+                        # Soft Capitulation Filter (15m)
+                        lower_wick_ratio = 0.0
+                        vol_ratio_15m = 0.0
+                        df_15m_check = tf_data.get('15m', pd.DataFrame())
+                        if not df_15m_check.empty and len(df_15m_check) >= 3:
+                            last_closed = df_15m_check.iloc[-2]
+                            candle_range = last_closed['high'] - last_closed['low']
+                            if candle_range > 0:
+                                lower_wick_ratio = (min(last_closed['open'], last_closed['close']) - last_closed['low']) / candle_range
+                            
+                            avg_vol_15m = df_15m_check['volume'].iloc[-12:-2].mean()
+                            if avg_vol_15m > 0:
+                                vol_ratio_15m = last_closed['volume'] / avg_vol_15m
+
+                        # 1. Base Panic: RSI < 25 AND Volume spike > 1.5x
+                        is_panic = rsi_now < 25 and vol_ratio_15m > 1.5
+                        
+                        # 2. Reclaim/Absorption: Real buyers (OFI > 0) OR Technical wick (Wick > 0.4)
+                        is_bought = ofi_real.ofi_score > 0 or lower_wick_ratio > 0.4
+                        
+                        if is_panic and is_bought:
                             trade_strategy = "CAPITULATION"
-                            logger.info(f"{symbol} - [CAPITULATION CATCHER] BEAR + RSI={rsi_now:.1f} + OFI={ofi_real.ofi_score:.2f} (Buyers stepping in)")
+                            logger.info(f"{symbol} - [CAPITULATION CATCHER] RSI={rsi_now:.1f} Vol={vol_ratio_15m:.1f}x Wick={lower_wick_ratio:.2f} OFI={ofi_real.ofi_score:.2f}")
                         else:
-                            logger.info(f"{symbol} - [BLOCKED] BEAR regime: Not a capitulation setup (RSI={rsi_now:.1f}, OFI={ofi_real.ofi_score:.2f}). Waiting.")
+                            logger.info(f"{symbol} - [BLOCKED] BEAR regime: No capitulation (Panic={is_panic}, Bought={is_bought}).")
                             continue
 
                     elif regime_val == "SIDEWAYS" and rsi_now < 35:
@@ -780,6 +821,7 @@ class ApexSystem:
                         take_profit_3=sltp.take_profit_3,
                         position_usd=position_usd,
                         reasoning=f"{strat_label} | Ultra Score {ultra_score:.1f}/10 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}",
+                        strategy=trade_strategy,
                         features_dict=features_dict
                     )
                     logger.info(f"Signal saved to DB: {symbol} {trade_direction} [{strat_label}]")
