@@ -36,7 +36,7 @@ from services.engine.risk_engine import RiskEngine
 from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
-from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade
+from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
@@ -241,6 +241,17 @@ class ApexSystem:
                 continue
                 
             logger.info("=== STARTING SCAN CYCLE ===")
+            
+            # ─── V6.2 ON-CHAIN DATA BRIEFING ─────────────────────────────────────────
+            try:
+                from services.data.onchain import OnChainPipeline
+                oc_pipeline = OnChainPipeline()
+                oc_data = await oc_pipeline.get_smart_money_data()
+                flow_val = oc_data.exchange_net_flow
+                flow_type = "outflow, bullish" if flow_val < 0 else "inflow, bearish"
+                logger.info(f"On-Chain Briefing | Exchange flow BTC: {flow_val:.0f} ({flow_type}) | SOPR: {oc_data.sopr_ratio:.2f}")
+            except Exception as e:
+                logger.debug(f"On-Chain fetch failed: {e}")
             
             # ─── MACRO BLACKOUT CHECK ────────────────────────────────────────────────
             is_blackout, blackout_reason = is_macro_blackout_window()
@@ -597,6 +608,9 @@ class ApexSystem:
                     position_usd = min(position_usd, deposit * 0.20)  # Max 20% of deposit
                     rr_ratio = abs(sltp.take_profit_2 - current_price) / abs(current_price - sltp.stop_loss) if abs(current_price - sltp.stop_loss) > 0 else 2.0
 
+                    # 8.7 Fetch Confidence Calibration
+                    confidence_data = await get_confidence_calibration(ultra_score)
+                    
                     # 9. Build signal package
                     signal_data = {
                         "symbol": symbol,
@@ -623,6 +637,9 @@ class ApexSystem:
                         "position_usd": round(position_usd, 0),
                         "risk_usd": round(risk_usd, 0),
                         "rr_ratio": round(rr_ratio, 1),
+                        "confidence_bucket": confidence_data["bucket"],
+                        "confidence_win_rate": confidence_data["win_rate"],
+                        "confidence_sample_size": confidence_data["sample_size"]
                     }
 
                     # 10. Send beautiful signal card to Telegram
@@ -639,7 +656,19 @@ class ApexSystem:
                     except Exception as send_err:
                         logger.error(f"Failed to send signal: {send_err}")
 
-                    # 11. Save to DB (paper trading)
+                    # 11. Save to DB (paper trading) with Feature Store
+                    features_dict = {
+                        "regime": current_regime.value,
+                        "ultra_score": ultra_score,
+                        "fvg_count": len(smc_analysis.imbalance_zones),
+                        "btc_rsi": btc_rsi if 'btc_rsi' in locals() else 50.0,
+                        "funding_rate": market_ctx["funding"]["rate_pct"],
+                        "oi_change": market_ctx["open_interest"]["change_pct"],
+                        "fg_index": market_ctx["fear_greed"]["value"],
+                        "mtf_score": mtf_score.score,
+                        "cvd_score": cvd_result.get("score", 0)
+                    }
+                    
                     await save_trade(
                         signal_id=str(int(datetime.utcnow().timestamp())),
                         symbol=symbol,
@@ -649,7 +678,8 @@ class ApexSystem:
                         take_profit_1=sltp.take_profit_1,
                         take_profit_3=sltp.take_profit_3,
                         position_usd=position_usd,
-                        reasoning=f"Ultra Score {ultra_score:.1f}/10 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']} | ML_FEATURES: {{\"fvg_count\": {len(smc_analysis.imbalance_zones)}, \"volatility\": {atr_1h/current_price:.4f}}}"
+                        reasoning=f"Ultra Score {ultra_score:.1f}/10 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}",
+                        features_dict=features_dict
                     )
                     logger.info(f"Signal saved to DB for {symbol}")
                     

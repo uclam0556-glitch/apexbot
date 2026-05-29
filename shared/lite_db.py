@@ -36,8 +36,28 @@ async def init_lite_db():
                 reasoning TEXT
             )
         ''')
+        
+        # V6.2 Feature Store
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS feature_store (
+                trade_id INTEGER PRIMARY KEY,
+                symbol TEXT,
+                regime TEXT,
+                ultra_score REAL,
+                fvg_count INTEGER,
+                btc_rsi REAL,
+                funding_rate REAL,
+                oi_change REAL,
+                fg_index REAL,
+                mtf_score REAL,
+                cvd_score REAL,
+                outcome TEXT,
+                pnl_pct REAL,
+                created_at TIMESTAMP
+            )
+        ''')
         await db.commit()
-    logger.info("Lite DB (SQLite) initialized.")
+    logger.info("Lite DB (SQLite) initialized with Feature Store.")
 
 async def save_trade(
     signal_id: str, 
@@ -48,11 +68,12 @@ async def save_trade(
     take_profit_1: float,
     take_profit_3: float,
     position_usd: float,
-    reasoning: str
+    reasoning: str,
+    features_dict: dict = None
 ):
     """Saves a new open trade to SQLite."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
+        cursor = await db.execute('''
             INSERT INTO trades (
                 signal_id, symbol, direction, entry_price, stop_loss, 
                 take_profit_1, take_profit_3, position_usd, status, opened_at, reasoning
@@ -61,6 +82,30 @@ async def save_trade(
             signal_id, symbol, direction, entry_price, stop_loss, 
             take_profit_1, take_profit_3, position_usd, datetime.utcnow(), reasoning
         ))
+        trade_id = cursor.lastrowid
+        
+        # Save to Feature Store
+        if features_dict and trade_id:
+            await db.execute('''
+                INSERT INTO feature_store (
+                    trade_id, symbol, regime, ultra_score, fvg_count, btc_rsi,
+                    funding_rate, oi_change, fg_index, mtf_score, cvd_score, outcome, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+            ''', (
+                trade_id,
+                symbol,
+                features_dict.get('regime', 'UNKNOWN'),
+                features_dict.get('ultra_score', 0.0),
+                features_dict.get('fvg_count', 0),
+                features_dict.get('btc_rsi', 50.0),
+                features_dict.get('funding_rate', 0.0),
+                features_dict.get('oi_change', 0.0),
+                features_dict.get('fg_index', 50.0),
+                features_dict.get('mtf_score', 0.0),
+                features_dict.get('cvd_score', 0.0),
+                datetime.utcnow()
+            ))
+            
         await db.commit()
 
 async def get_stats():
@@ -107,6 +152,14 @@ async def close_trade(trade_id: int, status: str, pnl_pct: float):
             SET status = ?, pnl_pct = ?, closed_at = ?
             WHERE id = ?
         ''', (status, pnl_pct, datetime.utcnow(), trade_id))
+        
+        # V6.2 Feature Store Update
+        await db.execute('''
+            UPDATE feature_store
+            SET outcome = ?, pnl_pct = ?
+            WHERE trade_id = ?
+        ''', (status, pnl_pct, trade_id))
+        
         await db.commit()
 
 async def update_trade_sl(trade_id: int, new_sl: float, new_status: str = "OPEN"):
@@ -129,4 +182,32 @@ async def reset_open_trades():
         ''', (datetime.utcnow(),))
         await db.commit()
     logger.info("All open trades have been reset (CANCELLED).")
+
+async def get_confidence_calibration(ultra_score: float) -> dict:
+    """Calculates historical win rate for the score's bucket."""
+    # Buckets: 5.0-5.9, 6.0-6.9, 7.0-7.9, 8.0-8.9, 9.0+
+    bucket_min = float(int(ultra_score))
+    bucket_max = bucket_min + 0.99
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('''
+            SELECT 
+                COUNT(*) as sample_size,
+                SUM(CASE WHEN outcome = 'WON' THEN 1 ELSE 0 END) as won_count
+            FROM feature_store
+            WHERE ultra_score >= ? AND ultra_score <= ? AND outcome != 'OPEN'
+        ''', (bucket_min, bucket_max)) as cursor:
+            row = await cursor.fetchone()
+            
+    sample_size = row['sample_size'] if row and row['sample_size'] else 0
+    won_count = row['won_count'] if row and row['won_count'] else 0
+    
+    win_rate = (won_count / sample_size * 100) if sample_size > 0 else 0.0
+    
+    return {
+        "bucket": f"{bucket_min:.1f}-{bucket_max:.1f}",
+        "sample_size": sample_size,
+        "win_rate": win_rate
+    }
 

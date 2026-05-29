@@ -135,12 +135,19 @@ async def process_market(callback: CallbackQuery):
     await callback.answer("⏳ Загружаю данные рынка...")
     try:
         from services.indicators.market_data import get_fear_greed, get_btc_dominance
-        fg, btc_d = await __import__('asyncio').gather(
-            get_fear_greed(), get_btc_dominance(), return_exceptions=True
+        from services.data.onchain import OnChainPipeline
+        
+        oc_pipeline = OnChainPipeline()
+        
+        fg, btc_d, oc_data = await __import__('asyncio').gather(
+            get_fear_greed(), get_btc_dominance(), oc_pipeline.get_smart_money_data(), return_exceptions=True
         )
         fg_val = fg.get("value", 50) if isinstance(fg, dict) else 50
         fg_label = fg.get("label", "Neutral") if isinstance(fg, dict) else "Neutral"
         btc_dom = btc_d.get("dominance", 55.0) if isinstance(btc_d, dict) else 55.0
+        
+        oc_flow = oc_data.exchange_net_flow if not isinstance(oc_data, Exception) else 0.0
+        oc_sopr = oc_data.sopr_ratio if not isinstance(oc_data, Exception) else 1.0
 
         if fg_val <= 25:
             fg_emoji = "😱"
@@ -160,12 +167,17 @@ async def process_market(callback: CallbackQuery):
     regime_emoji = {"BULL": "🟢 Бычий", "BEAR": "🔴 Медвежий",
                     "SIDEWAYS": "🟡 Боковик", "CRISIS": "⚠️ Кризис"}.get(global_state.regime, "⚪")
 
+    flow_type = "Outflow (Bullish 🟢)" if oc_flow < 0 else "Inflow (Bearish 🔴)" if oc_flow > 0 else "Нейтрально ⚪"
+
     text = (
-        "🌐 <b>Обзор рынка</b>\n"
+        "🌐 <b>Обзор рынка & On-Chain</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"{fg_emoji} <b>Fear & Greed:</b> {fg_val}/100 — {fg_label}\n"
         f"₿ <b>BTC Dominance:</b> {btc_dom}% — {alt_season}\n"
         f"🧠 <b>ML Режим (APEX):</b> {regime_emoji}\n\n"
+        "<b>On-Chain Метрики (Glassnode):</b>\n"
+        f"🌊 <b>BTC Exchange Flow:</b> {oc_flow:,.0f} BTC — {flow_type}\n"
+        f"💎 <b>SOPR Ratio:</b> {oc_sopr:.3f} — {'Профит 🟢' if oc_sopr > 1 else 'Убыток 🔴'}\n\n"
         "<b>Интерпретация:</b>\n"
         f"{'🟢 Хорошее время для покупок (страх = возможность)' if fg_val < 40 else '🔴 Осторожно — рынок перегрет' if fg_val > 70 else '🟡 Нейтральный рынок'}\n\n"
         "<i>Данные обновляются каждый час</i>"
@@ -441,6 +453,15 @@ def build_signal_card(signal_data: dict) -> str:
     oi_str = f"{oi_change:+.1f}%" if oi_change != 0 else "—"
     fib_str = f"Fib {fib_level}" if fib_level else "—"
     
+    # Confidence Calibration
+    conf_bucket = s.get("confidence_bucket", "N/A")
+    conf_win = s.get("confidence_win_rate", 0)
+    conf_size = s.get("confidence_sample_size", 0)
+    if conf_size >= 10:
+        conf_str = f"{conf_win:.1f}% (по {conf_size} сдел.)"
+    else:
+        conf_str = f"UNVERIFIED (<10 сдел.)"
+        
     squeeze_alert = "🚨 <b>SHORT SQUEEZE DETECTED</b>\n<i>Лимиты сняты, ловим ракету 🚀</i>\n━━━━━━━━━━━━━━━━━━━━━━━━\n" if s.get("is_squeeze") else ""
 
     card = (
@@ -454,6 +475,7 @@ def build_signal_card(signal_data: dict) -> str:
         f"🎯 <b>TP3 (25%):</b>  {fmt(tp3)}  <i>(+{tp3_pct:.1f}%)</i>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 <b>Score:</b>    <b>{score:.1f}/10</b>  {star_str}\n"
+        f"🤖 <b>Confid.:</b>  {conf_str}\n"
         f"{regime_emoji} <b>Режим:</b>    {regime}\n"
         f"📈 <b>RSI(1h):</b>  {rsi:.1f}{'  🔥 Перепродан' if rsi < 30 else ''}\n"
         f"📉 <b>VWAP:</b>     {vwap_label}\n"

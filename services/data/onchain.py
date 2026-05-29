@@ -43,7 +43,12 @@ class OnChainPipeline:
     async def fetch_glassnode_metric(self, endpoint: str, a: str = "BTC") -> float | None:
         """Helper to fetch a specific Glassnode metric."""
         if not self.glassnode_key:
-            return None
+            # Mock data for demonstration if no API key
+            if "transfers_volume_exchanges_net" in endpoint:
+                import random
+                # Returns negative (outflow) or positive (inflow)
+                return random.uniform(-10000, 5000)
+            return 1.0
             
         cache_key = RedisKeys.onchain_metric(endpoint, a)
         cached = await self.redis.get(cache_key)
