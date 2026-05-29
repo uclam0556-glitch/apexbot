@@ -224,7 +224,7 @@ class ApexSystem:
                                 pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
                                 new_sl = trade['entry_price'] * 1.001
                                 from shared.lite_db import update_trade_sl
-                                await update_trade_sl(trade['id'], new_sl, status)
+                                await update_trade_sl(trade['id'], new_sl, status, pnl_pct)
                                 logger.info(f"Trade {symbol} hit TP1. SL moved to BREAKEVEN ({format_price(new_sl)}).")
                                 if bot:
                                     try:
@@ -246,7 +246,7 @@ class ApexSystem:
                                 pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
                                 new_sl = trade['entry_price'] * 0.999  # slightly below breakeven
                                 from shared.lite_db import update_trade_sl
-                                await update_trade_sl(trade['id'], new_sl, status)
+                                await update_trade_sl(trade['id'], new_sl, status, pnl_pct)
                                 logger.info(f"SHORT Trade {symbol} hit TP1. SL moved to BREAKEVEN ({format_price(new_sl)}).")
                                 if bot:
                                     try:
@@ -844,17 +844,22 @@ class ApexSystem:
 
                     # ─── SAVE TO DB ────────────────────────────────────────────────────────────
                     features_dict = {
-                        "regime":       regime_val,
-                        "ultra_score":  ultra_score,
-                        "fvg_count":    len(smc_analysis.imbalance_zones),
-                        "btc_rsi":      btc_rsi if 'btc_rsi' in locals() else 50.0,
-                        "funding_rate": market_ctx["funding"]["rate_pct"],
-                        "oi_change":    market_ctx["open_interest"]["change_pct"],
-                        "fg_index":     market_ctx["fear_greed"]["value"],
-                        "mtf_score":    mtf_score.score,
-                        "cvd_score":    cvd_score_val,
-                        "strategy":     trade_strategy,
-                        "direction":    trade_direction,
+                        "regime":               regime_val,
+                        "ultra_score":          ultra_score,
+                        "fvg_count":            len(smc_analysis.imbalance_zones),
+                        "btc_rsi":              btc_rsi if 'btc_rsi' in locals() else 50.0,
+                        "funding_rate":         market_ctx["funding"]["rate_pct"],
+                        "oi_change":            market_ctx["open_interest"]["change_pct"],
+                        "fg_index":             market_ctx["fear_greed"]["value"],
+                        "mtf_score":            mtf_score.score,
+                        "cvd_score":            cvd_score_val,
+                        "strategy":             trade_strategy,
+                        "direction":            trade_direction,
+                        # V7 Institutional Metrics
+                        "slippage":             0.0, # Filled later in execution engine
+                        "spread_at_entry":      0.0, # Filled later in execution engine
+                        "btc_trend_strength":   market_ctx["btc_dominance"]["value"], # Proxy for macro strength
+                        "volume_spike_score":   float(vol_ratio_15m) if 'vol_ratio_15m' in locals() else 0.0,
                     }
 
                     await save_trade(
