@@ -477,6 +477,13 @@
   </div>
 </header>
 
+<!-- TICKER TAPE -->
+<div class="ticker-wrap">
+  <div class="ticker-inner" id="ticker-tape">
+    <div class="ticker-item"><span class="t-sym">Ожидание...</span></div>
+  </div>
+</div>
+
 <!-- MAIN -->
 <main>
 
@@ -986,6 +993,34 @@ async function loadFeaturesStats() {
   } catch (e) { console.error('Features stats error', e); }
 }
 
+async function loadLivePrices() {
+  try {
+    const r = await fetch('/api/live-prices');
+    const data = await r.json();
+    const el = document.getElementById('ticker-tape');
+    if (!data || Object.keys(data).length === 0) return;
+
+    let html = '';
+    // Optional: Sort by change descending
+    const sorted = Object.entries(data).sort((a, b) => b[1].change - a[1].change);
+    
+    for (const [sym, info] of sorted) {
+      const isUp = info.change >= 0;
+      const cls = isUp ? 'up' : 'dn';
+      const sign = isUp ? '+' : '';
+      const priceStr = fmt(info.price);
+      html += `<div class="ticker-item">
+        <span class="t-sym">${sym.replace('/USDT','')}</span>
+        <span>${priceStr}</span>
+        <span class="t-chg ${cls}">(${sign}${info.change.toFixed(2)}%)</span>
+      </div>`;
+    }
+    
+    // Duplicate for smooth infinite scroll
+    el.innerHTML = html + html;
+  } catch(e) { console.error('Live prices error', e); }
+}
+
 // ── MAIN LOAD ────────────────────────────────────────────────────────────────
 
 async function loadAll() {
@@ -996,11 +1031,14 @@ async function loadAll() {
   loadRsMatrix();
   loadSystemStatus();
   loadFeaturesStats();
+  loadLivePrices();
 }
 
 // Initial load + auto-refresh every 30s
 loadAll();
 setInterval(loadAll, 30000);
+// Live prices refresh faster (every 3s)
+setInterval(loadLivePrices, 3000);
 </script>
 </body>
 </html>

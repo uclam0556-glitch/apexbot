@@ -139,6 +139,11 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"top": [], "btc_change": 0, "last_updated": "—"}
 
+    @app.get("/api/live-prices")
+    async def get_live_prices():
+        from shared.state import global_state
+        return getattr(global_state, 'live_prices', {})
+
     @app.get("/api/system-status")
     async def get_system_status():
         try:

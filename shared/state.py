@@ -11,6 +11,7 @@ class SystemState:
     scan_cycle_count: int = 0
     total_symbols: int = 40
     is_paused: bool = False
+    live_prices: dict = {}
 
     def __init__(self):
         self.hot_coins = []

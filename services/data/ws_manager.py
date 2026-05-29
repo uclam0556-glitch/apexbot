@@ -39,6 +39,12 @@ class ExchangeWSManager:
                 ticker = await self.exchange.watch_ticker(symbol)
                 consecutive_errors = 0
                 
+                from shared.state import global_state
+                global_state.live_prices[symbol] = {
+                    "price": ticker.get("last"),
+                    "change": ticker.get("percentage")
+                }
+                
                 # If we have a callback registered, push the data to it
                 if symbol in self.callbacks:
                     await self.callbacks[symbol](symbol, ticker)
