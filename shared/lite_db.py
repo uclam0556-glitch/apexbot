@@ -254,11 +254,10 @@ async def reset_open_trades():
 
 async def factory_reset_db():
     """Wipes closed trades and ML features, keeping OPEN trades."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, isolation_level=None) as db:
         await db.execute("DELETE FROM trades WHERE status != 'OPEN'")
         await db.execute("DELETE FROM feature_store WHERE outcome != 'OPEN'")
         await db.execute('VACUUM')
-        await db.commit()
     logger.warning("FACTORY RESET: Historical stats, trades, and ML data wiped (Open trades kept).")
 
 async def get_confidence_calibration(ultra_score: float) -> dict:
