@@ -478,6 +478,7 @@
   <div class="header-right">
     <div class="last-update" id="last-update">Обновление...</div>
     <button class="refresh-btn" onclick="loadAll()">↻ Обновить</button>
+    <button class="wipe-btn" onclick="factoryReset()" style="background: rgba(255,71,87,0.1); color: #ff4757; border: 1px solid rgba(255,71,87,0.5); margin-left: 10px; padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: 0.2s;">⚠️ СБРОС</button>
   </div>
 </header>
 
@@ -1066,6 +1067,25 @@ async function loadLivePrices() {
     }
 
   } catch(e) { console.error('Live prices error', e); }
+}
+
+// ── FACTORY RESET ─────────────────────────────────────────────────────────────
+
+async function factoryReset() {
+  if (confirm("ВНИМАНИЕ!\nЭто полностью удалит всю историю сделок, обнулит графики PnL, WinRate и очистит базу данных.\nВы уверены?")) {
+    try {
+      const res = await fetch('/api/factory-reset', { method: 'POST' });
+      const data = await res.json();
+      if (data.status === 'success') {
+        alert("База данных успешно очищена! Статистика обнулена.");
+        loadAll();
+      } else {
+        alert("Ошибка при сбросе: " + data.message);
+      }
+    } catch (e) {
+      alert("Ошибка сети при вызове сброса.");
+    }
+  }
 }
 
 // ── MAIN LOAD ────────────────────────────────────────────────────────────────

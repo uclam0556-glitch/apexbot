@@ -226,4 +226,13 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"error": str(e)}
 
+    @app.post("/api/factory-reset")
+    async def api_factory_reset():
+        from shared.lite_db import factory_reset_db
+        try:
+            await factory_reset_db()
+            return {"status": "success", "message": "Database wiped."}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
     return app
