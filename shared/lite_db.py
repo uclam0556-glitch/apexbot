@@ -201,12 +201,12 @@ async def close_trade(
 async def can_open_new_position(regime: str) -> bool:
     """
     Circuit breaker for maximum open positions based on regime.
-    BULL: 7, SIDEWAYS: 4, BEAR: 2, CRISIS: 0
+    BULL: 15, SIDEWAYS: 8, BEAR: 5, CRISIS: 0
     """
     limits = {
-        "BULL": 7,
-        "SIDEWAYS": 4,
-        "BEAR": 2,
+        "BULL": 15,
+        "SIDEWAYS": 8,
+        "BEAR": 5,
         "CRISIS": 0
     }
     max_positions = limits.get(regime, 0)
