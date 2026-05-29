@@ -484,19 +484,6 @@
 <!-- MAIN -->
 <main>
 
-  <!-- LIVE MARKET -->
-  <div class="panel" style="margin-bottom: 24px;">
-    <div class="panel-header">
-      <div class="panel-title"><span class="icon">🌍</span> Live Market (40 монет)</div>
-      <div style="font-size:11px;color:var(--text3)">Реалтайм Binance + WebSocket</div>
-    </div>
-    <div class="panel-body" style="padding: 12px 16px;">
-      <div id="ticker-tape" class="market-grid">
-        <div class="empty-state">Ожидание...</div>
-      </div>
-    </div>
-  </div>
-
   <!-- KPI CARDS -->
   <div class="kpi-grid">
     <div class="kpi-card cyan-accent">
@@ -830,21 +817,31 @@ async function loadOpenTrades() {
     }
 
     let html = `<table class="trade-table"><thead><tr>
-      <th>Монета</th><th>Вход</th><th>Стоп</th><th>TP1</th><th>Позиция</th><th>Открыта</th>
+      <th>Монета</th><th>Направление</th><th>Вход</th><th>Стоп</th><th>TP1</th><th>Позиция</th><th>Лайв Цена</th><th>PnL %</th><th>Открыта</th>
     </tr></thead><tbody>`;
 
     for (const t of trades) {
+      const symClean = t.symbol.replace('/USDT','');
+      const dirCls = t.direction === 'LONG' ? 'text-green' : 'text-red';
+      const dirTxt = t.direction === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
+      
       html += `<tr>
-        <td><span class="symbol-cell">${t.symbol.replace('/USDT','')}</span></td>
+        <td><span class="symbol-cell">${symClean}</span></td>
+        <td style="font-weight:700;font-size:11px;" class="${dirCls}">${dirTxt}</td>
         <td class="price-cell">${fmt(t.entry_price)}</td>
         <td class="price-cell text-red">${fmt(t.stop_loss)}</td>
         <td class="price-cell text-green">${fmt(t.take_profit_1)}</td>
         <td class="price-cell">$${(t.position_usd||0).toFixed(0)}</td>
+        <td class="price-cell" id="live-price-${symClean}" style="font-family:'JetBrains Mono',monospace;color:var(--cyan)">—</td>
+        <td class="price-cell" id="live-pnl-${symClean}" style="font-weight:700;" data-sym="${t.symbol}" data-entry="${t.entry_price}" data-dir="${t.direction}">—</td>
         <td class="price-cell">${fmtDate(t.opened_at)}</td>
       </tr>`;
     }
     html += '</tbody></table>';
     el.innerHTML = html;
+    
+    // Trigger an immediate live price update for the new rows
+    loadLivePrices();
   } catch (e) { console.error('Open trades error', e); }
 }
 
@@ -935,28 +932,14 @@ async function loadSystemStatus() {
     const r = await fetch('/api/system-status');
     const d = await r.json();
 
-    const regimeEl = document.getElementById('regime-badge');
-    const regimeMap = {
-      'BULL': ['🟢 BULL', 'regime-BULL'],
-      'BEAR': ['🔴 BEAR', 'regime-BEAR'],
-      'SIDEWAYS': ['🟡 SIDEWAYS', 'regime-SIDEWAYS'],
-    };
-    const [label, cls] = regimeMap[d.regime] || ['⚪ UNKNOWN', 'regime-UNKNOWN'];
-    regimeEl.textContent = label;
-    regimeEl.className = 'regime-badge ' + cls;
+    const regEl = document.getElementById('regime-badge');
+    regEl.className = 'regime-badge regime-' + (d.regime || 'UNKNOWN');
+    regEl.innerHTML = `<div class="live-dot" style="background:var(--text);animation:none"></div>${d.regime || '—'}`;
 
-    const el = document.getElementById('system-status-container');
-    const pauseColor = d.is_paused ? 'var(--gold)' : 'var(--green)';
-    const pauseText  = d.is_paused ? '⏸ ПАУЗА' : '▶️ АКТИВЕН';
-
-    el.innerHTML = `
+    document.getElementById('system-status-container').innerHTML = `
       <div class="status-row">
-        <span class="status-key">Статус</span>
-        <span class="status-val" style="color:${pauseColor}">${pauseText}</span>
-      </div>
-      <div class="status-row">
-        <span class="status-key">Текущая монета</span>
-        <span class="status-val text-cyan">${d.current_symbol || '—'}</span>
+        <span class="status-key">Текущая пара</span>
+        <span class="status-val">${d.current_symbol || '—'}</span>
       </div>
       <div class="status-row">
         <span class="status-key">Режим рынка</span>
@@ -1007,11 +990,43 @@ async function loadLivePrices() {
   try {
     const r = await fetch('/api/live-prices');
     const data = await r.json();
-    const el = document.getElementById('ticker-tape');
     if (!data || Object.keys(data).length === 0) return;
 
+    // Update Open Trades table rows directly
+    const pnlCells = document.querySelectorAll('td[id^="live-pnl-"]');
+    pnlCells.forEach(cell => {
+      const sym = cell.getAttribute('data-sym');
+      const entry = parseFloat(cell.getAttribute('data-entry'));
+      const dir = cell.getAttribute('data-dir');
+      const cleanSym = sym.replace('/USDT', '');
+      
+      const liveData = data[sym];
+      if (liveData && liveData.price) {
+        const livePrice = liveData.price;
+        
+        // Update Price Cell
+        const priceCell = document.getElementById(`live-price-${cleanSym}`);
+        if (priceCell) priceCell.textContent = fmt(livePrice);
+        
+        // Calculate PnL %
+        let pnlPct = 0;
+        if (dir === 'LONG') {
+          pnlPct = ((livePrice - entry) / entry) * 100;
+        } else {
+          pnlPct = ((entry - livePrice) / entry) * 100;
+        }
+        
+        const isUp = pnlPct >= 0;
+        const color = isUp ? 'var(--green)' : 'var(--red)';
+        const sign = isUp ? '+' : '';
+        
+        cell.textContent = `${sign}${pnlPct.toFixed(2)}%`;
+        cell.style.color = color;
+      }
+    });
+
+    const el = document.getElementById('ticker-tape');
     let html = '';
-    // Optional: Sort by change descending
     const sorted = Object.entries(data).sort((a, b) => b[1].change - a[1].change);
     
     for (const [sym, info] of sorted) {
