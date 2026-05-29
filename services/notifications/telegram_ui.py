@@ -414,27 +414,32 @@ def build_signal_card(signal_data: dict) -> str:
     s = signal_data
     symbol = s.get("symbol", "???")
     direction = s.get("direction", "LONG")
-    entry_low = s.get("entry_low", 0)
-    entry_high = s.get("entry_high", 0)
-    sl = s.get("stop_loss", 0)
-    tp1 = s.get("tp1", 0)
-    tp2 = s.get("tp2", 0)
-    tp3 = s.get("tp3", 0)
-    score = s.get("score", 0)
     regime = s.get("regime", "UNKNOWN")
-    rsi = s.get("rsi", 50)
-    funding = s.get("funding_rate", 0)
-    oi_change = s.get("oi_change", 0)
     fg_value = s.get("fear_greed", 50)
     btc_dom = s.get("btc_dominance", 55)
-    position_usd = s.get("position_usd", 30)
-    risk_usd = s.get("risk_usd", 30)
-    rr = s.get("rr_ratio", 0)
     vwap_label = s.get("vwap_label", "")
     ema_label = s.get("ema_label", "")
     rsi_div = s.get("rsi_divergence", "NONE")
     bb_label = s.get("bb_label", "")
     fib_level = s.get("fib_level", None)
+    
+    def safe_float(v):
+        try: return float(v)
+        except (TypeError, ValueError): return 0.0
+        
+    entry_low = safe_float(s.get("entry_low", 0))
+    entry_high = safe_float(s.get("entry_high", 0))
+    sl = safe_float(s.get("stop_loss", 0))
+    tp1 = safe_float(s.get("tp1", 0))
+    tp2 = safe_float(s.get("tp2", 0))
+    tp3 = safe_float(s.get("tp3", 0))
+    score = safe_float(s.get("score", 0))
+    rsi = safe_float(s.get("rsi", 50))
+    funding = safe_float(s.get("funding_rate", 0))
+    oi_change = safe_float(s.get("oi_change", 0))
+    position_usd = safe_float(s.get("position_usd", 30))
+    risk_usd = safe_float(s.get("risk_usd", 30))
+    rr = safe_float(s.get("rr_ratio", 0))
 
     dir_emoji = "🚀" if direction == "LONG" else "🔻"
     regime_emoji = {"BULL": "🟢", "BEAR": "🔴", "SIDEWAYS": "🟡", "CRISIS": "⚠️"}.get(regime, "⚪")
@@ -506,12 +511,12 @@ def build_signal_card(signal_data: dict) -> str:
 
 async def send_signal(bot: Bot, chat_id: int, signal_data: dict):
     """Send a formatted signal card to Telegram."""
-    card = build_signal_card(signal_data)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
-         InlineKeyboardButton(text="🏠 Меню", callback_data="home")]
-    ])
     try:
+        card = build_signal_card(signal_data)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+             InlineKeyboardButton(text="🏠 Меню", callback_data="home")]
+        ])
         await bot.send_message(chat_id=chat_id, text=card, reply_markup=kb, parse_mode="HTML")
         logger.info(f"Signal sent: {signal_data.get('symbol')} score={signal_data.get('score')}")
     except Exception as e:
