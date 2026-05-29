@@ -472,9 +472,9 @@ class ApexSystem:
 
                     # ─── FILTER 2: SESSION FILTER ────────────────────────────────────────────
                     utc_hour = datetime.utcnow().hour
-                    if 22 <= utc_hour or utc_hour < 1:
-                        logger.info(f"{symbol} - [BLOCKED] Session Filter: Dead zone {utc_hour}:00 UTC. Skipping.")
-                        continue
+                    # if 22 <= utc_hour or utc_hour < 1:
+                    #     logger.info(f"{symbol} - [BLOCKED] Session Filter: Dead zone {utc_hour}:00 UTC. Skipping.")
+                    #     continue
 
                     # ─── FILTER 3: VOLUME GATE ────────────────────────────────────────────────
                     if avg_vol_3 < baseline_hourly_vol * 0.50:
