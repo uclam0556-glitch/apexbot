@@ -317,7 +317,8 @@ class FormalizedSMCCore:
         n = len(df)
 
         for i in range(2, n):
-            atr_threshold = 1.5 * atr.iloc[i]
+            # V6.1: Reduced FVG ATR threshold from 1.5 to 0.8 for sideways market visibility
+            atr_threshold = 0.8 * atr.iloc[i]
             ts = self._get_timestamp(df, i - 1)  # zone created at middle candle
 
             # ── Bullish FVG ──────────────────────────────────────────────
@@ -526,6 +527,9 @@ class FormalizedSMCCore:
         if not swing_highs or not swing_lows:
             return []
 
+        # V6.1: Add ATR filter for BOS validation
+        atr = _compute_atr(df, period=14)
+
         events: list[StructureEvent] = []
 
         # Track structural bias: start with the most recent swing direction
@@ -549,7 +553,8 @@ class FormalizedSMCCore:
             close = float(closes[i])
 
             # ── Bullish break ────────────────────────────────────────────
-            if close > latest_sh:
+            # V6.1: Require break to exceed previous swing high by > 0.5 ATR
+            if close > latest_sh and (close - latest_sh) > 0.5 * atr.iloc[i]:
                 event_type = "CHOCH" if prior_structure == -1 else "BOS"
                 events.append(
                     StructureEvent(
@@ -564,7 +569,8 @@ class FormalizedSMCCore:
                 prior_structure = 1
 
             # ── Bearish break ────────────────────────────────────────────
-            elif close < latest_sl:
+            # V6.1: Require break to exceed previous swing low by > 0.5 ATR
+            elif close < latest_sl and (latest_sl - close) > 0.5 * atr.iloc[i]:
                 event_type = "CHOCH" if prior_structure == 1 else "BOS"
                 events.append(
                     StructureEvent(

@@ -383,7 +383,7 @@ class ApexSystem:
                         continue
                         
                     # 3. SMC Structure
-                    smc_analysis = self.smc_core.analyze(df_1h, symbol=symbol, lookback=5)
+                    smc_analysis = self.smc_core.analyze(df_1h, symbol=symbol, lookback=10)
 
                     # 4. NEW: Run all technical indicators
                     indicators = run_all_indicators(df_1h, symbol=symbol)
@@ -419,6 +419,18 @@ class ApexSystem:
                     # bonus: indicators (+/- up to 2) + context (+/- up to 2) + CVD (+/- up to 1)
                     ind_bonus = max(-2.0, min(2.0, ind_score * 0.33))
                     ctx_bonus = max(-2.0, min(2.0, ctx_score * 0.25))
+                    
+                    # ─── V6.1: CONTEXT BONUS NERF FOR SIDEWAYS/BEAR ──────────────────────────
+                    fg_val = market_ctx['fear_greed']['value']
+                    if current_regime.value in ["SIDEWAYS", "BEAR"] and fg_val < 40:
+                        df_5m_check = tf_data.get('5m', pd.DataFrame())
+                        prices_last_10m = df_5m_check['close'].tail(2).tolist() if not df_5m_check.empty else []
+                        is_reversal = self.liquidation_detector.is_post_cascade_reversal(symbol, current_price, prices_last_10m)
+                        
+                        if not is_reversal:
+                            ctx_bonus = min(ctx_bonus, 0.3)
+                            logger.debug(f"{symbol} - Context bonus nerfed to {ctx_bonus} due to Extreme Fear in {current_regime.value} without reversal confirmation.")
+
                     cvd_bonus = max(-1.0, min(1.0, cvd_result.get("score", 0) * 0.5))
                     ultra_score = max(0, min(10.0, confluence.raw_score + ind_bonus + ctx_bonus + cvd_bonus))
 

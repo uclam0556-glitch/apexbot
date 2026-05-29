@@ -222,16 +222,25 @@ class RiskEngine:
         # half_kelly is a fraction (e.g. 0.02 = 2%); convert appropriately
         # Kelly outputs fraction of capital to risk, already in % terms when
         # avg_win_pct and avg_loss_pct are expressed in %
-        adjusted_size_pct = half_kelly * vol_mult * dd_mult
+        adjusted_size_pct = half_kelly * 100.0 * vol_mult * dd_mult
 
-        # Step 6: Hard caps
+        # Step 6: Hard caps (Regime-based)
+        # V6.1: Regime caps: LOW (BULL)=2.0%, NORMAL (SIDEWAYS)=1.0%, HIGH (BEAR)=0.5%
+        max_pct = 2.00
+        if volatility_regime == VolatilityRegime.NORMAL:
+            max_pct = 1.00
+        elif volatility_regime in [VolatilityRegime.HIGH, VolatilityRegime.CRISIS]:
+            max_pct = 0.50
+            
+        min_pct = 0.10  # 0.1% minimum risk
+            
         capped_at: str | None = None
         if half_kelly > 0:
-            if adjusted_size_pct < MIN_POSITION_PCT:
-                adjusted_size_pct = MIN_POSITION_PCT
+            if adjusted_size_pct < min_pct:
+                adjusted_size_pct = min_pct
                 capped_at = "min"
-            elif adjusted_size_pct > MAX_POSITION_PCT:
-                adjusted_size_pct = MAX_POSITION_PCT
+            elif adjusted_size_pct > max_pct:
+                adjusted_size_pct = max_pct
                 capped_at = "max"
 
         final_size_usd = deposit * adjusted_size_pct / 100.0

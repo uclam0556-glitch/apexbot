@@ -100,12 +100,13 @@ async def get_funding_rate(symbol: str) -> dict:
                     "symbol": symbol,
                     "rate_pct": round(rate, 4),
                     "fetched_at": now,
+                    "is_valid": True,
                 }
                 _funding_cache[binance_symbol] = result
                 return result
     except Exception as e:
         logger.debug(f"Funding rate fetch failed for {symbol}: {e}")
-        return {"symbol": symbol, "rate_pct": 0.0, "fetched_at": now}
+        return {"symbol": symbol, "rate_pct": 0.0, "fetched_at": now, "is_valid": False}
 
 
 def funding_rate_score(rate_pct: float) -> tuple[int, str]:
@@ -164,12 +165,13 @@ async def get_open_interest_change(symbol: str) -> dict:
                     "oi_now": oi_now,
                     "change_pct": round(change_pct, 2),
                     "fetched_at": now,
+                    "is_valid": True,
                 }
                 _oi_cache[binance_symbol] = result
                 return result
     except Exception as e:
         logger.debug(f"OI fetch failed for {symbol}: {e}")
-        return {"symbol": symbol, "oi_now": 0, "change_pct": 0.0, "fetched_at": now}
+        return {"symbol": symbol, "oi_now": 0, "change_pct": 0.0, "fetched_at": now, "is_valid": False}
 
 
 def oi_score(change_pct: float, price_change_pct: float) -> tuple[int, str]:
@@ -262,8 +264,15 @@ async def get_market_context(symbol: str, price_change_pct: float = 0.0) -> dict
         dominance = {"dominance": 55.0}
 
     fg_score, fg_label = fear_greed_score(fg.get("value", 50))
+    
     fund_score, fund_label = funding_rate_score(funding.get("rate_pct", 0.0))
+    if funding.get("is_valid", True) is False:
+        fund_score, fund_label = 0, "⚪ N/A"
+        
     oi_score_val, oi_label = oi_score(oi.get("change_pct", 0.0), price_change_pct)
+    if oi.get("is_valid", True) is False:
+        oi_score_val, oi_label = 0, "⚪ N/A"
+        
     dom_score, dom_label = dominance_score(dominance.get("dominance", 55.0), symbol)
 
     return {
