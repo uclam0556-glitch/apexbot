@@ -163,7 +163,7 @@ class TradingConfig(BaseSettings):
     # Risk parameters
     initial_deposit_usd: float = 3_000.0
     risk_per_trade_pct: float = 1.0          # 1% = $30 per trade
-    min_score_for_signal: float = 6.0        # Minimum confluence score
+    min_score_for_signal: float = 60.0       # Minimum confluence score (out of 100)
     min_risk_pct: float = 0.5
     max_risk_pct: float = 1.0
     half_kelly: bool = True
@@ -182,15 +182,15 @@ class TradingConfig(BaseSettings):
     calibration_drift_stop_pct: float = 15.0
 
     # Regime-specific thresholds
-    bull_confluence_min: float = 6.5    # v4: weighted score
+    bull_confluence_min: float = 65.0    # v4: weighted score
     bull_signals_max: int = 5
     bull_risk_max_pct: float = 1.5
 
-    sideways_confluence_min: float = 8.0
+    sideways_confluence_min: float = 80.0
     sideways_signals_max: int = 3
     sideways_risk_max_pct: float = 0.75
 
-    bear_confluence_min: float = 9.5
+    bear_confluence_min: float = 95.0
     bear_signals_max: int = 2
     bear_risk_max_pct: float = 0.5
 

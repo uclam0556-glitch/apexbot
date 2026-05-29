@@ -204,7 +204,7 @@ async def can_open_new_position(regime: str) -> bool:
     BULL: 15, SIDEWAYS: 8, BEAR: 5, CRISIS: 0
     """
     limits = {
-        "BULL": 15,
+        "BULL": 20,
         "SIDEWAYS": 8,
         "BEAR": 5,
         "CRISIS": 0
