@@ -40,6 +40,8 @@ from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trad
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
+from services.data.macro_calendar import is_macro_blackout_window
+from services.engine.liquidation_detector import LiquidationCascadeDetector
 
 # v5.0 Imports
 from services.data.ws_manager import ExchangeWSManager
@@ -83,6 +85,7 @@ class ApexSystem:
         self.ws_manager = ExchangeWSManager()
         self.ml_classifier = MLRegimeClassifier()
         self.weights_optimizer = DynamicWeightsOptimizer()
+        self.liquidation_detector = LiquidationCascadeDetector()
         
         # Global State
         self.macro_state = None
@@ -237,6 +240,13 @@ class ApexSystem:
                 
             logger.info("=== STARTING SCAN CYCLE ===")
             
+            # ─── MACRO BLACKOUT CHECK ────────────────────────────────────────────────
+            is_blackout, blackout_reason = is_macro_blackout_window()
+            if is_blackout:
+                logger.info(f"🛑 MACRO BLACKOUT: {blackout_reason}. Pausing scan for 5 minutes.")
+                await asyncio.sleep(300)
+                continue
+            
             open_trades = await get_open_trades()
             open_symbols = [t['symbol'] for t in open_trades]
             
@@ -245,7 +255,12 @@ class ApexSystem:
                 await asyncio.sleep(60)
                 continue
             
-            for symbol in self.config.trading.symbols:
+            # ─── RS MATRIX PRE-FILTER (Top 30 Only) ──────────────────────────────────
+            top_rs_coins = rs_matrix_engine.get_top_n(30)
+            scan_symbols = [c['symbol'] for c in top_rs_coins] if top_rs_coins else self.config.trading.symbols[:30]
+            logger.info(f"Pre-filtered top {len(scan_symbols)} strongest coins for scanning.")
+
+            for symbol in scan_symbols:
                 if not self.running:
                     break
                     
@@ -253,15 +268,15 @@ class ApexSystem:
                     logger.debug(f"{symbol} already has an open trade. Skipping to avoid duplicate signals.")
                     continue
                     
-                rs_rank = rs_matrix_engine.get_rank(symbol)
-                if rs_rank > 15:
-                    logger.debug(f"{symbol} - RS Rank {rs_rank} > 15 (Too weak against BTC). Skipping.")
-                    continue
-                    
                 try:
                     global_state.current_symbol = symbol
                     global_state.last_scan_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
                     logger.info(f"Scanning {symbol}...")
+                    
+                    # ─── LIQUIDATION CASCADE CHECK ───────────────────────────────────────────
+                    if self.liquidation_detector.is_cascade_in_progress(symbol):
+                        logger.warning(f"🚨 {symbol} - [BLOCKED] Liquidation Cascade in progress. Skipping.")
+                        continue
                     
                     # 1. Fetch Multi-Timeframe Data (ALL 5 TFs)
                     timeframes_to_fetch = ['1d', '4h', '1h', '15m', '5m']
@@ -290,15 +305,25 @@ class ApexSystem:
                     rsi_now = rsi_series.iloc[-1]
                     
                     # --- Volume Analysis ---
-                    vol_sma20 = df_1h['volume'].rolling(20).mean()
-                    vol_ratio = df_1h['volume'].iloc[-1] / vol_sma20.iloc[-1] if vol_sma20.iloc[-1] > 0 else 1.0
+                    # Use a proxy for RVOL: Daily average volume divided by 24 for baseline
+                    # Requires 1d timeframe to be loaded
+                    df_1d = tf_data.get('1d', pd.DataFrame())
+                    if not df_1d.empty and len(df_1d) >= 20:
+                        daily_vol_avg_20 = df_1d['volume'].rolling(20).mean().iloc[-1]
+                        baseline_hourly_vol = daily_vol_avg_20 / 24.0
+                    else:
+                        baseline_hourly_vol = df_1h['volume'].rolling(24).mean().iloc[-1]
+                        
+                    avg_vol_3 = df_1h['volume'].iloc[-3:].mean()
+                    vol_ratio = avg_vol_3 / baseline_hourly_vol if baseline_hourly_vol > 0 else 1.0
                     
                     logger.info(f"{symbol} | Price=${current_price:,.4f} | RSI={rsi_now:.1f} | Vol={vol_ratio:.2f}x | TFs loaded={list(tf_data.keys())}")
 
-                    # ─── FILTER 1: RSI HARD GATE ─────────────────────────────────────────────
-                    # Block LONG if 1h RSI is overbought (buying into overheated market)
-                    if rsi_now > 73:
-                        logger.info(f"{symbol} - [BLOCKED] RSI Hard Gate: RSI={rsi_now:.1f} > 73 (overheated). Skipping.")
+                    # ─── FILTER 1: ADAPTIVE RSI HARD GATE ────────────────────────────────────
+                    # In BULL regime, allow up to RSI 80 (trend following). Else cap at 73.
+                    rsi_max = 80 if current_regime.value == "BULL" else 73
+                    if rsi_now > rsi_max:
+                        logger.info(f"{symbol} - [BLOCKED] Adaptive RSI Gate: RSI={rsi_now:.1f} > {rsi_max} (overheated for {current_regime.value}). Skipping.")
                         continue
 
                     # ─── FILTER 2: SESSION FILTER ────────────────────────────────────────────
@@ -308,12 +333,10 @@ class ApexSystem:
                         logger.info(f"{symbol} - [BLOCKED] Session Filter: Dead zone {utc_hour}:00 UTC. Skipping.")
                         continue
 
-                    # ─── FILTER 3: VOLUME GATE ───────────────────────────────────────────────
-                    # Block entry if recent volume is below 70% of 20-day average (fakeout)
-                    avg_vol_3 = df_1h['volume'].iloc[-3:].mean()
-                    vol_avg_20 = vol_sma20.iloc[-1] if vol_sma20.iloc[-1] > 0 else 1.0
-                    if avg_vol_3 < vol_avg_20 * 0.70:
-                        logger.info(f"{symbol} - [BLOCKED] Volume Gate: Vol={avg_vol_3:.0f} < 70% of avg={vol_avg_20:.0f}. Skipping.")
+                    # ─── FILTER 3: VOLUME GATE (FIXED) ───────────────────────────────────────
+                    # Block entry if recent volume is below 50% of the daily hourly average (avoids night false blocks)
+                    if avg_vol_3 < baseline_hourly_vol * 0.50:
+                        logger.info(f"{symbol} - [BLOCKED] Volume Gate: Vol={avg_vol_3:.0f} < 50% of 24h baseline {baseline_hourly_vol:.0f}. Skipping.")
                         continue
 
                     # ─── FILTER 4: ENTRY CANDLE CONFIRMATION (15m) ───────────────────────────
@@ -526,10 +549,36 @@ class ApexSystem:
                         sltp.take_profit_2 = sltp.take_profit_3 * 0.95
                         sltp.take_profit_3 = current_price * 1.20 # +20% Moonbag
 
-                    # Position sizing: 1% of $3000 = $30
+                    # 9. Kelly Criterion Sizing
                     deposit = self.config.trading.initial_deposit_usd
-                    risk_pct = getattr(self.config.trading, 'risk_per_trade_pct', 1.0)
+                    # Map regime string to VolatilityRegime enum for risk engine
+                    from shared.models import VolatilityRegime
+                    vol_enum = VolatilityRegime.NORMAL
+                    if current_regime.value == "BULL": vol_enum = VolatilityRegime.LOW # Calm up-only
+                    elif current_regime.value == "BEAR": vol_enum = VolatilityRegime.HIGH # Volatile drops
+                    
+                    # Calculate kelly size
+                    # Defaults: WR 55%, R:R 2.0 (avg_win=2%, avg_loss=1%), 0% DD
+                    kelly_result = self.risk_engine.calculate_position_size_kelly(
+                        deposit=deposit,
+                        win_rate_calibrated=0.55,
+                        avg_win_pct=2.0,
+                        avg_loss_pct=1.0,
+                        volatility_regime=vol_enum,
+                        current_drawdown_pct=0.0
+                    )
+                    
+                    # Convert percentage to USD allocation
+                    # Kelly returns % of capital to RISK.
+                    # Position Size USD = Risk USD / Stop Loss %
+                    risk_pct = kelly_result.final_position_size_pct
                     risk_usd = deposit * risk_pct / 100
+                    
+                    # Squeeze Engine modifier: reduce risk if RSI is extreme
+                    if is_squeeze or rsi_now >= 75:
+                        risk_usd *= 0.7  # Reduce risk by 30% for over-extended/squeeze setups
+                        logger.info(f"{symbol} - RSI/Squeeze Warning: Reduced risk size by 30%.")
+
                     sl_pct = abs(current_price - sltp.stop_loss) / current_price if current_price > 0 else 0.03
                     position_usd = (risk_usd / sl_pct) if sl_pct > 0 else risk_usd * 10
                     position_usd = min(position_usd, deposit * 0.20)  # Max 20% of deposit
