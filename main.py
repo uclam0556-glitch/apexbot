@@ -843,6 +843,7 @@ class ApexSystem:
         asyncio.create_task(self.background_macro_updater())
         asyncio.create_task(self.background_trade_tracker())
         asyncio.create_task(self.ws_manager.start(self.config.trading.symbols))
+        asyncio.create_task(rs_matrix_engine.fast_price_poller(self.config.trading.symbols))
         
         # Start main loop
         await self.run_trading_pipeline()
