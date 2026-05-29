@@ -422,6 +422,7 @@ def build_signal_card(signal_data: dict) -> str:
     rsi_div = s.get("rsi_divergence", "NONE")
     bb_label = s.get("bb_label", "")
     fib_level = s.get("fib_level", None)
+    strategy = s.get("strategy", "Trend Following")
     
     def safe_float(v):
         try: return float(v)
@@ -476,8 +477,11 @@ def build_signal_card(signal_data: dict) -> str:
         
     squeeze_alert = "🚨 <b>SHORT SQUEEZE DETECTED</b>\n<i>Лимиты сняты, ловим ракету 🚀</i>\n━━━━━━━━━━━━━━━━━━━━━━━━\n" if s.get("is_squeeze") else ""
 
+    strat_emoji = "🔄" if strategy == "Mean Reversion" else "📈" if direction == "LONG" else "📉"
+
     card = (
         f"{dir_emoji} <b>СИГНАЛ {direction} • {symbol}</b>\n"
+        f"<i>{strat_emoji} {strategy}</i>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"{squeeze_alert}"
         f"💰 <b>Вход:</b>     {fmt(entry_low)} – {fmt(entry_high)}\n"

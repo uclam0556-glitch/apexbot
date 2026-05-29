@@ -170,15 +170,13 @@ class ApexSystem:
                             
                         status = None
                         pnl_pct = 0.0
-                        
+
                         # LONG logic
                         if trade['direction'] == 'LONG':
-                            # Breakeven / TP1 logic
                             if current_price >= trade['take_profit_1'] and trade['status'] == 'OPEN':
-                                # Reached TP1 -> Move SL to Breakeven
                                 status = 'BREAKEVEN'
                                 pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
-                                new_sl = trade['entry_price'] * 1.001 # slightly above breakeven
+                                new_sl = trade['entry_price'] * 1.001
                                 from shared.lite_db import update_trade_sl
                                 await update_trade_sl(trade['id'], new_sl, status)
                                 logger.info(f"Trade {symbol} hit TP1. SL moved to BREAKEVEN ({format_price(new_sl)}).")
@@ -187,16 +185,34 @@ class ApexSystem:
                                         await send_tp1_notification(bot, int(chat_id_str), trade, pnl_pct)
                                     except Exception as e:
                                         logger.error(f"Failed to send TP1 notification: {e}")
-                            
-                            # Final TP3 logic (Trailing ATR could go here, for now it's static TP3)
                             elif trade.get('take_profit_3') and current_price >= trade['take_profit_3']:
                                 status = 'WON'
                                 pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
-                                
-                            # Stop Loss hit (either original SL or Breakeven SL)
                             elif current_price <= trade['stop_loss']:
                                 status = 'LOST' if trade['status'] == 'OPEN' else 'WON_BREAKEVEN'
                                 pnl_pct = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+
+                        # SHORT logic (mirror of LONG)
+                        elif trade['direction'] == 'SHORT':
+                            if current_price <= trade['take_profit_1'] and trade['status'] == 'OPEN':
+                                # SHORT hit TP1 → move SL to breakeven (slightly below entry)
+                                status = 'BREAKEVEN'
+                                pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
+                                new_sl = trade['entry_price'] * 0.999  # slightly below breakeven
+                                from shared.lite_db import update_trade_sl
+                                await update_trade_sl(trade['id'], new_sl, status)
+                                logger.info(f"SHORT Trade {symbol} hit TP1. SL moved to BREAKEVEN ({format_price(new_sl)}).")
+                                if bot:
+                                    try:
+                                        await send_tp1_notification(bot, int(chat_id_str), trade, pnl_pct)
+                                    except Exception as e:
+                                        logger.error(f"Failed to send TP1 notification: {e}")
+                            elif trade.get('take_profit_3') and current_price <= trade['take_profit_3']:
+                                status = 'WON'
+                                pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
+                            elif current_price >= trade['stop_loss']:
+                                status = 'LOST' if trade['status'] == 'OPEN' else 'WON_BREAKEVEN'
+                                pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
                                 
                         if status in ['WON', 'LOST', 'WON_BREAKEVEN']:
                             await close_trade(trade['id'], status, pnl_pct)
@@ -342,90 +358,183 @@ class ApexSystem:
                     
                     logger.info(f"{symbol} | Price=${format_price(current_price)} | RSI={rsi_now:.1f} | Vol={vol_ratio:.2f}x | TFs loaded={list(tf_data.keys())}")
 
-                    # ─── FILTER 1: ADAPTIVE RSI HARD GATE ────────────────────────────────────
+                    # ─── FILTER 1: REGIME CLASSIFICATION ─────────────────────────────────
                     if not self.ml_classifier.is_trained:
                         self.ml_classifier.train_hmm(df_1h)
                     current_regime = self.ml_classifier.classify_current_regime(df_1h)
-                    
-                    # In BULL regime, allow up to RSI 80 (trend following). Else cap at 73.
-                    rsi_max = 80 if current_regime.value == "BULL" else 73
-                    if rsi_now > rsi_max:
-                        logger.info(f"{symbol} - [BLOCKED] Adaptive RSI Gate: RSI={rsi_now:.1f} > {rsi_max} (overheated for {current_regime.value}). Skipping.")
-                        continue
+                    global_state.regime = current_regime.value
 
                     # ─── FILTER 2: SESSION FILTER ────────────────────────────────────────────
-                    # Dead zone 22:00-01:00 UTC: low liquidity, high fakeout risk
                     utc_hour = datetime.utcnow().hour
                     if 22 <= utc_hour or utc_hour < 1:
                         logger.info(f"{symbol} - [BLOCKED] Session Filter: Dead zone {utc_hour}:00 UTC. Skipping.")
                         continue
 
-                    # ─── FILTER 3: VOLUME GATE (FIXED) ───────────────────────────────────────
-                    # Block entry if recent volume is below 50% of the daily hourly average (avoids night false blocks)
+                    # ─── FILTER 3: VOLUME GATE ────────────────────────────────────────────────
                     if avg_vol_3 < baseline_hourly_vol * 0.50:
                         logger.info(f"{symbol} - [BLOCKED] Volume Gate: Vol={avg_vol_3:.0f} < 50% of 24h baseline {baseline_hourly_vol:.0f}. Skipping.")
                         continue
 
-                    # ─── FILTER 4: ENTRY CANDLE CONFIRMATION (15m) ───────────────────────────
-                    # Do not enter LONG if the last closed 15m candle is bearish
-                    df_15m_check = tf_data.get('15m', pd.DataFrame())
-                    if not df_15m_check.empty and len(df_15m_check) >= 2:
-                        last_15m = df_15m_check.iloc[-2]  # Last CLOSED candle
-                        if last_15m['close'] < last_15m['open']:  # Bearish candle
-                            logger.info(f"{symbol} - [BLOCKED] Entry Candle: Last 15m candle is bearish. Waiting for confirmation.")
-                            continue
-
-                    # ─── FILTER 7: CVD ORDERFLOW (Citadel-Style) ─────────────────────────────
-                    # Block LONG if Cumulative Volume Delta shows bearish divergence
+                    # ─── CVD ANALYSIS (shared for all directions) ─────────────────────────────
                     cvd_result = {"score": 0, "divergence": False, "cvd_signal": "NEUTRAL"}
                     df_5m_cvd = tf_data.get('5m', pd.DataFrame())
                     if not df_5m_cvd.empty:
                         cvd_result = calculate_cvd(df_5m_cvd, lookback=20)
-                        if cvd_result["divergence"]:
+
+                    cvd_signal = cvd_result.get("cvd_signal", "NEUTRAL")
+                    cvd_score_val = cvd_result.get("score", 0)
+
+                    # ─── DETERMINE TRADE DIRECTION & STRATEGY ─────────────────────────────────
+                    # Three possible strategies:
+                    # 1. LONG  — BULL regime OR SIDEWAYS with MTF STRONG_LONG
+                    # 2. SHORT — BEAR regime with bearish momentum
+                    # 3. MEAN_REVERSION_LONG — SIDEWAYS with RSI < 35 oversold bounce
+
+                    trade_direction = None    # "LONG" or "SHORT"
+                    trade_strategy  = None    # "TREND" or "MEAN_REVERSION"
+
+                    regime_val = current_regime.value
+
+                    # ── Strategy A: SHORT in BEAR ───────────────────────────────────────────
+                    if regime_val == "BEAR":
+                        # RSI > 60 = still pumping into downtrend = perfect short entry
+                        rsi_ok_short    = rsi_now > 55  # overextended bounce in downtrend
+                        cvd_ok_short    = cvd_signal in ("BEARISH", "NEUTRAL") and cvd_score_val <= 0
+                        no_squeeze      = not (market_ctx["funding"]["rate_pct"] > 0.05 and market_ctx["open_interest"]["change_pct"] > 2.0)
+
+                        if rsi_ok_short and cvd_ok_short and no_squeeze:
+                            trade_direction = "SHORT"
+                            trade_strategy  = "TREND"
+                            logger.info(f"{symbol} - [SHORT CANDIDATE] BEAR regime | RSI={rsi_now:.1f} | CVD={cvd_signal}")
+                        else:
+                            logger.info(f"{symbol} - [BLOCKED] BEAR regime but SHORT conditions not met (RSI={rsi_now:.1f}, CVD={cvd_signal}, squeeze={not no_squeeze}). Skipping.")
+                            continue
+
+                    # ── Strategy B: MEAN REVERSION LONG in SIDEWAYS ────────────────────────
+                    elif regime_val == "SIDEWAYS" and rsi_now < 35:
+                        cvd_reversing = cvd_score_val >= -1  # CVD not strongly bearish
+                        if cvd_reversing:
+                            trade_direction = "LONG"
+                            trade_strategy  = "MEAN_REVERSION"
+                            logger.info(f"{symbol} - [MEAN REVERSION LONG] SIDEWAYS + RSI={rsi_now:.1f} (oversold) | CVD={cvd_signal}")
+                        else:
+                            logger.info(f"{symbol} - [BLOCKED] Mean reversion blocked: CVD still strongly bearish ({cvd_score_val}). Skipping.")
+                            continue
+
+                    # ── Strategy C: TREND LONG in BULL / SIDEWAYS ──────────────────────────
+                    else:
+                        # RSI gate: BULL up to 80, SIDEWAYS up to 73
+                        rsi_max = 80 if regime_val == "BULL" else 73
+                        if rsi_now > rsi_max:
+                            logger.info(f"{symbol} - [BLOCKED] Adaptive RSI Gate: RSI={rsi_now:.1f} > {rsi_max} (overheated for {regime_val}). Skipping.")
+                            continue
+
+                        # Block if CVD is strongly bearish
+                        if cvd_result.get("divergence"):
                             logger.info(f"{symbol} - [BLOCKED] CVD Divergence: Price rising but net selling detected. Skipping.")
                             continue
-                        if cvd_result["cvd_signal"] == "BEARISH" and cvd_result["score"] <= -2:
+                        if cvd_signal == "BEARISH" and cvd_score_val <= -2:
                             logger.info(f"{symbol} - [BLOCKED] CVD Bearish: Strong net selling pressure. Skipping.")
                             continue
-                    
-                    global_state.regime = current_regime.value
-                    
-                    # Get dynamically optimized weights
+
+                        trade_direction = "LONG"
+                        trade_strategy  = "TREND"
+
+                    # ─── FILTER 4: REGIME-AWARE ENTRY CANDLE CONFIRMATION (15m) ──────────────
+                    # BULL / TREND LONG   → 1 green candle required
+                    # SIDEWAYS TREND LONG → 2 of last 3 candles must be green
+                    # SHORT               → 1 red candle required
+                    # MEAN REVERSION LONG → 1 green candle (catching the bounce, be flexible)
+                    df_15m_check = tf_data.get('15m', pd.DataFrame())
+                    if not df_15m_check.empty and len(df_15m_check) >= 3:
+                        last3 = df_15m_check.iloc[-4:-1]  # last 3 CLOSED candles
+                        last1 = df_15m_check.iloc[-2]      # last CLOSED candle
+
+                        if trade_direction == "SHORT":
+                            # Need last candle to be red (bearish)
+                            if last1['close'] >= last1['open']:
+                                logger.info(f"{symbol} - [BLOCKED] Entry Candle (SHORT): Last 15m candle is bullish. Waiting for red candle.")
+                                continue
+
+                        elif trade_strategy == "MEAN_REVERSION":
+                            # At least 1 green candle in last 3 (flexible — catching bounce)
+                            green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
+                            if green_count == 0:
+                                logger.info(f"{symbol} - [BLOCKED] Entry Candle (MR): No green candle in last 3. Waiting for reversal.")
+                                continue
+
+                        elif regime_val == "SIDEWAYS":
+                            # 2 of last 3 must be green
+                            green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
+                            if green_count < 2:
+                                logger.info(f"{symbol} - [BLOCKED] Entry Candle (SIDEWAYS): Only {green_count}/3 green. Need 2. Skipping.")
+                                continue
+
+                        else:
+                            # BULL trend: standard 1 green candle
+                            if last1['close'] < last1['open']:
+                                logger.info(f"{symbol} - [BLOCKED] Entry Candle: Last 15m candle is bearish. Waiting for confirmation.")
+                                continue
+
+                    # ─── FILTER 5: BTC CORRELATION GATE ──────────────────────────────────────
+                    if 'BTC' not in symbol:
+                        try:
+                            btc_1h = await self.fetch_market_data('BTC/USDT', '1h', 50)
+                            if not btc_1h.empty:
+                                btc_delta = btc_1h['close'].diff()
+                                btc_gain  = btc_delta.clip(lower=0).rolling(14).mean()
+                                btc_loss  = (-btc_delta.clip(upper=0)).rolling(14).mean()
+                                btc_rsi   = (100 - (100 / (1 + btc_gain / btc_loss.replace(0, 1e-9)))).iloc[-1]
+
+                                if trade_direction == "LONG" and btc_rsi < 42:
+                                    logger.info(f"{symbol} - [BLOCKED] BTC Correlation Gate: BTC RSI={btc_rsi:.1f} < 42 (bearish). Skipping alts LONG.")
+                                    continue
+                                if trade_direction == "SHORT" and btc_rsi > 58:
+                                    logger.info(f"{symbol} - [BLOCKED] BTC Correlation Gate: BTC RSI={btc_rsi:.1f} > 58 (bullish). Skipping alts SHORT.")
+                                    continue
+                        except Exception as btc_err:
+                            logger.debug(f"BTC correlation check failed (non-fatal): {btc_err}")
+                            btc_rsi = 50.0
+                    else:
+                        btc_rsi = rsi_now
+
+                    # ─── MTF ALIGNMENT ────────────────────────────────────────────────────────
                     weights = self.weights_optimizer.get_current_weights()
-                    
-                    # 2. MTF Alignment — pass ALL loaded timeframes
                     mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
-                    
-                    direction = None
-                    if mtf_score.signal == "STRONG_LONG":
-                        direction = Direction.LONG
-                    # Spot-only: we skip STRONG_SHORT
-                    
-                    if not direction:
-                        logger.debug(f"{symbol} - MTF: {mtf_score.signal} (score={mtf_score.score:.2f}). Skipping.")
-                        continue
-                        
-                    # 3. SMC Structure
+
+                    # For MEAN REVERSION, we skip MTF requirement (it will show downtrend)
+                    if trade_strategy == "TREND":
+                        expected_mtf = "STRONG_LONG" if trade_direction == "LONG" else "STRONG_SHORT"
+                        if mtf_score.signal not in (expected_mtf, "NO_SIGNAL") and abs(mtf_score.score) < 4.0:
+                            logger.debug(f"{symbol} - MTF: {mtf_score.signal} (score={mtf_score.score:.2f}). Insufficient for {trade_direction}. Skipping.")
+                            continue
+
+                    # ─── SMC + INDICATORS ─────────────────────────────────────────────────────
                     smc_analysis = self.smc_core.analyze(df_1h, symbol=symbol, lookback=10)
+                    indicators   = run_all_indicators(df_1h, symbol=symbol)
+                    ind_score    = indicators.get("composite_score", 0)
 
-                    # 4. NEW: Run all technical indicators
-                    indicators = run_all_indicators(df_1h, symbol=symbol)
-                    ind_score = indicators.get("composite_score", 0)  # -6 to +6
+                    # For SHORT, invert ind_score
+                    if trade_direction == "SHORT":
+                        ind_score = -ind_score
 
-                    # 4b. NEW: Fetch market context (Funding, OI, F&G, BTC.D)
                     price_change_1h = (
                         (df_1h['close'].iloc[-1] - df_1h['close'].iloc[-5]) /
                         df_1h['close'].iloc[-5] * 100
                     ) if len(df_1h) >= 5 else 0.0
                     market_ctx = await get_market_context(symbol, price_change_1h)
-                    ctx_score = market_ctx.get("total_context_score", 0)  # -8 to +8
+                    ctx_score  = market_ctx.get("total_context_score", 0)
 
-                    # 5. Confluence Scoring
-                    ofi_mock = type('obj', (object,), {'ofi_score': min(vol_ratio / 2, 1.0), 'delta_usd': 50000})()
+                    if trade_direction == "SHORT":
+                        ctx_score = -ctx_score  # invert context for shorts
+
+                    # ─── CONFLUENCE SCORING ────────────────────────────────────────────────────
+                    dir_enum  = Direction.LONG if trade_direction == "LONG" else Direction.SHORT
+                    ofi_mock  = type('obj', (object,), {'ofi_score': min(vol_ratio / 2, 1.0), 'delta_usd': 50000})()
 
                     confluence = await self.confluence_engine.calculate_score(
                         symbol=symbol,
-                        direction=direction,
+                        direction=dir_enum,
                         current_price=current_price,
                         df_1h=df_1h,
                         rsi_series=rsi_series,
@@ -437,70 +546,63 @@ class ApexSystem:
                         rotation_signal=self.rotation_state
                     )
 
-                    # 6. Compute final ultra-score (0-10)
-                    # base: confluence.raw_score (0-10)
-                    # bonus: indicators (+/- up to 2) + context (+/- up to 2) + CVD (+/- up to 1)
+                    # ─── ULTRA SCORE ───────────────────────────────────────────────────────────
                     ind_bonus = max(-2.0, min(2.0, ind_score * 0.33))
                     ctx_bonus = max(-2.0, min(2.0, ctx_score * 0.25))
-                    
-                    # ─── V6.1: CONTEXT BONUS NERF FOR SIDEWAYS/BEAR ──────────────────────────
+
+                    # Context bonus nerf for SIDEWAYS/BEAR trend-following only
                     fg_val = market_ctx['fear_greed']['value']
-                    if current_regime.value in ["SIDEWAYS", "BEAR"] and fg_val < 40:
-                        df_5m_check = tf_data.get('5m', pd.DataFrame())
+                    if trade_strategy == "TREND" and regime_val in ["SIDEWAYS", "BEAR"] and fg_val < 40:
+                        df_5m_check    = tf_data.get('5m', pd.DataFrame())
                         prices_last_10m = df_5m_check['close'].tail(2).tolist() if not df_5m_check.empty else []
-                        is_reversal = self.liquidation_detector.is_post_cascade_reversal(symbol, current_price, prices_last_10m)
-                        
+                        is_reversal     = self.liquidation_detector.is_post_cascade_reversal(symbol, current_price, prices_last_10m)
                         if not is_reversal:
                             ctx_bonus = min(ctx_bonus, 0.3)
-                            logger.debug(f"{symbol} - Context bonus nerfed to {ctx_bonus} due to Extreme Fear in {current_regime.value} without reversal confirmation.")
 
-                    cvd_bonus = max(-1.0, min(1.0, cvd_result.get("score", 0) * 0.5))
-                    ultra_score = max(0, min(10.0, confluence.raw_score + ind_bonus + ctx_bonus + cvd_bonus))
+                    cvd_bonus  = max(-1.0, min(1.0, cvd_score_val * 0.5))
+                    if trade_direction == "SHORT":
+                        cvd_bonus = -cvd_bonus  # negative CVD is GOOD for shorts
 
+                    # Mean Reversion gets a bonus for deep oversold
+                    mr_bonus = 0.5 if trade_strategy == "MEAN_REVERSION" and rsi_now < 30 else 0.0
+
+                    ultra_score = max(0, min(10.0, confluence.raw_score + ind_bonus + ctx_bonus + cvd_bonus + mr_bonus))
+
+                    strategy_label = f"[{trade_strategy}]" if trade_strategy != "TREND" else ""
                     logger.info(
-                        f"{symbol} | Score={ultra_score:.1f}/10 "
+                        f"{symbol} {strategy_label} | {trade_direction} | Score={ultra_score:.1f}/10 "
                         f"(conf={confluence.raw_score:.1f} ind={ind_bonus:+.1f} ctx={ctx_bonus:+.1f}) "
                         f"| RSI={rsi_now:.0f} | EMA={indicators['ema_ribbon']['label']} "
                         f"| FG={market_ctx['fear_greed']['value']}"
                     )
 
-                    # Update hot coins tracking
+                    # Hot coins tracking
                     if not hasattr(global_state, 'hot_coins'):
                         global_state.hot_coins = []
                     if ultra_score >= 5.0:
-                        global_state.hot_coins = [
-                            c for c in global_state.hot_coins if c['symbol'] != symbol
-                        ]
-                        global_state.hot_coins.append({
-                            'symbol': symbol,
-                            'score': ultra_score,
-                            'rsi': f"{rsi_now:.0f}",
-                            'regime': current_regime.value,
-                        })
+                        global_state.hot_coins = [c for c in global_state.hot_coins if c['symbol'] != symbol]
+                        global_state.hot_coins.append({'symbol': symbol, 'score': ultra_score, 'rsi': f"{rsi_now:.0f}", 'regime': regime_val})
                         global_state.hot_coins.sort(key=lambda x: x['score'], reverse=True)
                         global_state.hot_coins = global_state.hot_coins[:10]
 
-                    # Check minimum score threshold
                     min_score = getattr(self.config.trading, 'min_score_for_signal', 6.0)
                     if ultra_score < min_score:
                         logger.info(f"{symbol} - Ultra score {ultra_score:.1f} < {min_score}. Skipping.")
                         continue
-                        
-                    # 7. Adversarial Check
-                    # Combine swing_highs + swing_lows for functions expecting swing_points
+
+                    # ─── ADVERSARIAL CHECK ─────────────────────────────────────────────────────
                     all_swing_points = smc_analysis.swing_highs + smc_analysis.swing_lows
 
-                    # Build lightweight mock signal with only fields adversarial tester reads
                     class _MockSignal:
-                        def __init__(self, sym, price):
-                            self.symbol = sym
-                            self.direction = Direction.LONG
-                            self.entry_low = price * 0.999
-                            self.entry_high = price * 1.001
-                            self.stop_loss = price * 0.97
-                            self.take_profit_1 = price * 1.03
-                            self.take_profit_2 = price * 1.05
-                            self.take_profit_3 = price * 1.08
+                        def __init__(self, sym, price, direction_enum):
+                            self.symbol     = sym
+                            self.direction  = direction_enum
+                            self.entry_low  = price * (0.999 if trade_direction == "LONG" else 1.001)
+                            self.entry_high = price * (1.001 if trade_direction == "LONG" else 0.999)
+                            self.stop_loss  = price * (0.97  if trade_direction == "LONG" else 1.03)
+                            self.take_profit_1 = price * (1.03 if trade_direction == "LONG" else 0.97)
+                            self.take_profit_2 = price * (1.05 if trade_direction == "LONG" else 0.95)
+                            self.take_profit_3 = price * (1.08 if trade_direction == "LONG" else 0.92)
 
                     class _MockOrderBook:
                         def __init__(self):
@@ -509,12 +611,12 @@ class ApexSystem:
 
                     class _MockSpoofing:
                         def __init__(self):
-                            self.detected = False
+                            self.detected       = False
                             self.episodes_count = 0
 
                     try:
                         adv_res = self.adversarial_tester.run_adversarial_test(
-                            signal=_MockSignal(symbol, current_price),
+                            signal=_MockSignal(symbol, current_price, dir_enum),
                             smc=smc_analysis,
                             orderbook=_MockOrderBook(),
                             df_15m=tf_data.get('15m', df_1h),
@@ -530,28 +632,10 @@ class ApexSystem:
                     except Exception as adv_err:
                         logger.debug(f"{symbol} - Adversarial check skipped: {adv_err}")
 
-                    # ─── FILTER 5: BTC CORRELATION GATE ─────────────────────────────────────
-                    # Block altcoin longs if BTC is showing bearish RSI pressure (< 40)
-                    if 'BTC' not in symbol:
-                        btc_df = tf_data.get('1h', df_1h)  # Use current symbol 1h as fallback
-                        try:
-                            btc_1h = await self.fetch_market_data('BTC/USDT', '1h', 50)
-                            if not btc_1h.empty:
-                                btc_delta = btc_1h['close'].diff()
-                                btc_gain = btc_delta.clip(lower=0).rolling(14).mean()
-                                btc_loss = (-btc_delta.clip(upper=0)).rolling(14).mean()
-                                btc_rs = btc_gain / btc_loss.replace(0, 1e-9)
-                                btc_rsi = (100 - (100 / (1 + btc_rs))).iloc[-1]
-                                if btc_rsi < 42:
-                                    logger.info(f"{symbol} - [BLOCKED] BTC Correlation Gate: BTC RSI={btc_rsi:.1f} < 42 (bearish). Skipping alts.")
-                                    continue
-                        except Exception as btc_err:
-                            logger.debug(f"BTC correlation check failed (non-fatal): {btc_err}")
-
-                    # 8. Risk Engine — SL/TP
+                    # ─── RISK ENGINE — SL/TP ──────────────────────────────────────────────────
                     sltp = self.risk_engine.calculate_sl_tp(
                         entry=current_price,
-                        direction="LONG",
+                        direction=trade_direction,
                         atr=atr_1h,
                         swing_points=all_swing_points,
                         imbalance_zones=smc_analysis.imbalance_zones,
@@ -559,40 +643,40 @@ class ApexSystem:
                         key_levels=[]
                     )
 
-                    # ─── FILTER 6: TIGHT ATR STOP CAP ───────────────────────────────────────
-                    # If structural SL is too far (> 3%), cap it at entry - 2.0 * ATR_15m
+                    # ATR Stop Cap
                     sl_pct_check = abs(current_price - sltp.stop_loss) / current_price
                     if sl_pct_check > 0.030:
-                        atr_15m = pd.DataFrame()
                         df_15m_atr = tf_data.get('15m', pd.DataFrame())
                         if not df_15m_atr.empty:
                             atr_15m_val = (df_15m_atr['high'] - df_15m_atr['low']).rolling(14).mean().iloc[-1]
-                            tight_sl = current_price - (2.0 * atr_15m_val)
-                            logger.info(f"{symbol} - ATR Stop Cap: structural SL {sl_pct_check:.1%} too wide → tightened to ATR-based SL.")
-                            sltp.stop_loss = max(tight_sl, sltp.stop_loss)  # Use the tighter (higher) of the two
-                    
-                    # 8.5 Squeeze Engine Override
-                    funding_rate_val = market_ctx["funding"]["rate_pct"]
-                    oi_change_val = market_ctx["open_interest"]["change_pct"]
-                    is_squeeze = False
-                    
-                    if funding_rate_val < -0.05 and oi_change_val > 2.0:
-                        logger.info(f"🚨 SHORT SQUEEZE DETECTED on {symbol}! Overriding TP limits.")
-                        is_squeeze = True
-                        sltp.take_profit_1 = sltp.take_profit_3 * 0.9 # Move TP1 near TP3
-                        sltp.take_profit_2 = sltp.take_profit_3 * 0.95
-                        sltp.take_profit_3 = current_price * 1.20 # +20% Moonbag
+                            if trade_direction == "LONG":
+                                tight_sl = current_price - (2.0 * atr_15m_val)
+                                sltp.stop_loss = max(tight_sl, sltp.stop_loss)
+                            else:
+                                tight_sl = current_price + (2.0 * atr_15m_val)
+                                sltp.stop_loss = min(tight_sl, sltp.stop_loss)
+                            logger.info(f"{symbol} - ATR Stop Cap: structural SL {sl_pct_check:.1%} too wide → tightened.")
 
-                    # 9. Kelly Criterion Sizing
-                    deposit = self.config.trading.initial_deposit_usd
-                    # Map regime string to VolatilityRegime enum for risk engine
+                    # ─── SQUEEZE ENGINE ────────────────────────────────────────────────────────
+                    funding_rate_val = market_ctx["funding"]["rate_pct"]
+                    oi_change_val    = market_ctx["open_interest"]["change_pct"]
+                    is_squeeze       = False
+
+                    if trade_direction == "LONG" and funding_rate_val < -0.05 and oi_change_val > 2.0:
+                        logger.info(f"🚨 SHORT SQUEEZE on {symbol}! Boosting TP targets.")
+                        is_squeeze             = True
+                        sltp.take_profit_1     = sltp.take_profit_3 * 0.9
+                        sltp.take_profit_2     = sltp.take_profit_3 * 0.95
+                        sltp.take_profit_3     = current_price * 1.20
+
+                    # ─── KELLY SIZING ──────────────────────────────────────────────────────────
+                    deposit  = self.config.trading.initial_deposit_usd
                     from shared.models import VolatilityRegime
                     vol_enum = VolatilityRegime.NORMAL
-                    if current_regime.value == "BULL": vol_enum = VolatilityRegime.LOW # Calm up-only
-                    elif current_regime.value == "BEAR": vol_enum = VolatilityRegime.HIGH # Volatile drops
-                    
-                    # Calculate kelly size
-                    # Defaults: WR 55%, R:R 2.0 (avg_win=2%, avg_loss=1%), 0% DD
+                    if regime_val == "BULL":              vol_enum = VolatilityRegime.LOW
+                    elif regime_val == "BEAR":            vol_enum = VolatilityRegime.HIGH
+                    elif regime_val == "CRISIS":          vol_enum = VolatilityRegime.CRISIS
+
                     kelly_result = self.risk_engine.calculate_position_size_kelly(
                         deposit=deposit,
                         win_rate_calibrated=0.55,
@@ -601,103 +685,108 @@ class ApexSystem:
                         volatility_regime=vol_enum,
                         current_drawdown_pct=0.0
                     )
-                    
-                    # Convert percentage to USD allocation
-                    # Kelly returns % of capital to RISK.
-                    # Position Size USD = Risk USD / Stop Loss %
                     risk_pct = kelly_result.final_size_pct
                     risk_usd = deposit * risk_pct / 100
-                    
-                    # Squeeze Engine modifier: reduce risk if RSI is extreme
+
+                    # Mean Reversion: reduce risk (shorter TP, tighter market)
+                    if trade_strategy == "MEAN_REVERSION":
+                        risk_usd *= 0.7
+                        logger.info(f"{symbol} - Mean Reversion: Risk reduced to 70% Kelly.")
+
                     if is_squeeze or rsi_now >= 75:
-                        risk_usd *= 0.7  # Reduce risk by 30% for over-extended/squeeze setups
+                        risk_usd *= 0.7
                         logger.info(f"{symbol} - RSI/Squeeze Warning: Reduced risk size by 30%.")
 
-                    sl_pct = abs(current_price - sltp.stop_loss) / current_price if current_price > 0 else 0.03
+                    sl_pct       = abs(current_price - sltp.stop_loss) / current_price if current_price > 0 else 0.03
                     position_usd = (risk_usd / sl_pct) if sl_pct > 0 else risk_usd * 10
-                    position_usd = min(position_usd, deposit * 0.20)  # Max 20% of deposit
-                    rr_ratio = abs(sltp.take_profit_2 - current_price) / abs(current_price - sltp.stop_loss) if abs(current_price - sltp.stop_loss) > 0 else 2.0
+                    position_usd = min(position_usd, deposit * 0.20)
+                    rr_ratio     = abs(sltp.take_profit_2 - current_price) / abs(current_price - sltp.stop_loss) if abs(current_price - sltp.stop_loss) > 0 else 2.0
 
-                    # 8.7 Fetch Confidence Calibration
+                    # ─── CONFIDENCE CALIBRATION ────────────────────────────────────────────────
                     confidence_data = await get_confidence_calibration(ultra_score)
-                    
-                    # 9. Build signal package
+
+                    # ─── BUILD SIGNAL PACKAGE ─────────────────────────────────────────────────
+                    dir_emoji   = "🚀" if trade_direction == "LONG" else "🔻"
+                    strat_label = "Mean Reversion" if trade_strategy == "MEAN_REVERSION" else "Trend Following"
+
                     signal_data = {
-                        "symbol": symbol,
-                        "direction": "LONG",
-                        "is_squeeze": is_squeeze,
-                        "entry_low": current_price * 0.999,
-                        "entry_high": current_price * 1.001,
-                        "stop_loss": sltp.stop_loss,
-                        "tp1": sltp.take_profit_1,
-                        "tp2": sltp.take_profit_2,
-                        "tp3": sltp.take_profit_3,
-                        "score": ultra_score,
-                        "regime": current_regime.value,
-                        "rsi": rsi_now,
-                        "funding_rate": market_ctx["funding"]["rate_pct"],
-                        "oi_change": market_ctx["open_interest"]["change_pct"],
-                        "fear_greed": market_ctx["fear_greed"]["value"],
-                        "btc_dominance": market_ctx["btc_dominance"]["value"],
-                        "vwap_label": indicators["vwap"]["label"],
-                        "ema_label": indicators["ema_ribbon"]["label"],
-                        "rsi_divergence": indicators["rsi_divergence"]["label"],
-                        "bb_label": indicators["bollinger"]["label"],
-                        "fib_level": indicators["fibonacci"].get("nearest_fib"),
-                        "position_usd": round(position_usd, 0),
-                        "risk_usd": round(risk_usd, 0),
-                        "rr_ratio": round(rr_ratio, 1),
-                        "confidence_bucket": confidence_data["bucket"],
-                        "confidence_win_rate": confidence_data["win_rate"],
+                        "symbol":               symbol,
+                        "direction":            trade_direction,
+                        "strategy":             strat_label,
+                        "is_squeeze":           is_squeeze,
+                        "entry_low":            current_price * (0.999 if trade_direction == "LONG" else 1.001),
+                        "entry_high":           current_price * (1.001 if trade_direction == "LONG" else 0.999),
+                        "stop_loss":            sltp.stop_loss,
+                        "tp1":                  sltp.take_profit_1,
+                        "tp2":                  sltp.take_profit_2,
+                        "tp3":                  sltp.take_profit_3,
+                        "score":                ultra_score,
+                        "regime":               regime_val,
+                        "rsi":                  rsi_now,
+                        "funding_rate":         market_ctx["funding"]["rate_pct"],
+                        "oi_change":            market_ctx["open_interest"]["change_pct"],
+                        "fear_greed":           market_ctx["fear_greed"]["value"],
+                        "btc_dominance":        market_ctx["btc_dominance"]["value"],
+                        "vwap_label":           indicators["vwap"]["label"],
+                        "ema_label":            indicators["ema_ribbon"]["label"],
+                        "rsi_divergence":       indicators["rsi_divergence"]["label"],
+                        "bb_label":             indicators["bollinger"]["label"],
+                        "fib_level":            indicators["fibonacci"].get("nearest_fib"),
+                        "position_usd":         round(position_usd, 0),
+                        "risk_usd":             round(risk_usd, 0),
+                        "rr_ratio":             round(rr_ratio, 1),
+                        "confidence_bucket":    confidence_data["bucket"],
+                        "confidence_win_rate":  confidence_data["win_rate"],
                         "confidence_sample_size": confidence_data["sample_size"]
                     }
 
-                    # 10. Send beautiful signal card to Telegram
+                    # ─── SEND TO TELEGRAM ─────────────────────────────────────────────────────
                     try:
                         from aiogram import Bot
-                        token = self.config.alerts.telegram_bot_token.get_secret_value()
-                        chat_id_str = self.config.alerts.telegram_chat_id
+                        token        = self.config.alerts.telegram_bot_token.get_secret_value()
+                        chat_id_str  = self.config.alerts.telegram_chat_id
                         if token and chat_id_str:
                             bot = Bot(token=token)
                             await send_signal(bot, int(chat_id_str), signal_data)
                             await bot.session.close()
                             global_state.signals_sent_today += 1
-                            # 9) LOG FINAL SIGNAL
-                            logger.info(f"🚀 SIGNAL SENT: {symbol} | Score={ultra_score:.1f}/10 | Entry=${format_price(current_price)}")
+                            logger.info(f"{dir_emoji} SIGNAL SENT: {symbol} {trade_direction} [{strat_label}] | Score={ultra_score:.1f}/10 | Entry=${format_price(current_price)}")
                     except Exception as send_err:
                         logger.error(f"Failed to send signal: {send_err}")
 
-                    # 11. Save to DB (paper trading) with Feature Store
+                    # ─── SAVE TO DB ────────────────────────────────────────────────────────────
                     features_dict = {
-                        "regime": current_regime.value,
-                        "ultra_score": ultra_score,
-                        "fvg_count": len(smc_analysis.imbalance_zones),
-                        "btc_rsi": btc_rsi if 'btc_rsi' in locals() else 50.0,
+                        "regime":       regime_val,
+                        "ultra_score":  ultra_score,
+                        "fvg_count":    len(smc_analysis.imbalance_zones),
+                        "btc_rsi":      btc_rsi if 'btc_rsi' in locals() else 50.0,
                         "funding_rate": market_ctx["funding"]["rate_pct"],
-                        "oi_change": market_ctx["open_interest"]["change_pct"],
-                        "fg_index": market_ctx["fear_greed"]["value"],
-                        "mtf_score": mtf_score.score,
-                        "cvd_score": cvd_result.get("score", 0)
+                        "oi_change":    market_ctx["open_interest"]["change_pct"],
+                        "fg_index":     market_ctx["fear_greed"]["value"],
+                        "mtf_score":    mtf_score.score,
+                        "cvd_score":    cvd_score_val,
+                        "strategy":     trade_strategy,
+                        "direction":    trade_direction,
                     }
-                    
+
                     await save_trade(
                         signal_id=str(int(datetime.utcnow().timestamp())),
                         symbol=symbol,
-                        direction="LONG",
+                        direction=trade_direction,
                         entry_price=current_price,
                         stop_loss=sltp.stop_loss,
                         take_profit_1=sltp.take_profit_1,
                         take_profit_3=sltp.take_profit_3,
                         position_usd=position_usd,
-                        reasoning=f"Ultra Score {ultra_score:.1f}/10 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}",
+                        reasoning=f"{strat_label} | Ultra Score {ultra_score:.1f}/10 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}",
                         features_dict=features_dict
                     )
-                    logger.info(f"Signal saved to DB for {symbol}")
-                    
+                    logger.info(f"Signal saved to DB: {symbol} {trade_direction} [{strat_label}]")
+
                 except Exception as e:
                     logger.error(f"Error processing {symbol}: {e}", exc_info=True)
-                    
-                await asyncio.sleep(2) # Prevent rate limiting between pairs
+
+                await asyncio.sleep(2)  # Prevent rate limiting between pairs
                 
             logger.info("=== SCAN CYCLE COMPLETE ===")
             # Sleep for 5 minutes (300 seconds)
