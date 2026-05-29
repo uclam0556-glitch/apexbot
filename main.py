@@ -39,6 +39,7 @@ from services.executor.order_executor import OrderExecutor
 from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
+from services.intelligence.cvd_engine import calculate_cvd
 
 # v5.0 Imports
 from services.data.ws_manager import ExchangeWSManager
@@ -239,8 +240,8 @@ class ApexSystem:
             open_trades = await get_open_trades()
             open_symbols = [t['symbol'] for t in open_trades]
             
-            if len(open_trades) >= 5:
-                logger.info(f"Portfolio limit reached (5 open trades). Resting until a trade closes...")
+            if len(open_trades) >= 7:
+                logger.info(f"Portfolio limit reached (7 open trades). Resting until a trade closes...")
                 await asyncio.sleep(60)
                 continue
             
@@ -323,6 +324,19 @@ class ApexSystem:
                         if last_15m['close'] < last_15m['open']:  # Bearish candle
                             logger.info(f"{symbol} - [BLOCKED] Entry Candle: Last 15m candle is bearish. Waiting for confirmation.")
                             continue
+
+                    # ─── FILTER 7: CVD ORDERFLOW (Citadel-Style) ─────────────────────────────
+                    # Block LONG if Cumulative Volume Delta shows bearish divergence
+                    cvd_result = {"score": 0, "divergence": False, "cvd_signal": "NEUTRAL"}
+                    df_5m_cvd = tf_data.get('5m', pd.DataFrame())
+                    if not df_5m_cvd.empty:
+                        cvd_result = calculate_cvd(df_5m_cvd, lookback=20)
+                        if cvd_result["divergence"]:
+                            logger.info(f"{symbol} - [BLOCKED] CVD Divergence: Price rising but net selling detected. Skipping.")
+                            continue
+                        if cvd_result["cvd_signal"] == "BEARISH" and cvd_result["score"] <= -2:
+                            logger.info(f"{symbol} - [BLOCKED] CVD Bearish: Strong net selling pressure. Skipping.")
+                            continue
                     
                     # v5.0: Dynamically classify regime
                     if not self.ml_classifier.is_trained:
@@ -380,10 +394,11 @@ class ApexSystem:
 
                     # 6. Compute final ultra-score (0-10)
                     # base: confluence.raw_score (0-10)
-                    # bonus: indicators (+/- up to 2) + context (+/- up to 2)
+                    # bonus: indicators (+/- up to 2) + context (+/- up to 2) + CVD (+/- up to 1)
                     ind_bonus = max(-2.0, min(2.0, ind_score * 0.33))
                     ctx_bonus = max(-2.0, min(2.0, ctx_score * 0.25))
-                    ultra_score = max(0, min(10.0, confluence.raw_score + ind_bonus + ctx_bonus))
+                    cvd_bonus = max(-1.0, min(1.0, cvd_result.get("score", 0) * 0.5))
+                    ultra_score = max(0, min(10.0, confluence.raw_score + ind_bonus + ctx_bonus + cvd_bonus))
 
                     logger.info(
                         f"{symbol} | Score={ultra_score:.1f}/10 "

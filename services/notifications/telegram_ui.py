@@ -13,7 +13,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command
 
 from shared.config import get_config
-from shared.lite_db import get_stats, get_recent_trades, get_open_trades
+from shared.lite_db import get_stats, get_recent_trades, get_open_trades, reset_open_trades
 from shared.state import global_state
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,9 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="🔥 Hot Coins", callback_data="hot"),
             InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
+        ],
+        [
+            InlineKeyboardButton(text="🔄 Сброс ордеров", callback_data="reset_orders"),
         ]
     ])
 
@@ -62,11 +65,11 @@ def get_back_keyboard() -> InlineKeyboardMarkup:
 def get_start_text() -> str:
     now = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
     return (
-        "⚡ <b>APEX Quantum AI v5.0</b>\n"
+        "⚡ <b>APEX Quantum AI v5.1</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🟢 <b>Система активна:</b> Мониторинг 40 пар 24/7\n"
-        "🧠 <b>Ядро:</b> SMC + MTF + Macro Alignment\n"
-        "🛡 <b>Риск-менеджмент:</b> $3000 | 1% на сделку\n\n"
+        "🟢 <b>Система активна:</b> Мониторинг 60 пар 24/7\n"
+        "🧠 <b>Ядро:</b> SMC + MTF + RS Matrix + CVD\n"
+        "🛡 <b>Риск-менеджмент:</b> $3000 | 1% на сделку | Лимит 7\n\n"
         f"🕒 <i>Время сервера: {now}</i>\n\n"
         "👇 <b>Главное меню:</b>"
     )
@@ -332,6 +335,49 @@ async def process_home(callback: CallbackQuery):
     except Exception:
         pass
     await callback.answer()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RESET ORDERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "reset_orders")
+async def process_reset_orders(callback: CallbackQuery):
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, сбросить", callback_data="confirm_reset"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="home"),
+        ]
+    ])
+    try:
+        await callback.message.edit_text(
+            "⚠️ <b>Сброс открытых ордеров</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Все текущие OPEN позиции будут отмечены как CANCELLED.\n"
+            "Бот сразу начнет искать новые входы.\n\n"
+            "<b>Подтверждаешь?</b>",
+            reply_markup=confirm_kb,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+@router.callback_query(F.data == "confirm_reset")
+async def process_confirm_reset(callback: CallbackQuery):
+    await reset_open_trades()
+    try:
+        await callback.message.edit_text(
+            "✅ <b>Все ордера сброшены!</b>\n\n"
+            "Бот освободил все позиции и продолжает сканирование рынка.\n"
+            "Новые сигналы появятся в ближайшие минуты. 🚀",
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await callback.answer("Готово! Ордера сброшены ✅")
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIGNAL CARD — called from main.py when signal is found

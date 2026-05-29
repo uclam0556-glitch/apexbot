@@ -118,3 +118,15 @@ async def update_trade_sl(trade_id: int, new_sl: float, new_status: str = "OPEN"
             WHERE id = ?
         ''', (new_sl, new_status, trade_id))
         await db.commit()
+
+async def reset_open_trades():
+    """Closes all OPEN trades as CANCELLED (for manual reset via Telegram)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            UPDATE trades
+            SET status = 'CANCELLED', closed_at = ?, pnl_pct = 0
+            WHERE status = 'OPEN'
+        ''', (datetime.utcnow(),))
+        await db.commit()
+    logger.info("All open trades have been reset (CANCELLED).")
+
