@@ -470,66 +470,8 @@ class ApexSystem:
                             continue
 
                     else:
-                        rsi_max = 80 if regime_val == "BULL" else 73
-                        if rsi_now > rsi_max:
-                            logger.info(f"{symbol} - [BLOCKED] Adaptive RSI Gate: RSI={rsi_now:.1f} > {rsi_max} (overheated for {regime_val}). Skipping.")
-                            continue
-                        if cvd_result.get("divergence"):
-                            logger.info(f"{symbol} - [BLOCKED] CVD Divergence: Price rising but net selling detected. Skipping.")
-                            continue
-                        if cvd_signal == "BEARISH" and cvd_score_val <= -2:
-                            logger.info(f"{symbol} - [BLOCKED] CVD Bearish: Strong net selling pressure. Skipping.")
-                            continue
                         trade_strategy = "TREND"
-
-                    # ─── FILTER 4: REGIME-AWARE ENTRY CANDLE CONFIRMATION (15m) ──────────────
-                    # BULL (тренд)        → 1 зеленая свеча
-                    # SIDEWAYS (тренд)    → 2 из 3 последних зеленые
-                    # MEAN REVERSION LONG → хотя бы 1 зеленая из 3
-                    df_15m_check = tf_data.get('15m', pd.DataFrame())
-                    if not df_15m_check.empty and len(df_15m_check) >= 3:
-                        last3 = df_15m_check.iloc[-4:-1]  # last 3 CLOSED candles
-                        last1 = df_15m_check.iloc[-2]      # last CLOSED candle
-
-                        if trade_strategy == "MEAN_REVERSION" or trade_strategy == "CAPITULATION":
-                            green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
-                            if green_count == 0:
-                                logger.info(f"{symbol} - [BLOCKED] Entry Candle ({trade_strategy}): No green candle in last 3. Waiting for reversal.")
-                                continue
-
-                        elif regime_val == "SIDEWAYS":
-                            green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
-                            if green_count < 2:
-                                logger.info(f"{symbol} - [BLOCKED] Entry Candle (SIDEWAYS): Only {green_count}/3 green. Need 2. Skipping.")
-                                continue
-
-                        else:
-                            if last1['close'] < last1['open']:
-                                logger.info(f"{symbol} - [BLOCKED] Entry Candle: Last 15m candle is bearish. Waiting for confirmation.")
-                                continue
-
-                    # ─── FILTER 5: BTC CORRELATION GATE ──────────────────────────────────────
-                    if 'BTC' not in symbol:
-                        try:
-                            btc_1h = await self.fetch_market_data('BTC/USDT', '1h', 50)
-                            if not btc_1h.empty:
-                                btc_delta = btc_1h['close'].diff()
-                                btc_gain  = btc_delta.clip(lower=0).rolling(14).mean()
-                                btc_loss  = (-btc_delta.clip(upper=0)).rolling(14).mean()
-                                btc_rsi   = (100 - (100 / (1 + btc_gain / btc_loss.replace(0, 1e-9)))).iloc[-1]
-
-                                if trade_direction == "LONG" and btc_rsi < 42:
-                                    logger.info(f"{symbol} - [BLOCKED] BTC Correlation Gate: BTC RSI={btc_rsi:.1f} < 42 (bearish). Skipping alts LONG.")
-                                    continue
-                                if trade_direction == "SHORT" and btc_rsi > 58:
-                                    logger.info(f"{symbol} - [BLOCKED] BTC Correlation Gate: BTC RSI={btc_rsi:.1f} > 58 (bullish). Skipping alts SHORT.")
-                                    continue
-                        except Exception as btc_err:
-                            logger.debug(f"BTC correlation check failed (non-fatal): {btc_err}")
-                            btc_rsi = 50.0
-                    else:
-                        btc_rsi = rsi_now
-
+                        
                     # ─── MTF ALIGNMENT ────────────────────────────────────────────────────────
                     weights = self.weights_optimizer.get_current_weights()
                     mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
@@ -598,10 +540,69 @@ class ApexSystem:
                     mr_bonus = 0.5 if trade_strategy == "MEAN_REVERSION" and rsi_now < 30 else 0.0
 
                     ultra_score = max(0, min(10.0, confluence.raw_score + ind_bonus + ctx_bonus + cvd_bonus + mr_bonus))
+                    
+                    # ─── V7 ADAPTIVE SCORING (0-100) ───────────────────────────────────────────
+                    v7_score = ultra_score * 10.0
+                    
+                    # 1. Entry Candle Penalty
+                    df_15m_check = tf_data.get('15m', pd.DataFrame())
+                    if not df_15m_check.empty and len(df_15m_check) >= 3:
+                        last3 = df_15m_check.iloc[-4:-1]
+                        last1 = df_15m_check.iloc[-2]
+                        if trade_strategy in ["MEAN_REVERSION", "CAPITULATION"]:
+                            green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
+                            if green_count == 0: v7_score -= 15
+                        elif regime_val == "SIDEWAYS":
+                            green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
+                            if green_count < 2: v7_score -= 10
+                        else:
+                            if last1['close'] < last1['open']: v7_score -= 10
+                            
+                    # 2. BTC Correlation Penalty
+                    btc_rsi = 50.0
+                    if 'BTC' not in symbol:
+                        try:
+                            btc_1h = await self.fetch_market_data('BTC/USDT', '1h', 50)
+                            if not btc_1h.empty:
+                                btc_delta = btc_1h['close'].diff()
+                                btc_gain  = btc_delta.clip(lower=0).rolling(14).mean()
+                                btc_loss  = (-btc_delta.clip(upper=0)).rolling(14).mean()
+                                btc_rsi   = (100 - (100 / (1 + btc_gain / btc_loss.replace(0, 1e-9)))).iloc[-1]
+                                if trade_direction == "LONG" and btc_rsi < 42: v7_score -= 15
+                                if trade_direction == "SHORT" and btc_rsi > 58: v7_score -= 15
+                        except Exception:
+                            pass
+                    else:
+                        btc_rsi = rsi_now
+                    
+                    # 3. CVD Divergence & Bearishness Penalty
+                    if cvd_result.get("divergence"): v7_score -= 25
+                    if cvd_signal == "BEARISH" and cvd_score_val <= -2: v7_score -= 20
+                    
+                    # 4. Overheated RSI Penalty
+                    rsi_max = 80 if regime_val == "BULL" else 73
+                    if rsi_now > rsi_max: v7_score -= 20
+                    
+                    # ─── A+ SETUP OVERRIDE ─────────────────────────────────────────────────────
+                    is_a_plus = False
+                    if trade_direction == "LONG" and rsi_now < 28 and cvd_score_val >= 0 and ofi_real.ofi_score > 0:
+                        last_vol = df_15m_check['volume'].iloc[-2] if not df_15m_check.empty else 0
+                        avg_vol = df_15m_check['volume'].iloc[-12:-2].mean() if not df_15m_check.empty else 1
+                        if avg_vol > 0 and (last_vol / avg_vol) > 1.5:
+                            is_a_plus = True
+                            v7_score = 100.0  # Force max score
+                            logger.info(f"🌟 {symbol} A+ SETUP OVERRIDE ACTIVATED! (RSI={rsi_now:.1f}, CVD+, OFI+, VOL+)")
+                            
+                    # ─── FINAL V7 GATE ─────────────────────────────────────────────────────────
+                    if v7_score < 70 and not is_a_plus:
+                        logger.info(f"{symbol} - [BLOCKED] V7 Score: {v7_score:.1f}/100. Insufficient edge. Skipping.")
+                        continue
+                        
+                    ultra_score = v7_score
 
                     strategy_label = f"[{trade_strategy}]" if trade_strategy != "TREND" else ""
                     logger.info(
-                        f"{symbol} {strategy_label} | {trade_direction} | Score={ultra_score:.1f}/10 "
+                        f"{symbol} {strategy_label} | {trade_direction} | V7 Score={ultra_score:.1f}/100 "
                         f"(conf={confluence.raw_score:.1f} ind={ind_bonus:+.1f} ctx={ctx_bonus:+.1f}) "
                         f"| RSI={rsi_now:.0f} | EMA={indicators['ema_ribbon']['label']} "
                         f"| FG={market_ctx['fear_greed']['value']}"
@@ -726,6 +727,9 @@ class ApexSystem:
                     
                     if trade_strategy == "CAPITULATION":
                         logger.info(f"{symbol} - Capitulation trade: halving Kelly size.")
+                        risk_pct *= 0.5
+                    elif ultra_score < 85.0:
+                        logger.info(f"{symbol} - V7 Score {ultra_score:.1f}/100 is borderline. Halving Kelly size.")
                         risk_pct *= 0.5
                         
                     risk_usd = deposit * risk_pct / 100
