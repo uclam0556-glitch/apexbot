@@ -234,12 +234,18 @@ class ApexSystem:
                                 else:
                                     curr_pnl_pct = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
                                 
-                                # 1. Smart Early Exit: 120 mins and stuck in sideways (-1% to 1%)
+                                # 1. Smart Early Exit: 120 mins and stuck (-1% to 1%)
                                 if minutes_open > 120 and abs(curr_pnl_pct) <= 1.0:
                                     if trade['status'] == 'OPEN':
-                                        status = 'TIMEOUT_BREAKEVEN'
+                                        if curr_pnl_pct <= -0.4:
+                                            status = 'TIMEOUT_SMALL_LOSS'
+                                        elif curr_pnl_pct >= 0.4:
+                                            status = 'TIMEOUT_SMALL_WIN'
+                                        else:
+                                            status = 'TIMEOUT_BREAKEVEN'
+                                            
                                         pnl_pct = curr_pnl_pct
-                                        logger.info(f"⌛ {symbol} - Open for {int(minutes_open)}m. Stuck at {pnl_pct:.2f}%. Smart Exit applied.")
+                                        logger.info(f"⌛ {symbol} - Open for {int(minutes_open)}m. Stuck at {pnl_pct:.2f}%. Smart Exit ({status}) applied.")
                                 
                                 # 2. Hard Timeout: 6 hours for mean reversion / capitulation
                                 elif trade_strat in ['CAPITULATION', 'MEAN_REVERSION'] and minutes_open > 360:

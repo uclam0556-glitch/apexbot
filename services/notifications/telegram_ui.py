@@ -280,7 +280,9 @@ async def process_stats(callback: CallbackQuery):
         f"⏳ <b>Открытых позиций:</b> {active_count}\n"
         f"📈 <b>Закрытых сделок:</b> {stats['total']}\n"
         f"   ┣ Успешных (TP): <b>{stats['won']}</b> ✅\n"
-        f"   ┣ Безубыток (B.E.): <b>{stats.get('breakeven', 0)}</b> 🟡\n"
+        f"   ┣ Микро-Плюс: <b>{stats.get('small_win', 0)}</b> 🟢\n"
+        f"   ┣ Безубыток: <b>{stats.get('breakeven', 0)}</b> 🟡\n"
+        f"   ┣ Микро-Минус: <b>{stats.get('small_loss', 0)}</b> 🟠\n"
         f"   ┗ Убыточных (SL): <b>{stats['lost']}</b> ❌\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 <b>Win Rate: {wr:.1f}%</b>\n"
@@ -651,10 +653,18 @@ async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dic
         header = "⏱ <b>ЗАКРЫТО ПО ТАЙМ-АУТУ (>6ч)</b>"
         pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
         color_emoji = "⚪"
+    elif status == "TIMEOUT_SMALL_WIN":
+        header = "⏱ <b>ВЫХОД ПО ТАЙМ-АУТУ (МИКРО-ПЛЮС)</b>"
+        pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
+        color_emoji = "🟢"
     elif status == "TIMEOUT_BREAKEVEN":
         header = "⏱ <b>ВЫХОД ПО ТАЙМ-АУТУ (БЕЗУБЫТОК)</b>"
         pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
         color_emoji = "🟡"
+    elif status == "TIMEOUT_SMALL_LOSS":
+        header = "⏱ <b>ВЫХОД ПО ТАЙМ-АУТУ (МИКРО-МИНУС)</b>"
+        pnl_text = f"{pnl_pct:.2f}%"
+        color_emoji = "🟠"
     else:
         header = "❌ <b>СДЕЛКА ЗАКРЫТА ПО СТОПУ</b>"
         pnl_text = f"{pnl_pct:.2f}%"

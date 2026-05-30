@@ -983,7 +983,9 @@ async function loadHistory() {
       else if (t.status === 'WON')       statusHtml = '<span class="status-badge badge-won">✅ WIN</span>';
       else if (t.status === 'LOST')      statusHtml = '<span class="status-badge badge-lost">❌ LOSS</span>';
       else if (t.status === 'WON_BREAKEVEN') statusHtml = '<span class="status-badge badge-won" style="background:rgba(255,215,0,0.1);color:var(--gold);">🎯 TP1 EXIT</span>';
+      else if (t.status === 'TIMEOUT_SMALL_WIN') statusHtml = '<span class="status-badge badge-won" style="background:rgba(46,213,115,0.1);color:var(--green);">⏱ TIMEOUT (WIN)</span>';
       else if (t.status === 'TIMEOUT_BREAKEVEN') statusHtml = '<span class="status-badge badge-cancelled" style="color:var(--gold);">⏱ TIMEOUT (B.E.)</span>';
+      else if (t.status === 'TIMEOUT_SMALL_LOSS') statusHtml = '<span class="status-badge badge-lost" style="background:rgba(255,165,0,0.1);color:orange;">⏱ TIMEOUT (LOSS)</span>';
       else if (t.status === 'TIMEOUT')   statusHtml = '<span class="status-badge badge-cancelled">⏱ TIMEOUT</span>';
       else                               statusHtml = '<span class="status-badge badge-cancelled">— CANCEL</span>';
 
