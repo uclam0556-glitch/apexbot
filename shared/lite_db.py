@@ -85,10 +85,23 @@ async def init_lite_db():
             except Exception:
                 pass
                 
-        # Fix for orphaned BREAKEVEN trades from legacy multi-take-profit logic
+        # Fix for orphaned BREAKEVEN trades from legacy multi-take-profit logic & granular recategorization
         try:
-            await db.execute("UPDATE trades SET status = 'WON_BREAKEVEN' WHERE status = 'BREAKEVEN'")
-            await db.execute("UPDATE feature_store SET outcome = 'WON_BREAKEVEN' WHERE outcome = 'BREAKEVEN'")
+            # First, any true OPEN trades that got stuck at TP1 (legacy BREAKEVEN) and have no closed_at date are technically still running? 
+            # Actually, just recategorize all historical breakevens based on actual PnL
+            
+            # 1. Update Small Wins (>= 0.4)
+            await db.execute("UPDATE trades SET status = 'TIMEOUT_SMALL_WIN' WHERE status IN ('WON_BREAKEVEN', 'BREAKEVEN', 'TIMEOUT_BREAKEVEN') AND pnl_pct >= 0.4")
+            await db.execute("UPDATE feature_store SET outcome = 'TIMEOUT_SMALL_WIN' WHERE outcome IN ('WON_BREAKEVEN', 'BREAKEVEN', 'TIMEOUT_BREAKEVEN') AND pnl_pct >= 0.4")
+            
+            # 2. Update Small Losses (<= -0.4)
+            await db.execute("UPDATE trades SET status = 'TIMEOUT_SMALL_LOSS' WHERE status IN ('WON_BREAKEVEN', 'BREAKEVEN', 'TIMEOUT_BREAKEVEN') AND pnl_pct <= -0.4")
+            await db.execute("UPDATE feature_store SET outcome = 'TIMEOUT_SMALL_LOSS' WHERE outcome IN ('WON_BREAKEVEN', 'BREAKEVEN', 'TIMEOUT_BREAKEVEN') AND pnl_pct <= -0.4")
+            
+            # 3. Update True Breakevens (-0.4 < pnl < 0.4)
+            await db.execute("UPDATE trades SET status = 'TIMEOUT_BREAKEVEN' WHERE status IN ('WON_BREAKEVEN', 'BREAKEVEN') AND pnl_pct > -0.4 AND pnl_pct < 0.4")
+            await db.execute("UPDATE feature_store SET outcome = 'TIMEOUT_BREAKEVEN' WHERE outcome IN ('WON_BREAKEVEN', 'BREAKEVEN') AND pnl_pct > -0.4 AND pnl_pct < 0.4")
+            
         except Exception as e:
             logger.error(f"Migration error: {e}")
             
