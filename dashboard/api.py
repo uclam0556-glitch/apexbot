@@ -153,19 +153,26 @@ def create_app() -> FastAPI:
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
-                query = "SELECT * FROM trades"
+                query = """
+                    SELECT t.*, 
+                           f.ultra_score, f.spread_at_entry, f.volume_spike_score, 
+                           f.btc_trend_strength, f.fvg_count, f.mtf_score, 
+                           f.cvd_score, f.fg_index, f.funding_rate, f.oi_change 
+                    FROM trades t
+                    LEFT JOIN feature_store f ON t.id = f.trade_id
+                """
                 params = []
                 
                 if filter_type == "WON":
-                    query += " WHERE status IN ('WON', 'WON_BREAKEVEN') OR (status IN ('TIMEOUT', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_LOSS') AND pnl_pct >= 1.0)"
+                    query += " WHERE t.status IN ('WON', 'WON_BREAKEVEN') OR (t.status IN ('TIMEOUT', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_LOSS') AND t.pnl_pct >= 1.0)"
                 elif filter_type == "LOST":
-                    query += " WHERE status = 'LOST' OR (status IN ('TIMEOUT', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_LOSS') AND pnl_pct <= -1.0)"
+                    query += " WHERE t.status = 'LOST' OR (t.status IN ('TIMEOUT', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_LOSS') AND t.pnl_pct <= -1.0)"
                 elif filter_type == "OPEN":
-                    query += " WHERE status IN ('OPEN', 'BREAKEVEN')"
+                    query += " WHERE t.status IN ('OPEN', 'BREAKEVEN')"
                 elif filter_type == "CLOSED":
-                    query += " WHERE status NOT IN ('OPEN', 'BREAKEVEN')"
+                    query += " WHERE t.status NOT IN ('OPEN', 'BREAKEVEN')"
 
-                query += " ORDER BY opened_at DESC LIMIT ?"
+                query += " ORDER BY t.opened_at DESC LIMIT ?"
                 params.append(limit)
 
                 async with db.execute(query, tuple(params)) as cur:
@@ -180,9 +187,16 @@ def create_app() -> FastAPI:
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
-                async with db.execute(
-                    "SELECT * FROM trades WHERE status IN ('OPEN', 'BREAKEVEN') ORDER BY opened_at DESC"
-                ) as cur:
+                async with db.execute("""
+                    SELECT t.*, 
+                           f.ultra_score, f.spread_at_entry, f.volume_spike_score, 
+                           f.btc_trend_strength, f.fvg_count, f.mtf_score, 
+                           f.cvd_score, f.fg_index, f.funding_rate, f.oi_change 
+                    FROM trades t
+                    LEFT JOIN feature_store f ON t.id = f.trade_id
+                    WHERE t.status IN ('OPEN', 'BREAKEVEN') 
+                    ORDER BY t.opened_at DESC
+                """) as cur:
                     rows = await cur.fetchall()
             return [dict(r) for r in rows]
         except Exception as e:

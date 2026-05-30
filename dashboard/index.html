@@ -1272,6 +1272,38 @@ function showTradeDetails(tradeJson) {
       </div>
     </div>
 
+    ${t.ultra_score !== undefined ? `
+    <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:20px;">
+      <div style="color:var(--text); font-weight:600; margin-bottom:12px; font-size:14px;">📊 Институциональные Метрики (Feature Store)</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:6px;">
+          <span style="color:var(--text3); font-size:12px;">Ultra Score:</span>
+          <strong style="color:var(--cyan); font-size:12px;">${(t.ultra_score || 0).toFixed(1)} / 100</strong>
+        </div>
+        <div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:6px;">
+          <span style="color:var(--text3); font-size:12px;">Всплеск Объема (15m):</span>
+          <strong style="color:var(--gold); font-size:12px;">${(t.volume_spike_score || 0).toFixed(2)}x</strong>
+        </div>
+        <div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:6px;">
+          <span style="color:var(--text3); font-size:12px;">MTF Тренд (Gate):</span>
+          <strong style="color:var(--text2); font-size:12px;">${(t.mtf_score || 0).toFixed(1)}</strong>
+        </div>
+        <div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:6px;">
+          <span style="color:var(--text3); font-size:12px;">CVD Score:</span>
+          <strong style="color:${(t.cvd_score||0) > 0 ? 'var(--green)' : 'var(--red)'}; font-size:12px;">${t.cvd_score || 0}</strong>
+        </div>
+        <div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:6px;">
+          <span style="color:var(--text3); font-size:12px;">Реальный Спред:</span>
+          <strong style="color:var(--text2); font-size:12px;">${(t.spread_at_entry || 0).toFixed(3)}%</strong>
+        </div>
+        <div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:6px;">
+          <span style="color:var(--text3); font-size:12px;">Доминация BTC:</span>
+          <strong style="color:var(--text2); font-size:12px;">${(t.btc_trend_strength || 55).toFixed(1)}%</strong>
+        </div>
+      </div>
+    </div>
+    ` : ''}
+
     ${t.reasoning ? `
     <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px; padding:16px;">
       <div style="color:var(--text); font-weight:600; margin-bottom:8px; font-size:14px;">🧠 Логика входа</div>
