@@ -805,8 +805,8 @@ class ApexSystem:
                             logger.info(f"🌟 {symbol} A+ SETUP OVERRIDE ACTIVATED! (RSI={rsi_now:.1f}, CVD+, OFI+, VOL+)")
                             
                     # ─── FINAL V7 GATE ─────────────────────────────────────────────────────────
-                    if v7_score < 70 and not is_a_plus:
-                        if 45 <= v7_score < 70:
+                    if v7_score < 65 and not is_a_plus:
+                        if 45 <= v7_score < 65:
                             from shared.lite_db import save_missed_signal
                             asyncio.create_task(save_missed_signal(symbol, trade_direction, v7_score, current_price))
                         logger.info(f"{symbol} - [BLOCKED] V7 Score: {v7_score:.1f}/100. Insufficient edge. Skipping.")
