@@ -276,7 +276,7 @@ async def get_confidence_calibration(ultra_score: float) -> dict:
         async with db.execute('''
             SELECT ultra_score, outcome
             FROM feature_store
-            WHERE outcome IN ('WON', 'WON_BREAKEVEN', 'LOST')
+            WHERE outcome IN ('WON', 'WON_BREAKEVEN', 'LOST', 'TIMEOUT', 'TIMEOUT_BREAKEVEN', 'BREAKEVEN')
         ''') as cursor:
             rows = await cursor.fetchall()
 
