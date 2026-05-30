@@ -36,7 +36,7 @@ def create_app() -> FastAPI:
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
-                async with db.execute("SELECT * FROM trades WHERE status IN ('WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'BREAKEVEN')") as cur:
+                async with db.execute("SELECT * FROM trades WHERE status IN ('WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'BREAKEVEN', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_SMALL_LOSS', 'TIMEOUT_BREAKEVEN')") as cur:
                     rows = await cur.fetchall()
                 async with db.execute("SELECT COUNT(*) FROM trades WHERE status IN ('OPEN', 'BREAKEVEN')") as cur:
                     open_count = (await cur.fetchone())[0]
@@ -44,20 +44,29 @@ def create_app() -> FastAPI:
             rows = [dict(r) for r in rows]
             total = len(rows)
             if total == 0:
-                return {"total": 0, "open": open_count, "won": 0, "lost": 0,
+                return {"total": 0, "open": open_count, "won": 0, "lost": 0, "small_win": 0, "small_loss": 0, "breakeven": 0,
                         "win_rate": 0, "pnl_sum": 0.0, "best_trade": 0.0,
                         "worst_trade": 0.0, "avg_win": 0.0, "avg_loss": 0.0}
 
-            won = [r for r in rows if r['status'] in ('WON', 'WON_BREAKEVEN', 'BREAKEVEN') or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and r['pnl_pct'] > 0)]
-            lost = [r for r in rows if r['status'] == 'LOST' or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and r['pnl_pct'] <= 0)]
+            won = [r for r in rows if r['status'] in ('WON', 'WON_BREAKEVEN')]
+            small_win = [r for r in rows if r['status'] == 'TIMEOUT_SMALL_WIN' or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and r['pnl_pct'] > 0.4)]
+            breakeven = [r for r in rows if r['status'] in ('BREAKEVEN', 'TIMEOUT_BREAKEVEN') or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and -0.4 <= r['pnl_pct'] <= 0.4)]
+            small_loss = [r for r in rows if r['status'] == 'TIMEOUT_SMALL_LOSS' or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and -1.0 < r['pnl_pct'] < -0.4)]
+            lost = [r for r in rows if r['status'] == 'LOST' or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and r['pnl_pct'] <= -1.0)]
+            
             pnl_vals = [r['pnl_pct'] for r in rows if r['pnl_pct'] is not None]
 
+            active_trades = len(won) + len(small_win) + len(lost) + len(small_loss)
+            
             return {
                 "total": total,
                 "open": open_count,
                 "won": len(won),
+                "small_win": len(small_win),
+                "breakeven": len(breakeven),
+                "small_loss": len(small_loss),
                 "lost": len(lost),
-                "win_rate": round(len(won) / total * 100, 1) if total > 0 else 0,
+                "win_rate": round((len(won) + len(small_win)) / active_trades * 100, 1) if active_trades > 0 else 0,
                 "pnl_sum": round(sum(pnl_vals), 2),
                 "best_trade": round(max(pnl_vals), 2) if pnl_vals else 0,
                 "worst_trade": round(min(pnl_vals), 2) if pnl_vals else 0,
@@ -76,7 +85,7 @@ def create_app() -> FastAPI:
             async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
                 async with db.execute(
-                    "SELECT opened_at as closed_at, pnl_pct FROM trades WHERE status IN ('WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'BREAKEVEN') AND pnl_pct IS NOT NULL ORDER BY opened_at ASC"
+                    "SELECT opened_at as closed_at, pnl_pct FROM trades WHERE status IN ('WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'BREAKEVEN', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_SMALL_LOSS', 'TIMEOUT_BREAKEVEN') AND pnl_pct IS NOT NULL ORDER BY opened_at ASC"
                 ) as cur:
                     rows = await cur.fetchall()
 
