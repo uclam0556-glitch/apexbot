@@ -148,14 +148,14 @@ async def save_trade(
 async def get_stats():
     """Calculates win rate and PnL from SQLite."""
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute('SELECT status, pnl_pct FROM trades WHERE status IN ("WON", "LOST", "WON_BREAKEVEN", "TIMEOUT", "BREAKEVEN")') as cursor:
+        async with db.execute('SELECT status, pnl_pct FROM trades WHERE status IN ("WON", "LOST", "WON_BREAKEVEN", "TIMEOUT", "TIMEOUT_BREAKEVEN", "BREAKEVEN")') as cursor:
             rows = await cursor.fetchall()
             
     total = len(rows)
     if total == 0:
         return {"total": 0, "win_rate": 0, "pnl_sum": 0, "won": 0, "lost": 0}
         
-    won = sum(1 for r in rows if r[0] in ('WON', 'WON_BREAKEVEN', 'BREAKEVEN') or (r[0] == 'TIMEOUT' and r[1] and r[1] > 0))
+    won = sum(1 for r in rows if r[0] in ('WON', 'WON_BREAKEVEN', 'BREAKEVEN', 'TIMEOUT_BREAKEVEN') or (r[0] == 'TIMEOUT' and r[1] and r[1] > 0))
     lost = sum(1 for r in rows if r[0] == 'LOST' or (r[0] == 'TIMEOUT' and r[1] and r[1] <= 0))
     pnl_sum = sum(r[1] for r in rows if r[1] is not None)
     

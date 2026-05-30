@@ -650,6 +650,10 @@ async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dic
         header = "⏱ <b>ЗАКРЫТО ПО ТАЙМ-АУТУ (>6ч)</b>"
         pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
         color_emoji = "⚪"
+    elif status == "TIMEOUT_BREAKEVEN":
+        header = "⏱ <b>ВЫХОД ПО ТАЙМ-АУТУ (БЕЗУБЫТОК)</b>"
+        pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
+        color_emoji = "🟡"
     else:
         header = "❌ <b>СДЕЛКА ЗАКРЫТА ПО СТОПУ</b>"
         pnl_text = f"{pnl_pct:.2f}%"

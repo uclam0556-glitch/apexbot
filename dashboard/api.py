@@ -108,7 +108,7 @@ def create_app() -> FastAPI:
                 params = []
                 
                 if filter_type == "WON":
-                    query += " WHERE status IN ('WON', 'WON_BREAKEVEN') OR (status = 'TIMEOUT' AND pnl_pct > 0)"
+                    query += " WHERE status IN ('WON', 'WON_BREAKEVEN', 'BREAKEVEN', 'TIMEOUT_BREAKEVEN') OR (status = 'TIMEOUT' AND pnl_pct > 0)"
                 elif filter_type == "LOST":
                     query += " WHERE status = 'LOST' OR (status = 'TIMEOUT' AND pnl_pct <= 0)"
                 elif filter_type == "OPEN":
