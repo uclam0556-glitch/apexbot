@@ -104,13 +104,12 @@ class RSMatrix:
                             data = await resp.json()
                             prices = {item["symbol"]: float(item["price"]) for item in data}
                             
-                            for symbol in symbol_list:
-                                binance_symbol = symbol.replace("/", "")
-                                if binance_symbol in prices:
-                                    # Update global state directly
-                                    if symbol not in global_state.live_prices:
-                                        global_state.live_prices[symbol] = {}
-                                    global_state.live_prices[symbol]["price"] = prices[binance_symbol]
+                            for binance_symbol, price in prices.items():
+                                if binance_symbol.endswith("USDT"):
+                                    sym = binance_symbol.replace("USDT", "/USDT")
+                                    if sym not in global_state.live_prices:
+                                        global_state.live_prices[sym] = {}
+                                    global_state.live_prices[sym]["price"] = price
                                     
                 except Exception as e:
                     logger.debug(f"Fast poller error: {e}")
