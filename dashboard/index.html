@@ -1272,7 +1272,7 @@ function showTradeDetails(tradeJson) {
       </div>
     </div>
 
-    ${t.ultra_score !== undefined ? `
+    ${t.ultra_score != null ? `
     <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:20px;">
       <div style="color:var(--text); font-weight:600; margin-bottom:12px; font-size:14px;">📊 Институциональные Метрики (Feature Store)</div>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
