@@ -96,10 +96,10 @@ class RSMatrix:
         from shared.state import global_state
         url = "https://fapi.binance.com/fapi/v1/ticker/price"
         
-        async with aiohttp.ClientSession() as session:
-            while True:
-                try:
-                    async with session.get(url, timeout=2) as resp:
+        while True:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=5) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             prices = {item["symbol"]: float(item["price"]) for item in data}
@@ -110,11 +110,13 @@ class RSMatrix:
                                     if sym not in global_state.live_prices:
                                         global_state.live_prices[sym] = {}
                                     global_state.live_prices[sym]["price"] = price
-                                    
-                except Exception as e:
-                    logger.debug(f"Fast poller error: {e}")
-                    
-                await asyncio.sleep(2)
+                        else:
+                            logger.error(f"Fast poller received HTTP {resp.status}")
+                            
+            except Exception as e:
+                logger.error(f"Fast poller error: {e}")
+                
+            await asyncio.sleep(2)
 
 # Global instance
 rs_matrix_engine = RSMatrix()
