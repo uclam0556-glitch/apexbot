@@ -223,16 +223,23 @@ def create_app() -> FastAPI:
         ws_prices = getattr(global_state, 'live_prices', {})
         result = {}
         
-        # Combine WS prices with RS Matrix (Binance 24h data)
+        # 1. Add all symbols from RS Matrix
         for item in rs_matrix_engine.matrix:
             sym = item['symbol']
-            # If WS has a more recent price, use it, but keep the official Binance 24h change
             ws_data = ws_prices.get(sym, {})
             result[sym] = {
                 "price": ws_data.get('price') or item.get('price', 0.0),
                 "change": item.get('change_24h', 0.0)
             }
             
+        # 2. Add any symbols that are in ws_prices but missing from RS Matrix
+        for sym, data in ws_prices.items():
+            if sym not in result:
+                result[sym] = {
+                    "price": data.get('price', 0.0),
+                    "change": 0.0
+                }
+                
         return result
 
     @app.get("/api/system-status")
