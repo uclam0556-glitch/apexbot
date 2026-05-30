@@ -344,13 +344,12 @@ async def factory_reset_db():
         await db.execute('VACUUM')
     logger.warning("FACTORY RESET: Historical stats, trades, and ML data wiped (Open trades kept).")
 
-async def get_confidence_calibration(ultra_score: float) -> dict:
-    """Calculates historical win rate probability using Isotonic Regression (ML)."""
+async def get_confidence_calibration(features: dict) -> dict:
+    """Calculates historical win rate probability using K-Nearest Neighbors (ML) on a feature vector."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        # Fetch all closed trades from feature store
         async with db.execute('''
-            SELECT ultra_score, outcome
+            SELECT ultra_score, btc_rsi, cvd_score, mtf_score, funding_rate, outcome
             FROM feature_store
             WHERE outcome IN ('WON', 'WON_BREAKEVEN', 'LOST', 'TIMEOUT', 'TIMEOUT_BREAKEVEN', 'BREAKEVEN')
         ''') as cursor:
@@ -358,48 +357,71 @@ async def get_confidence_calibration(ultra_score: float) -> dict:
 
     sample_size = len(rows)
     
-    # Fallback to simple bucket if not enough data for ML
-    if sample_size < 30:
-        bucket_min = float(int(ultra_score))
-        bucket_max = bucket_min + 0.99
-        won_count = sum(1 for r in rows if r['outcome'] in ('WON', 'WON_BREAKEVEN') and bucket_min <= r['ultra_score'] <= bucket_max)
-        bucket_size = sum(1 for r in rows if bucket_min <= r['ultra_score'] <= bucket_max)
-        win_rate = (won_count / bucket_size * 100) if bucket_size > 0 else 0.0
+    # Fallback if extremely low data
+    if sample_size < 5:
         return {
-            "bucket": f"{bucket_min:.1f}-{bucket_max:.1f}",
+            "bucket": "Fallback_LowData",
             "sample_size": sample_size,
-            "win_rate": win_rate,
+            "win_rate": 50.0,
             "ml_calibrated": False
         }
 
     try:
         import numpy as np
-        from sklearn.isotonic import IsotonicRegression
+        from sklearn.neighbors import KNeighborsClassifier
+        from sklearn.preprocessing import StandardScaler
         
+        def safe_float(val):
+            return float(val) if val is not None else 0.0
+
         # Prepare training data
-        X = np.array([r['ultra_score'] for r in rows])
-        # WON and WON_BREAKEVEN are considered positive outcomes (1), LOST is 0
+        X = np.array([[
+            safe_float(r['ultra_score']), 
+            safe_float(r['btc_rsi']), 
+            safe_float(r['cvd_score']), 
+            safe_float(r['mtf_score']), 
+            safe_float(r['funding_rate'])
+        ] for r in rows])
+        
+        # WON and WON_BREAKEVEN are positive outcomes (1), everything else is 0
         y = np.array([1 if r['outcome'] in ('WON', 'WON_BREAKEVEN') else 0 for r in rows])
         
-        # Train Isotonic Regression model (out-of-core bounds [0, 1])
-        iso_reg = IsotonicRegression(y_min=0, y_max=1, out_of_bounds='clip')
-        iso_reg.fit(X, y)
+        # Standardize features (KNN is distance-based, so scaling is critical)
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
         
-        # Predict probability for the current score
-        predicted_prob = iso_reg.predict([ultra_score])[0]
-        win_rate = predicted_prob * 100.0
+        n_neighbors = min(15, sample_size)
+        knn = KNeighborsClassifier(n_neighbors=n_neighbors, weights='distance')
+        knn.fit(X_scaled, y)
         
+        # Current feature vector
+        current_X = np.array([[
+            safe_float(features.get('ultra_score', 0)),
+            safe_float(features.get('btc_rsi', 50)),
+            safe_float(features.get('cvd_score', 0)),
+            safe_float(features.get('mtf_score', 0)),
+            safe_float(features.get('funding_rate', 0))
+        ]])
+        
+        current_X_scaled = scaler.transform(current_X)
+        
+        # Predict probability of class 1 (WON)
+        probs = knn.predict_proba(current_X_scaled)
+        if probs.shape[1] > 1:
+            win_rate = probs[0][1] * 100.0
+        else:
+            win_rate = 100.0 if knn.classes_[0] == 1 else 0.0
+            
         return {
-            "bucket": "ML_Isotonic",
+            "bucket": f"KNN_{n_neighbors}",
             "sample_size": sample_size,
             "win_rate": win_rate,
             "ml_calibrated": True
         }
     except Exception as e:
-        logger.error(f"ML Calibration failed: {e}")
-        # Ultimate fallback
+        logger.error(f"KNN ML Calibration failed: {e}")
         return {
-            "bucket": "Fallback",
+            "bucket": "Fallback_Error",
             "sample_size": sample_size,
             "win_rate": 50.0,
             "ml_calibrated": False

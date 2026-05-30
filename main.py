@@ -987,8 +987,18 @@ class ApexSystem:
                     position_usd = min(position_usd, deposit * 0.20)
                     rr_ratio     = abs(sltp.take_profit_1 - current_price) / abs(current_price - sltp.stop_loss) if abs(current_price - sltp.stop_loss) > 0 else 2.0
 
-                    # ─── CONFIDENCE CALIBRATION ────────────────────────────────────────────────
-                    confidence_data = await get_confidence_calibration(ultra_score)
+                    # ─── CONFIDENCE CALIBRATION (KNN) ──────────────────────────────────────────
+                    features_vector = {
+                        "ultra_score": ultra_score,
+                        "btc_rsi": btc_rsi,
+                        "cvd_score": cvd_score_val,
+                        "mtf_score": mtf_score.score,
+                        "funding_rate": market_ctx["funding"]["rate_pct"]
+                    }
+                    confidence_data = await get_confidence_calibration(features_vector)
+                    conf_winrate = confidence_data.get("win_rate", 50.0)
+                    conf_samples = confidence_data.get("sample_size", 0)
+                    logger.info(f"🧠 ML Confidence Score: {conf_winrate:.1f}% (based on {conf_samples} neighbors)")
 
                     # ─── BUILD SIGNAL PACKAGE ─────────────────────────────────────────────────
                     dir_emoji   = "🚀" if trade_direction == "LONG" else "🔻"
