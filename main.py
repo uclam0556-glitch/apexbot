@@ -580,6 +580,37 @@ class ApexSystem:
                     if not check_mtf_gate(symbol, mtf_score.score, trade_direction, regime_val, trade_strategy):
                         continue
 
+                    # ─── INSTITUTIONAL TRAP DETECTOR 1: PREMIUM ZONE (24H) ─────────────────────
+                    if len(df_1h) >= 24:
+                        high_24h = df_1h['high'].iloc[-24:].max()
+                        low_24h = df_1h['low'].iloc[-24:].min()
+                    else:
+                        high_24h = df_1h['high'].max()
+                        low_24h = df_1h['low'].min()
+                        
+                    range_24h = high_24h - low_24h
+                    is_in_premium = False
+                    if range_24h > 0:
+                        premium_threshold = high_24h - (range_24h * 0.15) # Top 15%
+                        is_in_premium = current_price >= premium_threshold
+
+                    if is_in_premium and trade_strategy == "TREND" and trade_direction == "LONG":
+                        logger.info(f"{symbol} - [BLOCKED] Price in Premium Zone (Top 15%). Waiting for pullback. Skipping.")
+                        continue
+
+                    # ─── INSTITUTIONAL TRAP DETECTOR 2: CVD DIVERGENCE ───────────────────────
+                    if rsi_now > 60 and cvd_score_val < 0 and trade_strategy == "TREND" and trade_direction == "LONG":
+                        logger.info(f"{symbol} - [BLOCKED] Liquidity Exhaustion Trap (RSI: {rsi_now:.1f}, CVD: {cvd_score_val}). Skipping.")
+                        continue
+
+                    # ─── INSTITUTIONAL TRAP DETECTOR 3: FUNDING TRAP ─────────────────────────
+                    from services.indicators.market_data import get_funding_rate
+                    funding_data = await get_funding_rate(symbol)
+                    funding_pct = funding_data.get("rate_pct", 0.0)
+                    if funding_pct > 0.04 and trade_strategy == "TREND" and trade_direction == "LONG":
+                        logger.info(f"{symbol} - [BLOCKED] Funding Trap (Overheated Longs: +{funding_pct:.3f}%). Squeeze imminent. Skipping.")
+                        continue
+
                     # ─── SMC + INDICATORS ─────────────────────────────────────────────────────
                     smc_analysis = self.smc_core.analyze(df_1h, symbol=symbol, lookback=10)
                     indicators   = run_all_indicators(df_1h, symbol=symbol)
