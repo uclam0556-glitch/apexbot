@@ -620,11 +620,11 @@ class ApexSystem:
 
                     # ─── MTF MULTIPLIER ────────────────────────────────────────────────────────
                     mtf_val = mtf_score.score if trade_direction == "LONG" else -mtf_score.score
-                    if mtf_val >= 6.0:   mtf_mult = 1.15   # сильный тренд = бонус
-                    elif mtf_val >= 3.0: mtf_mult = 1.05   # умеренный тренд
+                    if mtf_val >= 6.0:   mtf_mult = 1.20   # сильный тренд = бонус
+                    elif mtf_val >= 3.0: mtf_mult = 1.10   # умеренный тренд
                     elif mtf_val >= 0.0: mtf_mult = 1.00   # нейтрально
-                    elif mtf_val >= -2.0: mtf_mult = 0.70  # слабо против = сильный штраф
-                    else:                 mtf_mult = 0.40  # явно против = почти блок
+                    elif mtf_val >= -2.0: mtf_mult = 0.50  # слабо против = сильный штраф
+                    else:                 mtf_mult = 0.25  # явно против = жесткий блок
 
                     base_score = confluence.raw_score + ind_bonus + ctx_bonus + cvd_bonus + mr_bonus
                     ultra_score = max(0, min(10.0, base_score * mtf_mult))
@@ -635,6 +635,18 @@ class ApexSystem:
                     # ─── MTF HARD CAP ──────────────────────────────────────────────────────────
                     if mtf_val < 0:
                         v7_score = min(v7_score, 50.0)  # Максимум 50/100 против тренда
+
+                    # ─── SMC EXHAUSTION PENALTIES (Score Inflation Fix) ────────────────────────
+                    fvg_count = len(smc_analysis.imbalance_zones)
+                    sweep_count = len(smc_analysis.liquidity_sweeps)
+                    
+                    if fvg_count > 8:
+                        v7_score -= 25.0
+                        logger.info(f"{symbol} - SMC Penalty: Too many FVGs ({fvg_count} > 8). Trend likely exhausted.")
+                    
+                    if sweep_count > 40:
+                        v7_score -= 25.0
+                        logger.info(f"{symbol} - SMC Penalty: Too many sweeps ({sweep_count} > 40). Market choppy/exhausted.")
 
                     # 1. Entry Candle Penalty
                     df_15m_check = tf_data.get('15m', pd.DataFrame())
