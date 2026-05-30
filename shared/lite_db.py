@@ -85,6 +85,13 @@ async def init_lite_db():
             except Exception:
                 pass
                 
+        # Fix for orphaned BREAKEVEN trades from legacy multi-take-profit logic
+        try:
+            await db.execute("UPDATE trades SET status = 'WON_BREAKEVEN' WHERE status = 'BREAKEVEN'")
+            await db.execute("UPDATE feature_store SET outcome = 'WON_BREAKEVEN' WHERE outcome = 'BREAKEVEN'")
+        except Exception as e:
+            logger.error(f"Migration error: {e}")
+            
         await db.commit()
     logger.info("Lite DB (SQLite) initialized with Feature Store.")
 
