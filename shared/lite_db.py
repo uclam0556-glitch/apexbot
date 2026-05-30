@@ -93,6 +93,22 @@ async def init_lite_db():
             )
         ''')
 
+        # V8 Institutional Filter Audit
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS filter_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                direction TEXT,
+                filter_name TEXT,
+                price_at_block REAL,
+                created_at TIMESTAMP,
+                checked INTEGER DEFAULT 0,
+                outcome_1h_pct REAL DEFAULT 0.0,
+                outcome_4h_pct REAL DEFAULT 0.0,
+                outcome_24h_pct REAL DEFAULT 0.0
+            )
+        ''')
+
         # V7 Institutional ML Features
         new_columns = [
             ("max_profit_pct", "REAL"),
@@ -463,4 +479,35 @@ async def update_missed_signal_result(signal_id: int, pnl_pct: float, outcome: s
             SET checked = 1, max_profit_pct = ?, outcome = ?
             WHERE id = ?
         ''', (pnl_pct, outcome, signal_id))
+        await db.commit()
+
+# ─── V8 INSTITUTIONAL FILTER AUDIT ───────────────────────────────────────────
+
+async def save_filter_block(symbol: str, direction: str, filter_name: str, price: float):
+    """Saves a hard block event to audit the filter's performance later."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            INSERT INTO filter_audit (symbol, direction, filter_name, price_at_block, created_at, checked)
+            VALUES (?, ?, ?, ?, ?, 0)
+        ''', (symbol, direction, filter_name, price, datetime.utcnow()))
+        await db.commit()
+
+async def get_unchecked_filter_blocks():
+    """Fetches filter blocks older than 24 hours that haven't been audited."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('''
+            SELECT * FROM filter_audit 
+            WHERE checked = 0 AND datetime(created_at, '+24 hours') <= datetime('now')
+        ''') as cursor:
+            return await cursor.fetchall()
+
+async def update_filter_audit_result(audit_id: int, p_1h: float, p_4h: float, p_24h: float):
+    """Marks a filter block as audited and records future price changes."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            UPDATE filter_audit 
+            SET checked = 1, outcome_1h_pct = ?, outcome_4h_pct = ?, outcome_24h_pct = ?
+            WHERE id = ?
+        ''', (p_1h, p_4h, p_24h, audit_id))
         await db.commit()

@@ -47,7 +47,7 @@ from services.engine.risk_engine import RiskEngine
 from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
-from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown
+from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown, save_filter_block
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
@@ -447,6 +447,7 @@ class ApexSystem:
                     # ─── LIQUIDATION CASCADE CHECK ───────────────────────────────────────────
                     if self.liquidation_detector.is_cascade_in_progress(symbol):
                         logger.warning(f"🚨 {symbol} - [BLOCKED] Liquidation Cascade in progress. Skipping.")
+                        await save_filter_block(symbol, "UNKNOWN", "Liquidation Cascade", 0.0)
                         continue
                     
                     # 1. Fetch Multi-Timeframe Data (ALL 5 TFs) concurrently
@@ -472,6 +473,7 @@ class ApexSystem:
                         corr_result = self.risk_engine.check_correlation(symbol, open_symbols, prices_30d)
                         if not corr_result.correlation_ok:
                             logger.info(f"{symbol} - [BLOCKED] Correlation Risk. Highly correlated ({corr_result.max_correlation:.2f}) with open position {corr_result.correlated_with}. Skipping.")
+                            await save_filter_block(symbol, "UNKNOWN", "Correlation Risk", 0.0)
                             continue
                     
                     df_1h = tf_data['1h']
@@ -636,6 +638,7 @@ class ApexSystem:
                     if trade_direction == "LONG" and trade_strategy == "TREND":
                         if price_change_4h_pct > (2 * atr_1h_pct) or price_change_4h_pct > 8.0:
                             logger.info(f"{symbol} - [BLOCKED] Momentum Exhaustion. Up {price_change_4h_pct:.2f}% (>{2*atr_1h_pct:.2f}% ATR threshold or >8%). Late impulse trap. Skipping.")
+                            await save_filter_block(symbol, trade_direction, "Momentum Exhaustion", current_price)
                             continue
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 2: GRADIENT PREMIUM ZONE ────────────────
@@ -660,6 +663,7 @@ class ApexSystem:
                     funding_pct = funding_data.get("rate_pct", 0.0)
                     if funding_pct > 0.04 and rsi_now > 65 and cvd_score_val < 0 and trade_direction == "LONG":
                         logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
+                        await save_filter_block(symbol, trade_direction, "Absorption Trap", current_price)
                         continue
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 4: Z-SCORE GRAVITY ─────────────────────
@@ -669,6 +673,7 @@ class ApexSystem:
 
                     if z_score > 3.0 and trade_direction == "LONG":
                         logger.info(f"{symbol} - [BLOCKED] Z-Score Gravity. Price is {z_score:.1f} std devs above mean. Mean reversion inevitable. Skipping.")
+                        await save_filter_block(symbol, trade_direction, "Z-Score Gravity", current_price)
                         continue
 
                     # ─── SMC + INDICATORS ─────────────────────────────────────────────────────
