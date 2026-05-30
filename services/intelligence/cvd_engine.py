@@ -37,15 +37,26 @@ def calculate_cvd(df_5m: pd.DataFrame, lookback: int = 20) -> dict:
         lambda row: row["volume"] if row["close"] >= row["open"] else -row["volume"],
         axis=1
     )
+    recent["cum_cvd"] = recent["delta"].cumsum()
 
     cvd = recent["delta"].sum()
     cvd_pct = cvd / recent["volume"].sum() if recent["volume"].sum() > 0 else 0.0
 
-    # Price direction over same period
-    price_change = recent["close"].iloc[-1] - recent["close"].iloc[0]
-
-    # Detect divergence: price up but CVD down (hidden selling)
-    divergence = price_change > 0 and cvd < 0
+    # TRUE DIVERGENCE: Higher High in Price, Lower High in CVD
+    mid = lookback // 2
+    period1 = recent.iloc[:mid]
+    period2 = recent.iloc[mid:]
+    
+    p1_peak_idx = period1["high"].idxmax()
+    p2_peak_idx = period2["high"].idxmax()
+    
+    p1_high = period1.loc[p1_peak_idx, "high"]
+    p2_high = period2.loc[p2_peak_idx, "high"]
+    
+    p1_cvd = period1.loc[p1_peak_idx, "cum_cvd"]
+    p2_cvd = period2.loc[p2_peak_idx, "cum_cvd"]
+    
+    divergence = bool((p2_high > p1_high) and (p2_cvd < p1_cvd))
 
     # Score
     if cvd_pct > 0.20:
@@ -64,12 +75,12 @@ def calculate_cvd(df_5m: pd.DataFrame, lookback: int = 20) -> dict:
         signal = "NEUTRAL"
         score = 0
 
-    # Penalize divergence heavily
+    # Penalize true divergence heavily
     if divergence:
-        score -= 2
-        logger.debug(f"CVD Bearish Divergence detected: price↑ but CVD={cvd:.0f}")
+        score -= 25  # Massive penalty for true exhaustion
+        logger.debug(f"CVD True Bearish Divergence: HH Price ({p1_high:.2f}->{p2_high:.2f}), LH CVD ({p1_cvd:.0f}->{p2_cvd:.0f})")
 
-    score = max(-2, min(2, score))
+    score = max(-25, min(2, score))
 
     logger.debug(f"CVD={cvd:.0f} ({cvd_pct:+.1%}) | Signal={signal} | Divergence={divergence}")
 

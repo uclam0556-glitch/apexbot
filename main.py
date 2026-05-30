@@ -580,35 +580,41 @@ class ApexSystem:
                     if not check_mtf_gate(symbol, mtf_score.score, trade_direction, regime_val, trade_strategy):
                         continue
 
-                    # ─── INSTITUTIONAL TRAP DETECTOR 1: PREMIUM ZONE (24H) ─────────────────────
-                    if len(df_1h) >= 24:
-                        high_24h = df_1h['high'].iloc[-24:].max()
-                        low_24h = df_1h['low'].iloc[-24:].min()
+                    # ─── ADVANCED INSTITUTIONAL FILTER 1: ATR MOMENTUM EXHAUSTION ─────────────
+                    price_change_4h_pct = (
+                        (df_1h['close'].iloc[-1] - df_1h['close'].iloc[-5]) /
+                        df_1h['close'].iloc[-5] * 100
+                    ) if len(df_1h) >= 5 else 0.0
+                    
+                    atr_1h_pct = (atr_1h / current_price) * 100 if current_price > 0 else 0.0
+                    
+                    if trade_direction == "LONG" and trade_strategy == "TREND":
+                        if price_change_4h_pct > (2 * atr_1h_pct) or price_change_4h_pct > 8.0:
+                            logger.info(f"{symbol} - [BLOCKED] Momentum Exhaustion. Up {price_change_4h_pct:.2f}% (>{2*atr_1h_pct:.2f}% ATR threshold or >8%). Late impulse trap. Skipping.")
+                            continue
+
+                    # ─── ADVANCED INSTITUTIONAL FILTER 2: GRADIENT PREMIUM ZONE ────────────────
+                    premium_penalty = 0.0
+                    if len(df_1h) >= 48:
+                        high_48h = df_1h['high'].iloc[-48:].max()
+                        low_48h = df_1h['low'].iloc[-48:].min()
                     else:
-                        high_24h = df_1h['high'].max()
-                        low_24h = df_1h['low'].min()
+                        high_48h = df_1h['high'].max()
+                        low_48h = df_1h['low'].min()
                         
-                    range_24h = high_24h - low_24h
-                    is_in_premium = False
-                    if range_24h > 0:
-                        premium_threshold = high_24h - (range_24h * 0.15) # Top 15%
-                        is_in_premium = current_price >= premium_threshold
+                    range_48h = high_48h - low_48h
+                    if range_48h > 0:
+                        premium_threshold = high_48h - (range_48h * 0.30) # Top 30%
+                        if current_price >= premium_threshold and trade_strategy == "TREND" and trade_direction == "LONG":
+                            premium_penalty = 15.0
+                            logger.info(f"{symbol} - [PENALTY] Price in Premium Zone (Top 30% of 48h). Applying -15 penalty.")
 
-                    if is_in_premium and trade_strategy == "TREND" and trade_direction == "LONG":
-                        logger.info(f"{symbol} - [BLOCKED] Price in Premium Zone (Top 15%). Waiting for pullback. Skipping.")
-                        continue
-
-                    # ─── INSTITUTIONAL TRAP DETECTOR 2: CVD DIVERGENCE ───────────────────────
-                    if rsi_now > 60 and cvd_score_val < 0 and trade_strategy == "TREND" and trade_direction == "LONG":
-                        logger.info(f"{symbol} - [BLOCKED] Liquidity Exhaustion Trap (RSI: {rsi_now:.1f}, CVD: {cvd_score_val}). Skipping.")
-                        continue
-
-                    # ─── INSTITUTIONAL TRAP DETECTOR 3: FUNDING TRAP ─────────────────────────
+                    # ─── ADVANCED INSTITUTIONAL FILTER 3: SMART FUNDING TRAP ───────────────────
                     from services.indicators.market_data import get_funding_rate
                     funding_data = await get_funding_rate(symbol)
                     funding_pct = funding_data.get("rate_pct", 0.0)
-                    if funding_pct > 0.04 and trade_strategy == "TREND" and trade_direction == "LONG":
-                        logger.info(f"{symbol} - [BLOCKED] Funding Trap (Overheated Longs: +{funding_pct:.3f}%). Squeeze imminent. Skipping.")
+                    if funding_pct > 0.04 and rsi_now > 65 and trade_direction == "LONG":
+                        logger.info(f"{symbol} - [BLOCKED] Smart Funding Trap (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}). Squeeze imminent. Skipping.")
                         continue
 
                     # ─── SMC + INDICATORS ─────────────────────────────────────────────────────
@@ -680,6 +686,9 @@ class ApexSystem:
                     
                     # ─── V7 ADAPTIVE SCORING (0-100) ───────────────────────────────────────────
                     v7_score = ultra_score * 10.0
+                    
+                    if premium_penalty > 0:
+                        v7_score -= premium_penalty
                     
                     # ─── MTF HARD CAP ──────────────────────────────────────────────────────────
                     if mtf_val < 0:
