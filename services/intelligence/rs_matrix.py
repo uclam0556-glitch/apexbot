@@ -23,18 +23,21 @@ class RSMatrix:
         Fetches 24h ticker data and ranks the provided symbols.
         """
         try:
-            url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+            url = "https://api.bybit.com/v5/market/tickers?category=linear"
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
                 async with session.get(url) as resp:
                     if resp.status != 200:
-                        raise Exception(f"HTTP {resp.status}")
+                        raise Exception(f"HTTP {resp.status} from Bybit")
                     data = await resp.json()
                     
+            if data.get("retCode") != 0 or "result" not in data or "list" not in data["result"]:
+                raise Exception("Invalid Bybit response format")
+                
             # Create a lookup dictionary
             ticker_map = {item["symbol"]: {
-                "change": float(item["priceChangePercent"]),
+                "change": float(item["price24hPcnt"]) * 100, # Bybit returns 0.02 for 2%
                 "price": float(item["lastPrice"])
-            } for item in data}
+            } for item in data["result"]["list"]}
             
             # Get BTC change
             btc_data = ticker_map.get("BTCUSDT", {"change": 0.0})

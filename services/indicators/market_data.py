@@ -173,19 +173,21 @@ async def get_funding_rate(symbol: str) -> dict:
         except Exception as e:
             logger.debug(f"Coinglass Funding fetch failed for {symbol}: {e}")
 
-    # 2. Fallback to Binance
+    # 2. Fallback to Bybit
     if not success:
         try:
-            url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={binance_symbol}"
+            url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={binance_symbol}"
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        rate = float(data.get("lastFundingRate", 0)) * 100  # Convert to %
-                        rate_pct = rate
-                        success = True
+                        if data.get("retCode") == 0 and "result" in data and "list" in data["result"]:
+                            rate_str = data["result"]["list"][0].get("fundingRate", "0")
+                            rate = float(rate_str) * 100  # Convert to %
+                            rate_pct = rate
+                            success = True
         except Exception as e:
-            logger.debug(f"Binance Funding fetch failed for {symbol}: {e}")
+            logger.debug(f"Bybit Funding fetch failed for {symbol}: {e}")
 
     result = {
         "symbol": symbol,
@@ -257,22 +259,25 @@ async def get_open_interest_change(symbol: str) -> dict:
         except Exception as e:
             logger.debug(f"Coinglass OI fetch failed for {symbol}: {e}")
 
-    # 2. Fallback to Binance Futures
+    # 2. Fallback to Bybit
     if not success:
         try:
-            url = f"https://fapi.binance.com/fapi/v1/openInterestHist?symbol={binance_symbol}&period=1h&limit=5"
+            url = f"https://api.bybit.com/v5/market/open-interest?category=linear&symbol={binance_symbol}&intervalTime=1h&limit=5"
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        if len(data) >= 2:
-                            oi_now_val = float(data[-1]["sumOpenInterestValue"])
-                            oi_prev_val = float(data[0]["sumOpenInterestValue"])
-                            change_pct = (oi_now_val - oi_prev_val) / oi_prev_val * 100 if oi_prev_val > 0 else 0.0
-                            oi_now = oi_now_val
-                            success = True
+                        if data.get("retCode") == 0 and "result" in data and "list" in data["result"]:
+                            lst = data["result"]["list"]
+                            if len(lst) >= 2:
+                                # Bybit list is sorted descending (latest first)
+                                oi_now_val = float(lst[0]["openInterest"])
+                                oi_prev_val = float(lst[-1]["openInterest"])
+                                change_pct = (oi_now_val - oi_prev_val) / oi_prev_val * 100 if oi_prev_val > 0 else 0.0
+                                oi_now = oi_now_val
+                                success = True
         except Exception as e:
-            logger.debug(f"Binance OI fetch failed for {symbol}: {e}")
+            logger.debug(f"Bybit OI fetch failed for {symbol}: {e}")
 
     result = {
         "symbol": symbol,
