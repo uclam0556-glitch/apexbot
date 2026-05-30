@@ -94,7 +94,7 @@ class RSMatrix:
         This is extremely lightweight (Weight: 2) and 100% reliable.
         """
         from shared.state import global_state
-        url = "https://fapi.binance.com/fapi/v1/ticker/price"
+        url = "https://api.bybit.com/v5/market/tickers?category=linear"
         
         while True:
             try:
@@ -102,19 +102,20 @@ class RSMatrix:
                     async with session.get(url, timeout=5) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            prices = {item["symbol"]: float(item["price"]) for item in data}
-                            
-                            for binance_symbol, price in prices.items():
-                                if binance_symbol.endswith("USDT"):
-                                    sym = binance_symbol.replace("USDT", "/USDT")
-                                    if sym not in global_state.live_prices:
-                                        global_state.live_prices[sym] = {}
-                                    global_state.live_prices[sym]["price"] = price
+                            if data.get("retCode") == 0 and "result" in data and "list" in data["result"]:
+                                prices = {item["symbol"]: float(item["lastPrice"]) for item in data["result"]["list"]}
+                                
+                                for bybit_symbol, price in prices.items():
+                                    if bybit_symbol.endswith("USDT"):
+                                        sym = bybit_symbol.replace("USDT", "/USDT")
+                                        if sym not in global_state.live_prices:
+                                            global_state.live_prices[sym] = {}
+                                        global_state.live_prices[sym]["price"] = price
                         else:
-                            logger.error(f"Fast poller received HTTP {resp.status}")
+                            logger.error(f"Fast poller received HTTP {resp.status} from Bybit")
                             
             except Exception as e:
-                logger.error(f"Fast poller error: {e}")
+                logger.error(f"Fast poller error (Bybit): {e}")
                 
             await asyncio.sleep(2)
 
