@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import aiosqlite
 import structlog
@@ -30,6 +30,14 @@ def create_app() -> FastAPI:
     # ──────────────────────────────────────────────────────────────
     # API ENDPOINTS
     # ──────────────────────────────────────────────────────────────
+
+    @app.get("/api/download-db")
+    async def download_db():
+        """Allows direct download of the SQLite database containing trades and ML features."""
+        db_file = Path(DB_PATH)
+        if db_file.exists():
+            return FileResponse(path=db_file, filename="apex_lite.db", media_type="application/octet-stream")
+        return JSONResponse(status_code=404, content={"error": "Database file not found."})
 
     @app.get("/api/stats")
     async def get_stats():
