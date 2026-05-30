@@ -48,15 +48,15 @@ def create_app() -> FastAPI:
                         "win_rate": 0, "pnl_sum": 0.0, "best_trade": 0.0,
                         "worst_trade": 0.0, "avg_win": 0.0, "avg_loss": 0.0}
 
-            won = [r for r in rows if r['status'] in ('WON', 'WON_BREAKEVEN')]
-            small_win = [r for r in rows if r['status'] == 'TIMEOUT_SMALL_WIN' or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and r['pnl_pct'] > 0.4)]
-            breakeven = [r for r in rows if r['status'] in ('BREAKEVEN', 'TIMEOUT_BREAKEVEN') or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and -0.4 <= r['pnl_pct'] <= 0.4)]
-            small_loss = [r for r in rows if r['status'] == 'TIMEOUT_SMALL_LOSS' or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and -1.0 < r['pnl_pct'] < -0.4)]
-            lost = [r for r in rows if r['status'] == 'LOST' or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and r['pnl_pct'] <= -1.0)]
+            won = [r for r in rows if r['status'] in ('WON', 'WON_BREAKEVEN') or (r['status'] in ('TIMEOUT', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_LOSS') and r['pnl_pct'] and r['pnl_pct'] >= 1.0)]
+            small_win = [r for r in rows if (r['status'] == 'TIMEOUT_SMALL_WIN' and (not r['pnl_pct'] or r['pnl_pct'] < 1.0)) or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and 0.4 <= r['pnl_pct'] < 1.0)]
+            breakeven = [r for r in rows if (r['status'] in ('BREAKEVEN', 'TIMEOUT_BREAKEVEN') and (not r['pnl_pct'] or -0.4 <= r['pnl_pct'] < 0.4)) or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and -0.4 <= r['pnl_pct'] < 0.4)]
+            small_loss = [r for r in rows if (r['status'] == 'TIMEOUT_SMALL_LOSS' and (not r['pnl_pct'] or r['pnl_pct'] > -1.0)) or (r['status'] == 'TIMEOUT' and r['pnl_pct'] and -1.0 < r['pnl_pct'] <= -0.4)]
+            lost = [r for r in rows if r['status'] == 'LOST' or (r['status'] in ('TIMEOUT', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_LOSS') and r['pnl_pct'] and r['pnl_pct'] <= -1.0)]
             
             pnl_vals = [r['pnl_pct'] for r in rows if r['pnl_pct'] is not None]
 
-            active_trades = len(won) + len(small_win) + len(lost) + len(small_loss)
+            active_trades = len(won) + len(lost)
             
             return {
                 "total": total,
@@ -117,9 +117,9 @@ def create_app() -> FastAPI:
                 params = []
                 
                 if filter_type == "WON":
-                    query += " WHERE status IN ('WON', 'WON_BREAKEVEN', 'BREAKEVEN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_WIN') OR (status = 'TIMEOUT' AND pnl_pct > 0)"
+                    query += " WHERE status IN ('WON', 'WON_BREAKEVEN') OR (status IN ('TIMEOUT', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_LOSS') AND pnl_pct >= 1.0)"
                 elif filter_type == "LOST":
-                    query += " WHERE status IN ('LOST', 'TIMEOUT_SMALL_LOSS') OR (status = 'TIMEOUT' AND pnl_pct <= 0)"
+                    query += " WHERE status = 'LOST' OR (status IN ('TIMEOUT', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_LOSS') AND pnl_pct <= -1.0)"
                 elif filter_type == "OPEN":
                     query += " WHERE status IN ('OPEN', 'BREAKEVEN')"
                 elif filter_type == "CLOSED":

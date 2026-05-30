@@ -883,17 +883,14 @@ async function loadStats() {
     pnlEl.className = 'kpi-value ' + (pnlVal >= 0 ? 'text-green' : 'text-red');
     document.getElementById('kpi-pnl-sub').textContent = d.total + ' закрытых сделок';
 
-    const totalWon = (d.won || 0) + (d.small_win || 0);
-    const totalLost = (d.lost || 0) + (d.small_loss || 0);
-
     const wr = d.win_rate || 0;
     const wrEl = document.getElementById('kpi-wr');
     wrEl.textContent = wr.toFixed(1) + '%';
     wrEl.className = 'kpi-value ' + (wr >= 55 ? 'text-green' : wr >= 45 ? 'text-gold' : 'text-red');
-    document.getElementById('kpi-wr-sub').textContent = `${totalWon} / ${totalWon + totalLost}`;
+    document.getElementById('kpi-wr-sub').textContent = `${d.won} / ${d.won + d.lost}`;
 
-    document.getElementById('kpi-total').textContent = d.total;
-    document.getElementById('kpi-trades-sub').textContent = `${totalWon} побед, ${totalLost} убытков`;
+    document.getElementById('kpi-total').textContent = d.won + d.lost;
+    document.getElementById('kpi-trades-sub').textContent = `${d.won} побед, ${d.lost} убытков`;
 
     const openEl = document.getElementById('kpi-open');
     openEl.textContent = d.open;
