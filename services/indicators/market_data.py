@@ -23,7 +23,7 @@ async def get_fear_greed() -> dict:
     """Fetch Crypto Fear & Greed Index. Cached for 1 hour."""
     now = datetime.utcnow()
     if (_fear_greed_cache["fetched_at"] and
-            (now - _fear_greed_cache["fetched_at"]).seconds < 3600):
+            (now - _fear_greed_cache["fetched_at"]).total_seconds() < 3600):
         return _fear_greed_cache
 
     try:
@@ -81,7 +81,7 @@ async def get_funding_rate(symbol: str) -> dict:
     binance_symbol = symbol.replace("/", "")
 
     cached = _funding_cache.get(binance_symbol)
-    if cached and (now - cached["fetched_at"]).seconds < 1800:
+    if cached and (now - cached["fetched_at"]).total_seconds() < 1800:
         return cached
 
     try:
@@ -143,7 +143,7 @@ async def get_funding_rate(symbol: str) -> dict:
     mexc_symbol = symbol.replace("/", "_")
 
     cached = _funding_cache.get(mexc_symbol)
-    if cached and (now - cached["fetched_at"]).seconds < 1800:
+    if cached and (now - cached["fetched_at"]).total_seconds() < 1800:
         return cached
 
     try:
@@ -205,7 +205,7 @@ async def get_open_interest_change(symbol: str) -> dict:
     bybit_symbol = symbol.replace("/", "")
 
     cached = _oi_cache.get(bybit_symbol)
-    if cached and (now - cached["fetched_at"]).seconds < 900:  # 15 min cache
+    if cached and (now - cached["fetched_at"]).total_seconds() < 900:  # 15 min cache
         return cached
 
     try:
@@ -264,7 +264,7 @@ async def get_btc_dominance() -> dict:
     """BTC.D — cached for 30 min. Rising = bad for alts, falling = alt season."""
     now = datetime.utcnow()
     if (_dominance_cache["fetched_at"] and
-            (now - _dominance_cache["fetched_at"]).seconds < 1800):
+            (now - _dominance_cache["fetched_at"]).total_seconds() < 1800):
         return _dominance_cache
 
     try:

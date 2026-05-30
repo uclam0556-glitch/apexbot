@@ -261,6 +261,29 @@ async def can_open_new_position(regime: str) -> bool:
     return True
 
 
+async def is_on_cooldown(symbol: str, cooldown_hours: int = 4) -> bool:
+    """Checks if the symbol was recently closed within the cooldown window."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT closed_at FROM trades WHERE symbol = ? AND status != 'OPEN' AND closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 1", 
+            (symbol,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            
+    if not row:
+        return False
+        
+    try:
+        last_closed = datetime.fromisoformat(row[0])
+        hours_since = (datetime.utcnow() - last_closed).total_seconds() / 3600
+        if hours_since < cooldown_hours:
+            logger.info(f"COOLDOWN: {symbol} was traded {hours_since:.1f} hours ago (Cooldown: {cooldown_hours}h). Blocking entry.")
+            return True
+    except Exception as e:
+        logger.error(f"Cooldown parse error for {symbol}: {e}")
+        
+    return False
+
 async def update_trade_sl(trade_id: int, new_sl: float, new_status: str = "OPEN", pnl_pct: float = None):
     """Updates stop loss for a trailing stop and optionally records PnL."""
     async with aiosqlite.connect(DB_PATH) as db:

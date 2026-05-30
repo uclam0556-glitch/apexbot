@@ -47,7 +47,7 @@ from services.engine.risk_engine import RiskEngine
 from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
-from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position
+from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
@@ -451,6 +451,20 @@ class ApexSystem:
                     if not await can_open_new_position(regime_val):
                         continue
 
+                    # ─── FILTER 1.2: COOLDOWN FILTER ──────────────────────────────────────
+                    if await is_on_cooldown(symbol, cooldown_hours=4):
+                        continue
+
+                    # ─── FILTER 1.3: EXHAUSTION FILTER ────────────────────────────────────
+                    price_change_4h = (
+                        (df_1h['close'].iloc[-1] - df_1h['close'].iloc[-5]) /
+                        df_1h['close'].iloc[-5] * 100
+                    ) if len(df_1h) >= 5 else 0.0
+                    
+                    if price_change_4h > 5.0:
+                        logger.info(f"{symbol} - [BLOCKED] Exhaustion Filter: Up {price_change_4h:.2f}% in 4h. Skipping LONG.")
+                        continue
+
                     # ─── FILTER 2: SESSION FILTER ────────────────────────────────────────────
                     utc_hour = datetime.utcnow().hour
                     # if 22 <= utc_hour or utc_hour < 1:
@@ -489,6 +503,11 @@ class ApexSystem:
                     trade_direction = "LONG"
                     trade_strategy  = None
                     regime_val      = current_regime.value
+                    
+                    # BLOCK ALL SHORTS TEMPORARILY AS PER ARCHITECTURAL PLAN
+                    if trade_direction == "SHORT":
+                        logger.info(f"{symbol} - [BLOCKED] System is in TREND LONG ONLY mode. Shorts are disabled.")
+                        continue
 
                     if regime_val == "BEAR":
                         # Capitulation Catcher

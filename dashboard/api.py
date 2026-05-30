@@ -66,6 +66,37 @@ def create_app() -> FastAPI:
 
             active_trades = len(won) + len(lost)
             
+            # Group by Regime
+            regime_stats = {}
+            async with aiosqlite.connect(DB_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT f.regime, t.status, t.pnl_pct 
+                    FROM trades t 
+                    JOIN feature_store f ON t.id = f.trade_id 
+                    WHERE t.status IN ('WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'BREAKEVEN', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_SMALL_LOSS', 'TIMEOUT_BREAKEVEN')
+                """) as r_cur:
+                    regime_rows = await r_cur.fetchall()
+            
+            for rr in regime_rows:
+                reg = rr['regime'] or 'UNKNOWN'
+                if reg not in regime_stats:
+                    regime_stats[reg] = {"won": 0, "lost": 0, "pnl": 0.0}
+                
+                # Apply same strict win/loss criteria
+                if rr['status'] in ('WON', 'WON_BREAKEVEN') or (rr['status'] in ('TIMEOUT', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_LOSS') and rr['pnl_pct'] and rr['pnl_pct'] >= 1.0):
+                    regime_stats[reg]["won"] += 1
+                elif rr['status'] == 'LOST' or (rr['status'] in ('TIMEOUT', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_LOSS') and rr['pnl_pct'] and rr['pnl_pct'] <= -1.0):
+                    regime_stats[reg]["lost"] += 1
+                
+                if rr['pnl_pct'] is not None:
+                    regime_stats[reg]["pnl"] += rr['pnl_pct']
+            
+            for reg in regime_stats:
+                total_r = regime_stats[reg]["won"] + regime_stats[reg]["lost"]
+                regime_stats[reg]["win_rate"] = round(regime_stats[reg]["won"] / total_r * 100, 1) if total_r > 0 else 0
+                regime_stats[reg]["pnl"] = round(regime_stats[reg]["pnl"], 2)
+            
             return {
                 "total": total,
                 "open": open_count,
@@ -80,12 +111,13 @@ def create_app() -> FastAPI:
                 "worst_trade": round(min(pnl_vals), 2) if pnl_vals else 0,
                 "avg_win": round(sum(r['pnl_pct'] for r in won if r['pnl_pct']) / len(won), 2) if won else 0,
                 "avg_loss": round(sum(r['pnl_pct'] for r in lost if r['pnl_pct']) / len(lost), 2) if lost else 0,
+                "regime_stats": regime_stats
             }
         except Exception as e:
             logger.error(f"Stats error: {e}")
             return {"total": 0, "open": 0, "won": 0, "lost": 0,
                     "win_rate": 0, "pnl_sum": 0, "best_trade": 0,
-                    "worst_trade": 0, "avg_win": 0, "avg_loss": 0}
+                    "worst_trade": 0, "avg_win": 0, "avg_loss": 0, "regime_stats": {}}
 
     @app.get("/api/equity-curve")
     async def get_equity_curve():
