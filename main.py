@@ -389,7 +389,16 @@ class ApexSystem:
             open_trades = await get_open_trades()
             open_symbols = [t['symbol'] for t in open_trades]
             
-            
+            # ─── PRE-FETCH CORRELATION DATA ──────────────────────────────────────────
+            prices_30d = {}
+            if open_symbols:
+                logger.info(f"Fetching 30d history for {len(open_symbols)} open positions for correlation matrix...")
+                open_tasks = [self.fetch_market_data(sym, '1d', 35) for sym in open_symbols]
+                open_results = await asyncio.gather(*open_tasks, return_exceptions=True)
+                for sym, df_1d_open in zip(open_symbols, open_results):
+                    if isinstance(df_1d_open, pd.DataFrame) and not df_1d_open.empty:
+                        prices_30d[sym] = df_1d_open['close']
+
             # ─── RS MATRIX PRE-FILTER (Top 30 Only) ──────────────────────────────────
             top_rs_coins = rs_matrix_engine.get_top_n(30)
             scan_symbols = [c['symbol'] for c in top_rs_coins] if top_rs_coins else self.config.trading.symbols[:30]
@@ -428,6 +437,15 @@ class ApexSystem:
                     if '1h' not in tf_data:
                         logger.warning(f"{symbol} - Could not fetch 1h data. Skipping.")
                         continue
+                        
+                    # ─── ADVANCED INSTITUTIONAL FILTER: CORRELATION RISK ──────────────────
+                    df_1d_sym = tf_data.get('1d', pd.DataFrame())
+                    if not df_1d_sym.empty and open_symbols:
+                        prices_30d[symbol] = df_1d_sym['close']
+                        corr_result = self.risk_engine.check_correlation(symbol, open_symbols, prices_30d)
+                        if not corr_result.correlation_ok:
+                            logger.info(f"{symbol} - [BLOCKED] Correlation Risk. Highly correlated ({corr_result.max_correlation:.2f}) with open position {corr_result.correlated_with}. Skipping.")
+                            continue
                     
                     df_1h = tf_data['1h']
                     current_price = df_1h['close'].iloc[-1]
@@ -609,12 +627,21 @@ class ApexSystem:
                             premium_penalty = 15.0
                             logger.info(f"{symbol} - [PENALTY] Price in Premium Zone (Top 30% of 48h). Applying -15 penalty.")
 
-                    # ─── ADVANCED INSTITUTIONAL FILTER 3: SMART FUNDING TRAP ───────────────────
+                    # ─── ADVANCED INSTITUTIONAL FILTER 3: ABSORPTION TRAP (FUNDING + RSI + CVD) ────
                     from services.indicators.market_data import get_funding_rate
                     funding_data = await get_funding_rate(symbol)
                     funding_pct = funding_data.get("rate_pct", 0.0)
-                    if funding_pct > 0.04 and rsi_now > 65 and trade_direction == "LONG":
-                        logger.info(f"{symbol} - [BLOCKED] Smart Funding Trap (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}). Squeeze imminent. Skipping.")
+                    if funding_pct > 0.04 and rsi_now > 65 and cvd_score_val < 0 and trade_direction == "LONG":
+                        logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
+                        continue
+
+                    # ─── ADVANCED INSTITUTIONAL FILTER 4: Z-SCORE GRAVITY ─────────────────────
+                    ema_100 = df_1h['close'].rolling(100).mean().iloc[-1] if len(df_1h) >= 100 else df_1h['close'].mean()
+                    std_100 = df_1h['close'].rolling(100).std().iloc[-1] if len(df_1h) >= 100 else df_1h['close'].std()
+                    z_score = (current_price - ema_100) / std_100 if std_100 > 0 else 0.0
+
+                    if z_score > 3.0 and trade_direction == "LONG":
+                        logger.info(f"{symbol} - [BLOCKED] Z-Score Gravity. Price is {z_score:.1f} std devs above mean. Mean reversion inevitable. Skipping.")
                         continue
 
                     # ─── SMC + INDICATORS ─────────────────────────────────────────────────────
@@ -744,6 +771,14 @@ class ApexSystem:
                                 btc_rsi   = (100 - (100 / (1 + btc_gain / btc_loss.replace(0, 1e-9)))).iloc[-1]
                                 if trade_direction == "LONG" and btc_rsi < 42: v7_score -= 15
                                 if trade_direction == "SHORT" and btc_rsi > 58: v7_score -= 15
+                                
+                                # ─── ADVANCED INSTITUTIONAL FILTER 5: INTRADAY RELATIVE STRENGTH (ALPHA) ──
+                                if len(btc_1h) >= 5:
+                                    btc_return_4h = (btc_1h['close'].iloc[-1] - btc_1h['close'].iloc[-5]) / btc_1h['close'].iloc[-5] * 100
+                                    sym_return_4h = price_change_4h_pct
+                                    if btc_return_4h < -1.0 and sym_return_4h > 1.0 and trade_direction == "LONG":
+                                        v7_score += 20.0
+                                        logger.info(f"🌟 {symbol} INTRADAY ALPHA BONUS! BTC is dropping ({btc_return_4h:.2f}%), but {symbol} is rising ({sym_return_4h:.2f}%). Strong relative strength.")
                         except Exception:
                             pass
                     else:

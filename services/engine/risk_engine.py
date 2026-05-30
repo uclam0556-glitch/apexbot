@@ -622,13 +622,38 @@ class RiskEngine:
         # Buffer percentage
         sl_buffer_actual = abs(stop_loss - entry) / entry * 100
 
-        # ── Take Profits (Fixed 1 TP for ML Data Collection) ──
+        # ── Take Profits (Dynamic based on LVN/FVG/ATR) ──
+        min_tp1_distance = sl_distance * 1.5
+        min_tp1_price = entry + min_tp1_distance if is_long else entry - min_tp1_distance
+
+        tp1 = 0.0
+        
+        # 1. Look for nearest LVN in the direction of trade
+        valid_lvns = [vn.price for vn in volume_nodes if vn.type == "LVN"]
         if is_long:
-            tp1 = entry + 2.0 * sl_distance
+            target_lvns = sorted([p for p in valid_lvns if p >= min_tp1_price])
+            tp1 = target_lvns[0] if target_lvns else 0.0
         else:
-            tp1 = entry - 2.0 * sl_distance
-            
-        tp1_rr = 2.0
+            target_lvns = sorted([p for p in valid_lvns if p <= min_tp1_price], reverse=True)
+            tp1 = target_lvns[0] if target_lvns else 0.0
+
+        # 2. If no LVN, look for nearest FVG (Imbalance Zone)
+        if tp1 == 0.0:
+            if is_long:
+                target_fvgs = sorted([fvg.low for fvg in imbalance_zones if fvg.type == "BEARISH_FVG" and fvg.low >= min_tp1_price])
+                tp1 = target_fvgs[0] if target_fvgs else 0.0
+            else:
+                target_fvgs = sorted([fvg.high for fvg in imbalance_zones if fvg.type == "BULLISH_FVG" and fvg.high <= min_tp1_price], reverse=True)
+                tp1 = target_fvgs[0] if target_fvgs else 0.0
+
+        # 3. Fallback to volatility-based TP (ATR)
+        if tp1 == 0.0:
+            if is_long:
+                tp1 = entry + max(2.0 * atr, sl_distance * 2.0)
+            else:
+                tp1 = entry - max(2.0 * atr, sl_distance * 2.0)
+                
+        tp1_rr = abs(tp1 - entry) / sl_distance if sl_distance > 0 else 2.0
 
         self._log.info(
             "sl_tp_calculated",
