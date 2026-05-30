@@ -819,7 +819,7 @@ class ApexSystem:
                     sl_pct       = abs(current_price - sltp.stop_loss) / current_price if current_price > 0 else 0.03
                     position_usd = (risk_usd / sl_pct) if sl_pct > 0 else risk_usd * 10
                     position_usd = min(position_usd, deposit * 0.20)
-                    rr_ratio     = abs(sltp.take_profit_2 - current_price) / abs(current_price - sltp.stop_loss) if abs(current_price - sltp.stop_loss) > 0 else 2.0
+                    rr_ratio     = abs(sltp.take_profit_1 - current_price) / abs(current_price - sltp.stop_loss) if abs(current_price - sltp.stop_loss) > 0 else 2.0
 
                     # ─── CONFIDENCE CALIBRATION ────────────────────────────────────────────────
                     confidence_data = await get_confidence_calibration(ultra_score)
