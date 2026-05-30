@@ -115,8 +115,6 @@ async def save_trade(
     entry_price: float, 
     stop_loss: float, 
     take_profit_1: float,
-    take_profit_2: float,
-    take_profit_3: float,
     position_usd: float,
     reasoning: str,
     strategy: str = "TREND",
@@ -131,7 +129,7 @@ async def save_trade(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
         ''', (
             signal_id, symbol, direction, strategy, entry_price, stop_loss, 
-            take_profit_1, take_profit_2, take_profit_3, position_usd, datetime.utcnow(), reasoning
+            take_profit_1, None, None, position_usd, datetime.utcnow(), reasoning
         ))
         trade_id = cursor.lastrowid
         

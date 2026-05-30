@@ -437,9 +437,6 @@ class VaRResult(BaseModel):
 class SLTPResult(BaseModel):
     stop_loss: float
     take_profit_1: float
-    take_profit_2: float | None = None
-    take_profit_3: float | None = None
-    tp_allocation: list[float] = [1.0]  # Only 1 TP now
     rr_ratio_tp1: float
     sl_buffer_pct: float
     sl_near_round_number: bool  # adversarial warning
@@ -794,8 +791,6 @@ class ParameterAdjustments(BaseModel):
     position_size_multiplier: float = 1.0   # 0.5-1.0 reduction
     execution_type_override: ExecutionType | None = None
     tp1_adjusted: float | None = None
-    tp2_adjusted: float | None = None
-    remove_tp3: bool = False
     adjustment_reason: str = ""
 
     @field_validator("position_size_multiplier")

@@ -643,9 +643,6 @@ class RiskEngine:
         return SLTPResult(
             stop_loss=round(stop_loss, 8),
             take_profit_1=round(tp1, 8),
-            take_profit_2=None,
-            take_profit_3=None,
-            tp_allocation=[1.0],
             rr_ratio_tp1=round(tp1_rr, 4),
             sl_buffer_pct=round(sl_buffer_actual, 4),
             sl_near_round_number=sl_near_round_number,

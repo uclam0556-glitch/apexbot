@@ -85,10 +85,7 @@ class TelegramNotifier:
         
         sl = adj.stop_loss_adjusted or sig.stop_loss
         tp1 = adj.tp1_adjusted or sig.take_profit_1
-        tp2 = adj.tp2_adjusted or sig.take_profit_2
-        tp3 = None if adj.remove_tp3 else sig.take_profit_3
-        
-        tp_alloc = sig.tp_allocation
+        tp1 = adj.tp1_adjusted or sig.take_profit_1
 
         emoji = "🟢" if direction == "LONG" else "🔴"
         
@@ -97,14 +94,8 @@ class TelegramNotifier:
             f"📊 *Одобрено AI Аудитором* (Score: {sig.confluence.normalized_score}/10)\n\n"
             f"🎯 *Вход:* `${current_price:,.2f}` (Paper Trading)\n"
             f"🛑 *Виртуальный Стоп-Лосс:* `${sl:,.2f}`\n\n"
-            f"💰 *Тейк-профиты:*\n"
-            f"\\- TP1: `${tp1:,.2f}` ({int(tp_alloc[0]*100)}%)\n"
+            f"💰 *Тейк-профит:* `${tp1:,.2f}`\n"
         )
-
-        if tp2:
-            message += f"\\- TP2: `${tp2:,.2f}` ({int(tp_alloc[1]*100)}%)\n"
-        if tp3:
-            message += f"\\- TP3: `${tp3:,.2f}` ({int(tp_alloc[2]*100)}%)\n"
             
         message += f"\n💵 *Размер позиции:* `${position_usd:,.2f}` ({amount:,.4f} {sig.symbol.split('/')[0]})\n"
         
@@ -120,13 +111,8 @@ class TelegramNotifier:
             f"📊 <b>Одобрено AI Аудитором</b> (Score: {sig.confluence.normalized_score}/10)\n\n"
             f"🎯 <b>Вход:</b> ${current_price:,.2f} (Paper Trading)\n"
             f"🛑 <b>Виртуальный Стоп-Лосс:</b> ${sl:,.2f}\n\n"
-            f"💰 <b>Тейк-профиты:</b>\n"
-            f"- TP1: ${tp1:,.2f} ({int(tp_alloc[0]*100)}%)\n"
+            f"💰 <b>Тейк-профит:</b> ${tp1:,.2f}\n"
         )
-        if tp2:
-            html_message += f"- TP2: ${tp2:,.2f} ({int(tp_alloc[1]*100)}%)\n"
-        if tp3:
-            html_message += f"- TP3: ${tp3:,.2f} ({int(tp_alloc[2]*100)}%)\n"
             
         html_message += f"\n💵 <b>Размер позиции:</b> ${position_usd:,.2f} ({amount:,.4f} {sig.symbol.split('/')[0]})\n"
         html_message += f"\n🧠 <b>Логика ИИ:</b> <i>{audit.reasoning}</i>"
