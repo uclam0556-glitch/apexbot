@@ -404,6 +404,33 @@ class ApexSystem:
             scan_symbols = [c['symbol'] for c in top_rs_coins] if top_rs_coins else self.config.trading.symbols[:30]
             logger.info(f"Pre-filtered top {len(scan_symbols)} strongest coins for scanning.")
 
+            # ─── MARKET BREADTH ENGINE (EMA200) ──────────────────────────────────────
+            logger.info("Calculating Market Breadth (Top 30 Coins vs EMA200)...")
+            breadth_tasks = [self.fetch_market_data(sym, '1d', 210) for sym in scan_symbols]
+            breadth_results = await asyncio.gather(*breadth_tasks, return_exceptions=True)
+            
+            coins_above_ema200 = 0
+            valid_coins = 0
+            for sym, df_breadth in zip(scan_symbols, breadth_results):
+                if isinstance(df_breadth, pd.DataFrame) and len(df_breadth) >= 200:
+                    valid_coins += 1
+                    current_close = df_breadth['close'].iloc[-1]
+                    ema_200 = df_breadth['close'].rolling(200).mean().iloc[-1]
+                    if current_close > ema_200:
+                        coins_above_ema200 += 1
+            
+            breadth_pct = (coins_above_ema200 / valid_coins * 100) if valid_coins > 0 else 50.0
+            logger.info(f"Market Breadth: {breadth_pct:.1f}% of top coins are above 1D EMA200.")
+            
+            # Dynamic config based on breadth
+            dynamic_min_score = 65
+            if breadth_pct < 40.0:
+                dynamic_min_score = 75
+                logger.warning(f"RISK-OFF: Breadth < 40% ({breadth_pct:.1f}%). Raising min score to 75.")
+            elif breadth_pct > 70.0:
+                dynamic_min_score = 60
+                logger.info(f"RISK-ON: Breadth > 70% ({breadth_pct:.1f}%). Lowering min score to 60.")
+
             for symbol in scan_symbols:
                 if not self.running:
                     break
@@ -794,18 +821,16 @@ class ApexSystem:
                     rsi_max = 80 if regime_val == "BULL" else 73
                     if rsi_now > rsi_max: v7_score -= 20
                     
-                    # ─── A+ SETUP OVERRIDE ─────────────────────────────────────────────────────
-                    is_a_plus = False
+                    # ─── A+ SETUP BONUS (NO LONGER AN OVERRIDE) ────────────────────────────────
                     if trade_direction == "LONG" and rsi_now < 28 and cvd_score_val >= 0 and ofi_real.ofi_score > 0:
                         last_vol = df_15m_check['volume'].iloc[-2] if not df_15m_check.empty else 0
                         avg_vol = df_15m_check['volume'].iloc[-12:-2].mean() if not df_15m_check.empty else 1
                         if avg_vol > 0 and (last_vol / avg_vol) > 1.5:
-                            is_a_plus = True
-                            v7_score = 100.0  # Force max score
-                            logger.info(f"🌟 {symbol} A+ SETUP OVERRIDE ACTIVATED! (RSI={rsi_now:.1f}, CVD+, OFI+, VOL+)")
+                            v7_score += 35.0  # Massive bonus, but must still pass the gate
+                            logger.info(f"🌟 {symbol} A+ SETUP BONUS! (RSI={rsi_now:.1f}, CVD+, OFI+, VOL+). Applying +35 points.")
                             
                     # ─── FINAL V7 GATE ─────────────────────────────────────────────────────────
-                    if v7_score < 65 and not is_a_plus:
+                    if v7_score < dynamic_min_score:
                         if 45 <= v7_score < 65:
                             from shared.lite_db import save_missed_signal
                             asyncio.create_task(save_missed_signal(symbol, trade_direction, v7_score, current_price))

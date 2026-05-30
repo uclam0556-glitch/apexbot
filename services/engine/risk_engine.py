@@ -609,12 +609,9 @@ class RiskEngine:
             sl_distance = min_required_distance
             stop_loss = entry - sl_distance if is_long else entry + sl_distance
             
-        # Hard Cap SL at 2% (User requested: bounded between 1.5% and 2.0%)
-        max_sl_distance = entry * 0.02
-        if sl_distance > max_sl_distance:
-            # Cap the SL to 2% exactly
-            sl_distance = max_sl_distance
-            stop_loss = entry - sl_distance if is_long else entry + sl_distance
+        # ─── REMOVED HARD CAP: Risk is now controlled by Position Sizing (Lot Size) ───
+        # max_sl_distance = entry * 0.02
+        # if sl_distance > max_sl_distance: ...
 
         # Round-number proximity check
         sl_near_round_number = self._is_near_round_number(stop_loss)
