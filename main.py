@@ -47,7 +47,7 @@ from services.engine.risk_engine import RiskEngine
 from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
-from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown, save_filter_block
+from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown, save_filter_block, update_trade_sl
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
@@ -273,6 +273,26 @@ class ApexSystem:
                             except Exception as parse_err:
                                 logger.debug(f"Time-based exit parse error: {parse_err}")
 
+                        # ─── V8 CHANDELIER EXIT (DYNAMIC TRAILING STOP) ──────────────────────
+                        # If trade is in > 2.0% profit, trail SL 1.5% behind highest/lowest point
+                        try:
+                            if trade['direction'] == 'LONG':
+                                if max_profit_pct >= 2.0:
+                                    trail_sl = excursions["high"] * 0.985
+                                    if trail_sl > trade['stop_loss']:
+                                        logger.info(f"📈 {symbol} - [Chandelier Exit] Trailing SL up to {trail_sl:.4f} (MFE: {excursions['high']:.4f})")
+                                        await update_trade_sl(trade['id'], trail_sl)
+                                        trade['stop_loss'] = trail_sl
+                            else:
+                                if max_profit_pct >= 2.0:
+                                    trail_sl = excursions["low"] * 1.015
+                                    if trail_sl < trade['stop_loss'] or trade['stop_loss'] == 0: # handle missing SL
+                                        logger.info(f"📉 {symbol} - [Chandelier Exit] Trailing SL down to {trail_sl:.4f} (MFE: {excursions['low']:.4f})")
+                                        await update_trade_sl(trade['id'], trail_sl)
+                                        trade['stop_loss'] = trail_sl
+                        except Exception as trail_err:
+                            logger.error(f"Error updating trailing SL: {trail_err}")
+
                         # Standard TP/SL logic (only if not already TIMEOUT)
                         if not status and trade['direction'] == 'LONG':
                             if recent_high >= trade['take_profit_1'] and trade['status'] == 'OPEN':
@@ -405,13 +425,14 @@ class ApexSystem:
             logger.info(f"Pre-filtered top {len(scan_symbols)} strongest coins for scanning.")
 
             # ─── MARKET BREADTH ENGINE (EMA200) ──────────────────────────────────────
-            logger.info("Calculating Market Breadth (Top 30 Coins vs EMA200)...")
-            breadth_tasks = [self.fetch_market_data(sym, '1d', 210) for sym in scan_symbols]
+            macro_breadth_symbols = self.config.trading.symbols[:50] if len(self.config.trading.symbols) >= 50 else self.config.trading.symbols
+            logger.info(f"Calculating Market Breadth ({len(macro_breadth_symbols)} Macro Coins vs EMA200)...")
+            breadth_tasks = [self.fetch_market_data(sym, '1d', 210) for sym in macro_breadth_symbols]
             breadth_results = await asyncio.gather(*breadth_tasks, return_exceptions=True)
             
             coins_above_ema200 = 0
             valid_coins = 0
-            for sym, df_breadth in zip(scan_symbols, breadth_results):
+            for sym, df_breadth in zip(macro_breadth_symbols, breadth_results):
                 if isinstance(df_breadth, pd.DataFrame) and len(df_breadth) >= 200:
                     valid_coins += 1
                     current_close = df_breadth['close'].iloc[-1]

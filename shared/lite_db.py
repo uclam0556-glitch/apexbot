@@ -17,9 +17,12 @@ import os
 DB_PATH = os.getenv("SQLITE_DB_PATH", "apex_lite.db")
 
 async def init_lite_db():
-    """Initializes the SQLite tables and enables WAL mode."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    """Initializes the SQLite tables and enables WAL mode and performance pragmas."""
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         await db.execute('PRAGMA journal_mode=WAL;')
+        await db.execute('PRAGMA synchronous=NORMAL;')
+        await db.execute('PRAGMA temp_store=MEMORY;')
+        await db.execute('PRAGMA mmap_size=3000000000;')
         await db.execute('''
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,7 +164,7 @@ async def save_trade(
     features_dict: dict = None
 ):
     """Saves a new open trade to SQLite."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         cursor = await db.execute('''
             INSERT INTO trades (
                 signal_id, symbol, direction, strategy, entry_price, stop_loss, 
@@ -205,7 +208,7 @@ async def save_trade(
 
 async def get_stats():
     """Calculates win rate and PnL from SQLite."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         async with db.execute('SELECT status, pnl_pct FROM trades WHERE status IN ("WON", "LOST", "WON_BREAKEVEN", "TIMEOUT", "TIMEOUT_BREAKEVEN", "BREAKEVEN", "TIMEOUT_SMALL_WIN", "TIMEOUT_SMALL_LOSS")') as cursor:
             rows = await cursor.fetchall()
             
@@ -238,14 +241,14 @@ async def get_stats():
 
 async def get_recent_trades(limit: int = 5):
     """Fetches recent trades for history."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute('SELECT * FROM trades ORDER BY opened_at DESC LIMIT ?', (limit,)) as cursor:
             return await cursor.fetchall()
 
 async def get_open_trades():
     """Fetches all currently OPEN or BREAKEVEN trades."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute('SELECT * FROM trades WHERE status IN ("OPEN", "BREAKEVEN")') as cursor:
             return await cursor.fetchall()
@@ -259,7 +262,7 @@ async def close_trade(
     duration_minutes: float = None
 ):
     """Marks a trade as WON or LOST and records PnL along with institutional metrics."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         await db.execute('''
             UPDATE trades 
             SET status = ?, pnl_pct = ?, closed_at = ?
@@ -273,6 +276,16 @@ async def close_trade(
             WHERE trade_id = ?
         ''', (status, pnl_pct, max_profit_pct, max_drawdown_pct, duration_minutes, trade_id))
         
+        await db.commit()
+
+async def update_trade_sl(trade_id: int, new_sl: float):
+    """Updates the stop loss of an open trade (Trailing SL)."""
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        await db.execute('''
+            UPDATE trades 
+            SET stop_loss = ?
+            WHERE id = ?
+        ''', (new_sl, trade_id))
         await db.commit()
 
 async def can_open_new_position(regime: str) -> bool:
@@ -291,7 +304,7 @@ async def can_open_new_position(regime: str) -> bool:
         logger.warning(f"Position limit reached for {regime}: 0 allowed. Blocking new signal.")
         return False
         
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         async with db.execute("SELECT COUNT(*) FROM trades WHERE status IN ('OPEN', 'BREAKEVEN')") as cursor:
             count = (await cursor.fetchone())[0]
             
@@ -303,7 +316,7 @@ async def can_open_new_position(regime: str) -> bool:
 
 async def is_on_cooldown(symbol: str, cooldown_hours: int = 4) -> bool:
     """Checks if the symbol was recently closed within the cooldown window."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         async with db.execute(
             "SELECT closed_at FROM trades WHERE symbol = ? AND status != 'OPEN' AND closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 1", 
             (symbol,)
@@ -326,7 +339,7 @@ async def is_on_cooldown(symbol: str, cooldown_hours: int = 4) -> bool:
 
 async def update_trade_sl(trade_id: int, new_sl: float, new_status: str = "OPEN", pnl_pct: float = None):
     """Updates stop loss for a trailing stop and optionally records PnL."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         if pnl_pct is not None:
             await db.execute('''
                 UPDATE trades 
@@ -343,7 +356,7 @@ async def update_trade_sl(trade_id: int, new_sl: float, new_status: str = "OPEN"
 
 async def reset_open_trades():
     """Closes all OPEN trades as CANCELLED (for manual reset via Telegram)."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         await db.execute('''
             UPDATE trades
             SET status = 'CANCELLED', closed_at = ?, pnl_pct = 0
@@ -362,7 +375,7 @@ async def factory_reset_db():
 
 async def get_confidence_calibration(features: dict) -> dict:
     """Calculates historical win rate probability using K-Nearest Neighbors (ML) on a feature vector."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute('''
             SELECT ultra_score, btc_rsi, cvd_score, mtf_score, funding_rate, outcome
@@ -445,7 +458,7 @@ async def get_confidence_calibration(features: dict) -> dict:
 
 async def get_recent_features(limit: int = 20):
     """Fetches recent ML feature store records."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute('SELECT * FROM feature_store ORDER BY created_at DESC LIMIT ?', (limit,)) as cursor:
             return await cursor.fetchall()
@@ -454,7 +467,7 @@ async def get_recent_features(limit: int = 20):
 
 async def save_missed_signal(symbol: str, direction: str, score: float, entry_price: float):
     """Saves a blocked signal to evaluate later if penalties are too strict."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         await db.execute('''
             INSERT INTO missed_signals (symbol, direction, score, entry_price, created_at, checked)
             VALUES (?, ?, ?, ?, ?, 0)
@@ -463,7 +476,7 @@ async def save_missed_signal(symbol: str, direction: str, score: float, entry_pr
 
 async def get_unchecked_missed_signals():
     """Fetches missed signals older than 2 hours that haven't been evaluated."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute('''
             SELECT * FROM missed_signals 
@@ -473,7 +486,7 @@ async def get_unchecked_missed_signals():
 
 async def update_missed_signal_result(signal_id: int, pnl_pct: float, outcome: str):
     """Marks a missed signal as checked and records the hypothetical PnL."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         await db.execute('''
             UPDATE missed_signals 
             SET checked = 1, max_profit_pct = ?, outcome = ?
@@ -485,7 +498,7 @@ async def update_missed_signal_result(signal_id: int, pnl_pct: float, outcome: s
 
 async def save_filter_block(symbol: str, direction: str, filter_name: str, price: float):
     """Saves a hard block event to audit the filter's performance later."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         await db.execute('''
             INSERT INTO filter_audit (symbol, direction, filter_name, price_at_block, created_at, checked)
             VALUES (?, ?, ?, ?, ?, 0)
@@ -494,7 +507,7 @@ async def save_filter_block(symbol: str, direction: str, filter_name: str, price
 
 async def get_unchecked_filter_blocks():
     """Fetches filter blocks older than 24 hours that haven't been audited."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute('''
             SELECT * FROM filter_audit 
@@ -504,7 +517,7 @@ async def get_unchecked_filter_blocks():
 
 async def update_filter_audit_result(audit_id: int, p_1h: float, p_4h: float, p_24h: float):
     """Marks a filter block as audited and records future price changes."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         await db.execute('''
             UPDATE filter_audit 
             SET checked = 1, outcome_1h_pct = ?, outcome_4h_pct = ?, outcome_24h_pct = ?
