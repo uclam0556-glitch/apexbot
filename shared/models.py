@@ -437,9 +437,9 @@ class VaRResult(BaseModel):
 class SLTPResult(BaseModel):
     stop_loss: float
     take_profit_1: float
-    take_profit_2: float
-    take_profit_3: float
-    tp_allocation: list[float]  # [0.40, 0.35, 0.25]
+    take_profit_2: float | None = None
+    take_profit_3: float | None = None
+    tp_allocation: list[float] = [1.0]  # Only 1 TP now
     rr_ratio_tp1: float
     sl_buffer_pct: float
     sl_near_round_number: bool  # adversarial warning
@@ -741,9 +741,9 @@ class SignalCore(BaseModel):
     entry_high: float
     stop_loss: float
     take_profit_1: float
-    take_profit_2: float
-    take_profit_3: float
-    tp_allocation: list[float] = [0.40, 0.35, 0.25]
+    take_profit_2: float | None = None
+    take_profit_3: float | None = None
+    tp_allocation: list[float] = [1.0]
     position_size_pct: float
     position_size_usd: float
     risk_pct: float

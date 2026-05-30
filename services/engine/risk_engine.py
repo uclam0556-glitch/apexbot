@@ -622,17 +622,13 @@ class RiskEngine:
         # Buffer percentage
         sl_buffer_actual = abs(stop_loss - entry) / entry * 100
 
-        # ── Take Profits (Fixed R:R for Realistic Sniper Mode) ──
+        # ── Take Profits (Fixed 1 TP for ML Data Collection) ──
         if is_long:
-            tp1 = entry + 1.5 * sl_distance
-            tp2 = entry + 2.5 * sl_distance
-            tp3 = entry + 3.5 * sl_distance
+            tp1 = entry + 2.0 * sl_distance
         else:
-            tp1 = entry - 1.5 * sl_distance
-            tp2 = entry - 2.5 * sl_distance
-            tp3 = entry - 3.5 * sl_distance
+            tp1 = entry - 2.0 * sl_distance
             
-        tp1_rr = 1.5
+        tp1_rr = 2.0
 
         self._log.info(
             "sl_tp_calculated",
@@ -640,8 +636,6 @@ class RiskEngine:
             direction=direction,
             stop_loss=round(stop_loss, 4),
             tp1=round(tp1, 4),
-            tp2=round(tp2, 4),
-            tp3=round(tp3, 4),
             rr_tp1=round(tp1_rr, 2),
             sl_near_round=sl_near_round_number,
         )
@@ -649,9 +643,9 @@ class RiskEngine:
         return SLTPResult(
             stop_loss=round(stop_loss, 8),
             take_profit_1=round(tp1, 8),
-            take_profit_2=round(tp2, 8),
-            take_profit_3=round(tp3, 8),
-            tp_allocation=DEFAULT_TP_ALLOCATION,
+            take_profit_2=None,
+            take_profit_3=None,
+            tp_allocation=[1.0],
             rr_ratio_tp1=round(tp1_rr, 4),
             sl_buffer_pct=round(sl_buffer_actual, 4),
             sl_near_round_number=sl_near_round_number,

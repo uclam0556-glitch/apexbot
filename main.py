@@ -254,44 +254,19 @@ class ApexSystem:
                         # Standard TP/SL logic (only if not already TIMEOUT)
                         if not status and trade['direction'] == 'LONG':
                             if recent_high >= trade['take_profit_1'] and trade['status'] == 'OPEN':
-                                status = 'BREAKEVEN'
-                                pnl_pct = (trade['take_profit_1'] - trade['entry_price']) / trade['entry_price'] * 100
-                                new_sl = trade['entry_price'] * 1.001
-                                from shared.lite_db import update_trade_sl
-                                await update_trade_sl(trade['id'], new_sl, status, pnl_pct)
-                                logger.info(f"Trade {symbol} hit TP1. SL moved to BREAKEVEN ({format_price(new_sl)}).")
-                                if bot:
-                                    try:
-                                        await send_tp1_notification(bot, int(chat_id_str), trade, pnl_pct)
-                                    except Exception as e:
-                                        logger.error(f"Failed to send TP1 notification: {e}")
-                            elif trade.get('take_profit_3') and recent_high >= trade['take_profit_3']:
                                 status = 'WON'
-                                pnl_pct = (trade['take_profit_3'] - trade['entry_price']) / trade['entry_price'] * 100
+                                pnl_pct = (trade['take_profit_1'] - trade['entry_price']) / trade['entry_price'] * 100
                             elif recent_low <= trade['stop_loss']:
-                                status = 'LOST' if trade['status'] == 'OPEN' else 'WON_BREAKEVEN'
+                                status = 'LOST'
                                 pnl_pct = (trade['stop_loss'] - trade['entry_price']) / trade['entry_price'] * 100
 
                         # SHORT logic (mirror of LONG)
                         elif not status and trade['direction'] == 'SHORT':
                             if recent_low <= trade['take_profit_1'] and trade['status'] == 'OPEN':
-                                # SHORT hit TP1 → move SL to breakeven (slightly below entry)
-                                status = 'BREAKEVEN'
-                                pnl_pct = (trade['entry_price'] - trade['take_profit_1']) / trade['entry_price'] * 100
-                                new_sl = trade['entry_price'] * 0.999  # slightly below breakeven
-                                from shared.lite_db import update_trade_sl
-                                await update_trade_sl(trade['id'], new_sl, status, pnl_pct)
-                                logger.info(f"SHORT Trade {symbol} hit TP1. SL moved to BREAKEVEN ({format_price(new_sl)}).")
-                                if bot:
-                                    try:
-                                        await send_tp1_notification(bot, int(chat_id_str), trade, pnl_pct)
-                                    except Exception as e:
-                                        logger.error(f"Failed to send TP1 notification: {e}")
-                            elif trade.get('take_profit_3') and recent_low <= trade['take_profit_3']:
                                 status = 'WON'
-                                pnl_pct = (trade['entry_price'] - trade['take_profit_3']) / trade['entry_price'] * 100
+                                pnl_pct = (trade['entry_price'] - trade['take_profit_1']) / trade['entry_price'] * 100
                             elif recent_high >= trade['stop_loss']:
-                                status = 'LOST' if trade['status'] == 'OPEN' else 'WON_BREAKEVEN'
+                                status = 'LOST'
                                 pnl_pct = (trade['entry_price'] - trade['stop_loss']) / trade['entry_price'] * 100
                                 
                         if status in ['WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'TIMEOUT_BREAKEVEN']:
