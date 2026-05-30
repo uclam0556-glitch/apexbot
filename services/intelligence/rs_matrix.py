@@ -99,6 +99,7 @@ class RSMatrix:
         from shared.state import global_state
         url = "https://api.bybit.com/v5/market/tickers?category=linear"
         
+        loop_count = 0
         while True:
             try:
                 async with aiohttp.ClientSession() as session:
@@ -106,7 +107,13 @@ class RSMatrix:
                         if resp.status == 200:
                             data = await resp.json()
                             if data.get("retCode") == 0 and "result" in data and "list" in data["result"]:
-                                prices = {item["symbol"]: float(item["lastPrice"]) for item in data["result"]["list"]}
+                                prices = {}
+                                for item in data["result"]["list"]:
+                                    try:
+                                        if item.get("lastPrice"):
+                                            prices[item["symbol"]] = float(item["lastPrice"])
+                                    except ValueError:
+                                        continue
                                 
                                 for bybit_symbol, price in prices.items():
                                     if bybit_symbol.endswith("USDT"):
@@ -114,6 +121,11 @@ class RSMatrix:
                                         if sym not in global_state.live_prices:
                                             global_state.live_prices[sym] = {}
                                         global_state.live_prices[sym]["price"] = price
+                                        
+                                loop_count += 1
+                                if loop_count % 10 == 0:
+                                    btc_price = global_state.live_prices.get("BTC/USDT", {}).get("price", 0)
+                                    logger.info(f"Fast poller heartbeat. BTC: {btc_price}, Tracking {len(prices)} pairs.")
                         else:
                             logger.error(f"Fast poller received HTTP {resp.status} from Bybit")
                             

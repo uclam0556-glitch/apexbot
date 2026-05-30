@@ -6,7 +6,7 @@ Reads from apex_lite.db and rs_matrix_engine.
 import os
 from datetime import datetime
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import aiosqlite
@@ -216,7 +216,8 @@ def create_app() -> FastAPI:
             return {"top": [], "btc_change": 0, "last_updated": "—"}
 
     @app.get("/api/live-prices")
-    async def get_live_prices():
+    async def get_live_prices(response: Response):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         from shared.state import global_state
         from services.intelligence.rs_matrix import rs_matrix_engine
         
