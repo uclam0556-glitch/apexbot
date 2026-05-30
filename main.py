@@ -73,10 +73,26 @@ logging.basicConfig(
 logger = logging.getLogger("ApexMain")
 _config = get_config()
 
-def check_mtf_gate(symbol: str, mtf_score: float, direction: str, regime: str) -> bool:
+def check_mtf_gate(symbol: str, mtf_score: float, direction: str, regime: str, strategy: str = "TREND") -> bool:
     """
     MTF Hard Gate: blocks trading against the trend.
+    Adjusted: Mean Reversion and Capitulation are exempt from strict trend requirements.
     """
+    # ─── STRATEGY EXEMPTIONS ──────────────────────────────────────────────
+    if strategy == "CAPITULATION":
+        return True  # Pure knife catching, MTF is irrelevant
+        
+    if strategy == "MEAN_REVERSION":
+        # Allow counter-trend, but block if trend is extremely toxic
+        if direction == "LONG" and mtf_score < -4.0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < -4.0 for MEAN_REVERSION LONG. Trend is too toxic.")
+            return False
+        if direction == "SHORT" and mtf_score > 4.0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} > 4.0 for MEAN_REVERSION SHORT. Trend is too toxic.")
+            return False
+        return True
+
+    # ─── TREND STRATEGY LOGIC ─────────────────────────────────────────────
     if direction == "LONG":
         if regime == "BULL" and mtf_score < 0:
             logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < 0 for LONG in BULL. Trend is against us.")
@@ -559,7 +575,7 @@ class ApexSystem:
                     weights = self.weights_optimizer.get_current_weights()
                     mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
 
-                    if not check_mtf_gate(symbol, mtf_score.score, trade_direction, regime_val):
+                    if not check_mtf_gate(symbol, mtf_score.score, trade_direction, regime_val, trade_strategy):
                         continue
 
                     # ─── SMC + INDICATORS ─────────────────────────────────────────────────────
