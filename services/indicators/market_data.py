@@ -127,49 +127,74 @@ def funding_rate_score(rate_pct: float) -> tuple[int, str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FUNDING RATE — MEXC Futures API (Free)
+# FUNDING RATE — Coinglass API / Binance Fallback
 # ─────────────────────────────────────────────────────────────────────────────
 
 _funding_cache: dict = {}
 
-
 async def get_funding_rate(symbol: str) -> dict:
     """
-    Get current funding rate for a futures symbol from MEXC.
-    symbol: 'BTC/USDT' → converts to 'BTC_USDT'
+    Get current funding rate. Tries Coinglass API first, falls back to Binance Futures.
     Cached per symbol for 30 minutes.
     """
     now = datetime.utcnow()
-    mexc_symbol = symbol.replace("/", "_")
+    symbol_base = symbol.split('/')[0]
+    binance_symbol = symbol.replace("/", "")
 
-    cached = _funding_cache.get(mexc_symbol)
+    cached = _funding_cache.get(binance_symbol)
     if cached and (now - cached["fetched_at"]).total_seconds() < 1800:
         return cached
 
-    try:
-        url = f"https://contract.mexc.com/api/v1/contract/funding_rate/{mexc_symbol}"
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    raise Exception(f"HTTP {resp.status}")
-                data = await resp.json()
-                if not data or not data.get("success"):
-                    raise Exception("Empty or failed response from MEXC")
+    from shared.config import get_config
+    config = get_config()
+    cg_key = config.data_sources.coinglass_api_key.get_secret_value() if config.data_sources.coinglass_api_key else ""
 
-                rate = float(data["data"]["fundingRate"]) * 100  # Convert to %
+    rate_pct = 0.0
+    success = False
 
-                result = {
-                    "symbol": symbol,
-                    "rate_pct": round(rate, 4),
-                    "fetched_at": now,
-                    "is_valid": True,
-                }
-                _funding_cache[mexc_symbol] = result
-                return result
-    except Exception as e:
-        logger.debug(f"MEXC Funding rate fetch failed for {symbol}: {e}")
-        return {"symbol": symbol, "rate_pct": 0.0, "fetched_at": now, "is_valid": False}
+    # 1. Try Coinglass
+    if cg_key:
+        try:
+            url = f"https://open-api.coinglass.com/public/v2/funding?exName=Binance&symbol={symbol_base}"
+            headers = {"accept": "application/json", "coinglassSecret": cg_key}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and data.get("success") and "data" in data and len(data["data"]) > 0:
+                            # Usually data is a list of funding rates
+                            item = data["data"][0] if isinstance(data["data"], list) else data["data"]
+                            # Depending on Coinglass version, field is uMarginFundingRate or fundingRate
+                            val = item.get("uMarginFundingRate", item.get("fundingRate", 0.0))
+                            rate_pct = float(val)
+                            # If the API returns it as decimal (e.g. 0.0001), convert to %
+                            if abs(rate_pct) < 0.1: rate_pct *= 100 
+                            success = True
+        except Exception as e:
+            logger.debug(f"Coinglass Funding fetch failed for {symbol}: {e}")
 
+    # 2. Fallback to Binance
+    if not success:
+        try:
+            url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={binance_symbol}"
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        rate = float(data.get("lastFundingRate", 0)) * 100  # Convert to %
+                        rate_pct = rate
+                        success = True
+        except Exception as e:
+            logger.debug(f"Binance Funding fetch failed for {symbol}: {e}")
+
+    result = {
+        "symbol": symbol,
+        "rate_pct": round(rate_pct, 4) if success else 0.0,
+        "fetched_at": now,
+        "is_valid": success,
+    }
+    _funding_cache[binance_symbol] = result
+    return result
 
 def funding_rate_score(rate_pct: float) -> tuple[int, str]:
     """
@@ -189,56 +214,75 @@ def funding_rate_score(rate_pct: float) -> tuple[int, str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# OPEN INTEREST — Bybit v5 API (Free, USA-friendly)
+# OPEN INTEREST — Coinglass API / Binance Fallback
 # ─────────────────────────────────────────────────────────────────────────────
 
 _oi_cache: dict = {}
 
-
 async def get_open_interest_change(symbol: str) -> dict:
     """
-    Get OI change over last 4 hours from Bybit.
-    Rising OI + rising price = healthy trend
-    Rising OI + falling price = shorts building up
+    Get OI change over last 4 hours. Tries Coinglass, falls back to Binance.
     """
     now = datetime.utcnow()
-    bybit_symbol = symbol.replace("/", "")
+    symbol_base = symbol.split('/')[0]
+    binance_symbol = symbol.replace("/", "")
 
-    cached = _oi_cache.get(bybit_symbol)
+    cached = _oi_cache.get(binance_symbol)
     if cached and (now - cached["fetched_at"]).total_seconds() < 900:  # 15 min cache
         return cached
 
-    try:
-        url = f"https://api.bybit.com/v5/market/open-interest?category=linear&symbol={bybit_symbol}&intervalTime=1h&limit=5"
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    raise Exception(f"HTTP {resp.status}")
-                data = await resp.json()
-                if data.get("retCode") != 0 or not data.get("result", {}).get("list"):
-                    raise Exception("No OI data from Bybit")
+    from shared.config import get_config
+    config = get_config()
+    cg_key = config.data_sources.coinglass_api_key.get_secret_value() if config.data_sources.coinglass_api_key else ""
 
-                # Bybit returns list sorted by timestamp descending (newest first)
-                oi_list = data["result"]["list"]
-                if len(oi_list) < 2:
-                    raise Exception("Not enough OI data")
+    change_pct = 0.0
+    oi_now = 0.0
+    success = False
 
-                oi_now = float(oi_list[0]["openInterest"])
-                oi_prev = float(oi_list[-1]["openInterest"])
-                change_pct = (oi_now - oi_prev) / oi_prev * 100 if oi_prev > 0 else 0
+    # 1. Try Coinglass
+    if cg_key:
+        try:
+            url = f"https://open-api.coinglass.com/public/v2/open_interest?symbol={symbol_base}"
+            headers = {"accept": "application/json", "coinglassSecret": cg_key}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and data.get("success") and "data" in data and len(data["data"]) > 0:
+                            item = data["data"][0] if isinstance(data["data"], list) else data["data"]
+                            # Use h1OIChangePercent or h4OIChangePercent if available
+                            change_pct = float(item.get("h4OIChangePercent", item.get("h1OIChangePercent", 0.0)))
+                            oi_now = float(item.get("openInterestAmount", 0.0))
+                            success = True
+        except Exception as e:
+            logger.debug(f"Coinglass OI fetch failed for {symbol}: {e}")
 
-                result = {
-                    "symbol": symbol,
-                    "oi_now": oi_now,
-                    "change_pct": round(change_pct, 2),
-                    "fetched_at": now,
-                    "is_valid": True,
-                }
-                _oi_cache[bybit_symbol] = result
-                return result
-    except Exception as e:
-        logger.debug(f"Bybit OI fetch failed for {symbol}: {e}")
-        return {"symbol": symbol, "oi_now": 0, "change_pct": 0.0, "fetched_at": now, "is_valid": False}
+    # 2. Fallback to Binance Futures
+    if not success:
+        try:
+            url = f"https://fapi.binance.com/fapi/v1/openInterestHist?symbol={binance_symbol}&period=1h&limit=5"
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if len(data) >= 2:
+                            oi_now_val = float(data[-1]["sumOpenInterestValue"])
+                            oi_prev_val = float(data[0]["sumOpenInterestValue"])
+                            change_pct = (oi_now_val - oi_prev_val) / oi_prev_val * 100 if oi_prev_val > 0 else 0.0
+                            oi_now = oi_now_val
+                            success = True
+        except Exception as e:
+            logger.debug(f"Binance OI fetch failed for {symbol}: {e}")
+
+    result = {
+        "symbol": symbol,
+        "oi_now": oi_now,
+        "change_pct": round(change_pct, 2) if success else 0.0,
+        "fetched_at": now,
+        "is_valid": success,
+    }
+    _oi_cache[binance_symbol] = result
+    return result
 
 
 def oi_score(change_pct: float, price_change_pct: float) -> tuple[int, str]:

@@ -501,21 +501,37 @@ class ApexSystem:
                     cvd_signal = cvd_result.get("cvd_signal", "NEUTRAL")
                     cvd_score_val = cvd_result.get("score", 0)
 
-                    # ─── REAL ORDER FLOW IMBALANCE (OFI) ───────────────────────────────────────
+                    # ─── REAL ORDER FLOW IMBALANCE (OFI) & SPREAD ───────────────────────────
+                    spread_pct = 0.0
                     try:
                         orderbook = await self.exchange.fetch_order_book(symbol, limit=20)
                         from services.intelligence.ofi_engine import calculate_orderbook_imbalance
                         ofi_real = calculate_orderbook_imbalance(orderbook, depth=20)
+                        if orderbook['asks'] and orderbook['bids']:
+                            best_ask = orderbook['asks'][0][0]
+                            best_bid = orderbook['bids'][0][0]
+                            if best_bid > 0:
+                                spread_pct = (best_ask - best_bid) / best_bid * 100
                     except Exception as e:
-                        logger.warning(f"{symbol} - Failed to fetch orderbook for OFI: {e}. Using neutral OFI.")
+                        logger.warning(f"{symbol} - Failed to fetch orderbook for OFI/Spread: {e}")
                         from services.intelligence.ofi_engine import OFIResult
                         ofi_real = OFIResult(0.0, 0.0, 0.0)
 
-                    # ─── SPOT ONLY: определяем стратегию (только LONG) ────────────────────────
-                    # BEAR режим → пропускаем, ждем разворота (спот, не шортим)
-                    # SIDEWAYS + RSI<35 → Mean Reversion (отскок от поддержки)
-                    # BULL / SIDEWAYS   → Trend LONG (следование тренду)
+                    # ─── GLOBAL VOLUME SPIKE & WICK RATIO ─────────────────────────────────────
+                    lower_wick_ratio = 0.0
+                    vol_ratio_15m = 0.0
+                    df_15m_check = tf_data.get('15m', pd.DataFrame())
+                    if not df_15m_check.empty and len(df_15m_check) >= 3:
+                        last_closed = df_15m_check.iloc[-2]
+                        candle_range = last_closed['high'] - last_closed['low']
+                        if candle_range > 0:
+                            lower_wick_ratio = (min(last_closed['open'], last_closed['close']) - last_closed['low']) / candle_range
+                        
+                        avg_vol_15m = df_15m_check['volume'].iloc[-12:-2].mean()
+                        if avg_vol_15m > 0:
+                            vol_ratio_15m = float(last_closed['volume'] / avg_vol_15m)
 
+                    # ─── SPOT ONLY: определяем стратегию (только LONG) ────────────────────────
                     trade_direction = "LONG"
                     trade_strategy  = None
                     regime_val      = current_regime.value
@@ -531,20 +547,6 @@ class ApexSystem:
                         if symbol not in ["BTC/USDT", "ETH/USDT", "SOL/USDT"]:
                             logger.info(f"{symbol} - [BLOCKED] BEAR regime: non-major asset. Skipping.")
                             continue
-                            
-                        # Soft Capitulation Filter (15m)
-                        lower_wick_ratio = 0.0
-                        vol_ratio_15m = 0.0
-                        df_15m_check = tf_data.get('15m', pd.DataFrame())
-                        if not df_15m_check.empty and len(df_15m_check) >= 3:
-                            last_closed = df_15m_check.iloc[-2]
-                            candle_range = last_closed['high'] - last_closed['low']
-                            if candle_range > 0:
-                                lower_wick_ratio = (min(last_closed['open'], last_closed['close']) - last_closed['low']) / candle_range
-                            
-                            avg_vol_15m = df_15m_check['volume'].iloc[-12:-2].mean()
-                            if avg_vol_15m > 0:
-                                vol_ratio_15m = last_closed['volume'] / avg_vol_15m
 
                         # 1. Base Panic: RSI < 25 AND Volume spike > 1.5x
                         is_panic = rsi_now < 25 and vol_ratio_15m > 1.5
@@ -924,18 +926,18 @@ class ApexSystem:
                         "ultra_score":          ultra_score,
                         "fvg_count":            len(smc_analysis.imbalance_zones),
                         "btc_rsi":              btc_rsi if 'btc_rsi' in locals() else 50.0,
-                        "funding_rate":         market_ctx["funding"]["rate_pct"],
-                        "oi_change":            market_ctx["open_interest"]["change_pct"],
-                        "fg_index":             market_ctx["fear_greed"]["value"],
+                        "funding_rate":         market_ctx["funding"]["rate_pct"] if "funding" in market_ctx else 0.0,
+                        "oi_change":            market_ctx["open_interest"]["change_pct"] if "open_interest" in market_ctx else 0.0,
+                        "fg_index":             market_ctx["fear_greed"]["value"] if "fear_greed" in market_ctx else 50.0,
                         "mtf_score":            mtf_score.score,
                         "cvd_score":            cvd_score_val,
                         "strategy":             trade_strategy,
                         "direction":            trade_direction,
                         # V7 Institutional Metrics
-                        "slippage":             0.0, # Filled later in execution engine
-                        "spread_at_entry":      0.0, # Filled later in execution engine
-                        "btc_trend_strength":   market_ctx["btc_dominance"]["value"], # Proxy for macro strength
-                        "volume_spike_score":   float(vol_ratio_15m) if 'vol_ratio_15m' in locals() else 0.0,
+                        "slippage":             spread_pct / 2.0, # Estimated half-spread as slippage
+                        "spread_at_entry":      spread_pct, 
+                        "btc_trend_strength":   float(market_ctx.get("btc_dominance", {}).get("value", 55.0)), # Re-mapped dominance
+                        "volume_spike_score":   vol_ratio_15m,
                     }
 
                     await save_trade(
