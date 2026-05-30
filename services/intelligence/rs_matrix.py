@@ -23,22 +23,34 @@ class RSMatrix:
         Fetches 24h ticker data and ranks the provided symbols.
         """
         try:
-            url = "https://api.bybit.com/v5/market/tickers?category=linear"
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        raise Exception(f"HTTP {resp.status} from Bybit")
-                    data = await resp.json()
-                    
-            if data.get("retCode") != 0 or "result" not in data or "list" not in data["result"]:
-                raise Exception("Invalid Bybit response format")
-                
-            # Create a lookup dictionary
-            ticker_map = {item["symbol"]: {
-                "change": float(item["price24hPcnt"]) * 100, # Bybit returns 0.02 for 2%
-                "price": float(item["lastPrice"])
-            } for item in data["result"]["list"]}
+            urls = [
+                "https://api.bybit.com/v5/market/tickers?category=spot",
+                "https://api.bybit.com/v5/market/tickers?category=linear"
+            ]
             
+            ticker_map = {}
+            
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                for url in urls:
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            continue
+                        data = await resp.json()
+                        
+                        if data.get("retCode") == 0 and "result" in data and "list" in data["result"]:
+                            for item in data["result"]["list"]:
+                                try:
+                                    if item.get("lastPrice") and item.get("price24hPcnt"):
+                                        ticker_map[item["symbol"]] = {
+                                            "change": float(item["price24hPcnt"]) * 100,
+                                            "price": float(item["lastPrice"])
+                                        }
+                                except ValueError:
+                                    continue
+            
+            if not ticker_map:
+                raise Exception("Failed to fetch ticker data from Bybit (Spot and Linear)")
+                
             # Get BTC change
             btc_data = ticker_map.get("BTCUSDT", {"change": 0.0})
             self.btc_change = btc_data["change"]
@@ -97,37 +109,44 @@ class RSMatrix:
         This is extremely lightweight (Weight: 2) and 100% reliable.
         """
         from shared.state import global_state
-        url = "https://api.bybit.com/v5/market/tickers?category=linear"
+        urls = [
+            "https://api.bybit.com/v5/market/tickers?category=spot",
+            "https://api.bybit.com/v5/market/tickers?category=linear"
+        ]
         
         loop_count = 0
         while True:
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=5) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            if data.get("retCode") == 0 and "result" in data and "list" in data["result"]:
-                                prices = {}
-                                for item in data["result"]["list"]:
-                                    try:
-                                        if item.get("lastPrice"):
-                                            prices[item["symbol"]] = float(item["lastPrice"])
-                                    except ValueError:
-                                        continue
+                    # We will collect prices from both spot and linear
+                    all_prices = {}
+                    for url in urls:
+                        async with session.get(url, timeout=5) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                if data.get("retCode") == 0 and "result" in data and "list" in data["result"]:
+                                    for item in data["result"]["list"]:
+                                        try:
+                                            if item.get("lastPrice"):
+                                                sym_str = item["symbol"]
+                                                if sym_str.endswith("USDT"):
+                                                    sym = sym_str.replace("USDT", "/USDT")
+                                                    all_prices[sym] = float(item["lastPrice"])
+                                        except ValueError:
+                                            continue
+                            else:
+                                logger.error(f"Fast poller received HTTP {resp.status} from Bybit ({url})")
                                 
-                                for bybit_symbol, price in prices.items():
-                                    if bybit_symbol.endswith("USDT"):
-                                        sym = bybit_symbol.replace("USDT", "/USDT")
-                                        if sym not in global_state.live_prices:
-                                            global_state.live_prices[sym] = {}
-                                        global_state.live_prices[sym]["price"] = price
-                                        
-                                loop_count += 1
-                                if loop_count % 10 == 0:
-                                    btc_price = global_state.live_prices.get("BTC/USDT", {}).get("price", 0)
-                                    logger.info(f"Fast poller heartbeat. BTC: {btc_price}, Tracking {len(prices)} pairs.")
-                        else:
-                            logger.error(f"Fast poller received HTTP {resp.status} from Bybit")
+                    # Now update global state with collected prices
+                    for sym, price in all_prices.items():
+                        if sym not in global_state.live_prices:
+                            global_state.live_prices[sym] = {}
+                        global_state.live_prices[sym]["price"] = price
+                        
+                    loop_count += 1
+                    if loop_count % 10 == 0:
+                        btc_price = global_state.live_prices.get("BTC/USDT", {}).get("price", 0)
+                        logger.info(f"Fast poller heartbeat. BTC: {btc_price}, Tracking {len(all_prices)} pairs (Spot+Linear).")
                             
             except Exception as e:
                 logger.error(f"Fast poller error (Bybit): {e}")
