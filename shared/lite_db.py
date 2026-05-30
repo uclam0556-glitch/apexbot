@@ -64,11 +64,35 @@ async def init_lite_db():
                 fg_index REAL,
                 mtf_score REAL,
                 cvd_score REAL,
+                slippage REAL,
+                spread_at_entry REAL,
+                btc_trend_strength REAL,
+                volume_spike_score REAL,
                 outcome TEXT,
                 pnl_pct REAL,
+                max_profit_pct REAL,
+                max_drawdown_pct REAL,
+                duration_minutes REAL,
                 created_at TIMESTAMP
             )
         ''')
+        
+        # V7.1 Missed Signals Tracker
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS missed_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                direction TEXT,
+                score REAL,
+                entry_price REAL,
+                created_at TIMESTAMP,
+                checked INTEGER DEFAULT 0,
+                max_profit_pct REAL DEFAULT 0.0,
+                max_drawdown_pct REAL DEFAULT 0.0,
+                outcome TEXT
+            )
+        ''')
+
         # V7 Institutional ML Features
         new_columns = [
             ("max_profit_pct", "REAL"),
@@ -388,3 +412,33 @@ async def get_recent_features(limit: int = 20):
         async with db.execute('SELECT * FROM feature_store ORDER BY created_at DESC LIMIT ?', (limit,)) as cursor:
             return await cursor.fetchall()
 
+# ─── V7.1 MISSED SIGNALS TRACKER ─────────────────────────────────────────────
+
+async def save_missed_signal(symbol: str, direction: str, score: float, entry_price: float):
+    """Saves a blocked signal to evaluate later if penalties are too strict."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            INSERT INTO missed_signals (symbol, direction, score, entry_price, created_at, checked)
+            VALUES (?, ?, ?, ?, ?, 0)
+        ''', (symbol, direction, score, entry_price, datetime.utcnow()))
+        await db.commit()
+
+async def get_unchecked_missed_signals():
+    """Fetches missed signals older than 2 hours that haven't been evaluated."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('''
+            SELECT * FROM missed_signals 
+            WHERE checked = 0 AND datetime(created_at, '+2 hours') <= datetime('now')
+        ''') as cursor:
+            return await cursor.fetchall()
+
+async def update_missed_signal_result(signal_id: int, pnl_pct: float, outcome: str):
+    """Marks a missed signal as checked and records the hypothetical PnL."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            UPDATE missed_signals 
+            SET checked = 1, max_profit_pct = ?, outcome = ?
+            WHERE id = ?
+        ''', (pnl_pct, outcome, signal_id))
+        await db.commit()

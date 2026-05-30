@@ -658,13 +658,25 @@ class ApexSystem:
                     fvg_count = len(smc_analysis.imbalance_zones)
                     sweep_count = len(smc_analysis.liquidity_sweeps)
                     
-                    if fvg_count > 8:
+                    if fvg_count > 12:
                         v7_score -= 25.0
-                        logger.info(f"{symbol} - SMC Penalty: Too many FVGs ({fvg_count} > 8). Trend likely exhausted.")
+                        logger.info(f"{symbol} - SMC Penalty: Too many FVGs ({fvg_count} > 12). Trend likely exhausted.")
+                    elif fvg_count > 10:
+                        v7_score -= 15.0
+                        logger.info(f"{symbol} - SMC Penalty: Elevated FVGs ({fvg_count} > 10). Momentum fading.")
+                    elif fvg_count > 8:
+                        v7_score -= 8.0
+                        logger.info(f"{symbol} - SMC Penalty: High FVGs ({fvg_count} > 8). Minor exhaustion.")
                     
-                    if sweep_count > 40:
-                        v7_score -= 25.0
-                        logger.info(f"{symbol} - SMC Penalty: Too many sweeps ({sweep_count} > 40). Market choppy/exhausted.")
+                    if sweep_count > 65:
+                        v7_score -= 22.0
+                        logger.info(f"{symbol} - SMC Penalty: Too many sweeps ({sweep_count} > 65). Market highly chopped.")
+                    elif sweep_count > 50:
+                        v7_score -= 12.0
+                        logger.info(f"{symbol} - SMC Penalty: Elevated sweeps ({sweep_count} > 50). Range bound.")
+                    elif sweep_count > 40:
+                        v7_score -= 6.0
+                        logger.info(f"{symbol} - SMC Penalty: High sweeps ({sweep_count} > 40). Minor chop.")
 
                     # 1. Entry Candle Penalty
                     df_15m_check = tf_data.get('15m', pd.DataFrame())
@@ -698,7 +710,9 @@ class ApexSystem:
                         btc_rsi = rsi_now
                     
                     # 3. CVD Divergence & Bearishness Penalty
-                    if cvd_result.get("divergence"): v7_score -= 25
+                    if cvd_result.get("divergence"): 
+                        v7_score -= 25
+                        logger.info(f"{symbol} - CVD Divergence Penalty applied: -25.")
                     if cvd_signal == "BEARISH" and cvd_score_val <= -2: v7_score -= 20
                     
                     # 4. Overheated RSI Penalty
@@ -717,6 +731,9 @@ class ApexSystem:
                             
                     # ─── FINAL V7 GATE ─────────────────────────────────────────────────────────
                     if v7_score < 70 and not is_a_plus:
+                        if 45 <= v7_score < 70:
+                            from shared.lite_db import save_missed_signal
+                            asyncio.create_task(save_missed_signal(symbol, trade_direction, v7_score, current_price))
                         logger.info(f"{symbol} - [BLOCKED] V7 Score: {v7_score:.1f}/100. Insufficient edge. Skipping.")
                         continue
                         
@@ -963,6 +980,37 @@ class ApexSystem:
             # Sleep for 5 minutes (300 seconds)
             await asyncio.sleep(300)
 
+    async def background_missed_signals_tracker(self):
+        """Periodically checks missed signals to calculate hypothetical outcome."""
+        from shared.lite_db import get_unchecked_missed_signals, update_missed_signal_result
+        while self.running:
+            try:
+                missed = await get_unchecked_missed_signals()
+                for signal in missed:
+                    symbol = signal['symbol']
+                    entry_price = signal['entry_price']
+                    direction = signal['direction']
+                    
+                    try:
+                        ticker = await self.exchange.fetch_ticker(symbol)
+                        current_price = ticker['last']
+                        
+                        pnl_pct = (current_price - entry_price) / entry_price * 100
+                        if direction == "SHORT":
+                            pnl_pct = -pnl_pct
+                            
+                        # If hypothetical PnL >= 1.0%, we consider it a missed win
+                        outcome = "MISSED_WIN" if pnl_pct >= 1.0 else "CORRECT_BLOCK"
+                        
+                        await update_missed_signal_result(signal['id'], pnl_pct, outcome)
+                        logger.info(f"[MISSED SIGNAL TRACKER] {symbol} {direction} (Score: {signal['score']}) -> {outcome} (PnL: {pnl_pct:+.2f}%)")
+                    except Exception as e:
+                        logger.warning(f"Failed to check missed signal {symbol}: {e}")
+            except Exception as e:
+                logger.error(f"Error in missed signals tracker: {e}")
+                
+            await asyncio.sleep(1800)  # Check every 30 minutes
+
     async def start(self):
         self.running = True
         logger.info("Starting APEX System v5.0...")
@@ -970,6 +1018,7 @@ class ApexSystem:
         # Start background tasks
         asyncio.create_task(self.background_macro_updater())
         asyncio.create_task(self.background_trade_tracker())
+        asyncio.create_task(self.background_missed_signals_tracker())
         asyncio.create_task(self.ws_manager.start(self.config.trading.symbols))
         asyncio.create_task(rs_matrix_engine.fast_price_poller(self.config.trading.symbols))
         
