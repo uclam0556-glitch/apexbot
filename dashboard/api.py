@@ -66,7 +66,7 @@ def create_app() -> FastAPI:
                 "breakeven": len(breakeven),
                 "small_loss": len(small_loss),
                 "lost": len(lost),
-                "win_rate": round((len(won) + len(small_win)) / active_trades * 100, 1) if active_trades > 0 else 0,
+                "win_rate": round(len(won) / active_trades * 100, 1) if active_trades > 0 else 0,
                 "pnl_sum": round(sum(pnl_vals), 2),
                 "best_trade": round(max(pnl_vals), 2) if pnl_vals else 0,
                 "worst_trade": round(min(pnl_vals), 2) if pnl_vals else 0,
