@@ -280,6 +280,7 @@ async def process_stats(callback: CallbackQuery):
         f"⏳ <b>Открытых позиций:</b> {active_count}\n"
         f"📈 <b>Закрытых сделок:</b> {stats['total']}\n"
         f"   ┣ Успешных (TP): <b>{stats['won']}</b> ✅\n"
+        f"   ┣ Безубыток (B.E.): <b>{stats.get('breakeven', 0)}</b> 🟡\n"
         f"   ┗ Убыточных (SL): <b>{stats['lost']}</b> ❌\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 <b>Win Rate: {wr:.1f}%</b>\n"

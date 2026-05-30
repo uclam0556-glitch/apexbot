@@ -162,16 +162,21 @@ async def get_stats():
     if total == 0:
         return {"total": 0, "win_rate": 0, "pnl_sum": 0, "won": 0, "lost": 0}
         
-    won = sum(1 for r in rows if r[0] in ('WON', 'WON_BREAKEVEN', 'BREAKEVEN', 'TIMEOUT_BREAKEVEN') or (r[0] == 'TIMEOUT' and r[1] and r[1] > 0))
+    won = sum(1 for r in rows if r[0] == 'WON')
+    breakeven = sum(1 for r in rows if r[0] in ('WON_BREAKEVEN', 'BREAKEVEN', 'TIMEOUT_BREAKEVEN') or (r[0] == 'TIMEOUT' and r[1] and r[1] > 0))
     lost = sum(1 for r in rows if r[0] == 'LOST' or (r[0] == 'TIMEOUT' and r[1] and r[1] <= 0))
     pnl_sum = sum(r[1] for r in rows if r[1] is not None)
     
+    # Win rate ignores breakeven trades
+    win_rate = (won / (won + lost) * 100) if (won + lost) > 0 else 0.0
+    
     return {
         "total": total,
-        "win_rate": (won / total) * 100,
+        "win_rate": win_rate,
         "pnl_sum": pnl_sum,
         "won": won,
-        "lost": lost
+        "lost": lost,
+        "breakeven": breakeven
     }
 
 async def get_recent_trades(limit: int = 5):
