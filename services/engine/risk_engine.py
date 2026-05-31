@@ -586,63 +586,53 @@ class RiskEngine:
             sl_distance = min_sl_dist
             stop_loss = entry - sl_distance
 
-        # SL maximum check: 2.5% cap
-        # If the required structural stop loss exceeds 2.5%, we skip the trade to maintain good P&L math
-        max_sl_allowed = entry * 0.025
-        if sl_distance > max_sl_allowed:
-            self._log.info(
-                "sl_tp_rejected",
-                entry=round(entry, 4),
-                direction=direction,
-                structure_target_type="ATR",
-                structure_target_pct=0.0,
-                first_barrier_pct=0.0,
-                min_required_tp_pct=round(entry * 0.007 / entry * 100 * 1.5, 2),
-                tp_rejected_reason="sl_too_wide",
-            )
-            return None
-
-        # Round-number proximity check
-        sl_near_round_number = self._is_near_round_number(stop_loss)
-        sl_buffer_actual = sl_distance / entry * 100
-
-        # 2. Dynamic Take Profit Calculations (User's Multi-Regime Quant Blueprint)
-        risk_pct = sl_distance / entry * 100
-        atr_pct = atr / entry * 100
-
-        # Regime-based limits & volatility-based ATR targets
-        if regime == "BULL":
-            atr_target = atr_pct * 2.0
-            max_tp = 6.0
-        elif regime == "SIDEWAYS":
-            atr_target = atr_pct * 1.3
-            max_tp = 3.5
-        elif regime == "CAPITULATION":
-            atr_target = atr_pct * 1.5
-            max_tp = 4.0
-        else:
-            # Bear or default
-            atr_target = atr_pct * 1.2
-            max_tp = 3.0
-
-        # A+ Setup Bonus: expansion of maximum TP limit
-        if v7_score >= 85 and mtf_score >= 6.0 and regime == "BULL":
-            max_tp = 8.0
-        elif v7_score >= 85 and regime == "SIDEWAYS":
-            max_tp = 4.0
-
-        # Overextension check (If Z-Score or RSI is hot, compress the target to prevent late-reversal traps)
-        if z_score > 2.5 or rsi > 75:
-            max_tp *= 0.7
-
-        # 3. Locate closest structural target/friction point (min of nearest resistance, HVN, and unmitigated FVG)
-        # Safely parse swing points list or dict (Resistance)
+        # Candidate: swing LOWS below entry (find the swing low value itself)
         swing_list = []
         if isinstance(swing_points, list):
             swing_list = swing_points
         elif isinstance(swing_points, dict):
-            swing_list = swing_points.get("highs", []) + swing_points.get("lows", [])
+            swing_list = swing_points.get("lows", []) + swing_points.get("highs", [])
 
+        candidates = []
+        for sp in swing_list:
+            if hasattr(sp, 'type') and hasattr(sp, 'price'):
+                if sp.type == "LOW" and sp.price < entry:
+                    candidates.append(sp.price)
+            elif isinstance(sp, dict) and sp.get("type") == "LOW" and sp.get("price", 0) < entry:
+                candidates.append(sp.get("price"))
+
+        swing_low = max(candidates) if candidates else (entry - 2.0 * atr)
+
+        # SL maximum check: 2.5% cap
+        # If the required structural stop loss exceeds 2.5%, we skip the trade to maintain good P&L math
+        max_sl_allowed = entry * 0.025
+        sl_distance_pct = sl_distance / entry * 100
+        atr_pct = atr / entry * 100
+        min_tp_pct = sl_distance_pct * 1.5
+
+        # Regime-based limits & volatility-based ATR targets
+        if regime == "BULL":
+            atr_target_pct = atr_pct * 2.0
+            max_tp_pct = 8.0 if (v7_score >= 85 and mtf_score >= 6.0) else 6.0
+        elif regime == "SIDEWAYS":
+            atr_target_pct = atr_pct * 1.3
+            max_tp_pct = 4.0 if v7_score >= 85 else 3.5
+        elif regime == "CAPITULATION":
+            atr_target_pct = atr_pct * 1.5
+            max_tp_pct = 4.0
+        else:
+            atr_target_pct = atr_pct * 1.2
+            max_tp_pct = 3.0
+
+        # Overextension check (If Z-Score or RSI is hot, compress the target to prevent late-reversal traps)
+        if z_score > 2.5 or rsi > 75:
+            max_tp_pct *= 0.7
+
+        # Dynamic ATR target
+        atr_target = atr_target_pct
+
+        # 3. Locate closest structural target/friction point (min of nearest resistance, HVN, and unmitigated FVG)
+        # Safely parse swing points list or dict (Resistance)
         swing_highs = []
         for sp in swing_list:
             if hasattr(sp, 'type') and hasattr(sp, 'price'):
@@ -703,74 +693,109 @@ class RiskEngine:
         if nearest_fvg_pct is not None and nearest_fvg_pct > 0:
             target_types[nearest_fvg_pct] = "FVG"
 
-        # 4. Smart Target Selection & Early Friction Path Checking
-        min_tp_pct = risk_pct * 1.5
-        
         # Gather all valid positive structural targets and sort them ascending
         targets_list = sorted([t for t in [nearest_resistance_pct, nearest_hvn_pct, nearest_fvg_pct] if t is not None and t > 0])
-        
+
         if targets_list:
             closest_target = targets_list[0]
-            # If the absolute closest structural barrier is too close (< 1.5R), the setup is blocked too early.
-            # Entering the trade would be statistically unsafe as the price is likely to reverse at this near barrier.
+            structure_target = closest_target
+        else:
+            closest_target = 0.0
+            structure_target = atr_target_pct
+
+        # Let's perform SL Too Wide check here!
+        if sl_distance > max_sl_allowed:
+            self._log.info(
+                "sl_tp_rejected",
+                entry=round(entry, 8),
+                swing_low=round(swing_low, 8),
+                stop_loss=round(stop_loss, 8),
+                sl_distance_pct=round(sl_distance_pct, 4),
+                atr_pct=round(atr_pct, 4),
+                atr_target_pct=round(atr_target_pct, 4),
+                max_tp_pct=round(max_tp_pct, 4),
+                raw_tp_pct=round(min(atr_target_pct, max_tp_pct), 4),
+                risk_pct=round(sl_distance_pct, 4),
+                min_required_tp_pct=round(min_tp_pct, 4),
+                structure_target_type=target_types.get(structure_target, "ATR"),
+                structure_target_pct=round(structure_target, 4),
+                first_barrier_pct=round(closest_target, 4),
+                tp_rejected_reason="sl_too_wide",
+            )
+            return None
+
+        # Round-number proximity check
+        sl_near_round_number = self._is_near_round_number(stop_loss)
+        sl_buffer_actual = sl_distance / entry * 100
+
+        # 4. Smart Target Selection & Early Friction Path Checking
+        if targets_list:
             if closest_target < min_tp_pct:
                 rejected_type = target_types.get(closest_target, "UNKNOWN")
                 self._log.info(
                     "sl_tp_rejected",
-                    entry=round(entry, 4),
-                    direction=direction,
+                    entry=round(entry, 8),
+                    swing_low=round(swing_low, 8),
+                    stop_loss=round(stop_loss, 8),
+                    sl_distance_pct=round(sl_distance_pct, 4),
+                    atr_pct=round(atr_pct, 4),
+                    atr_target_pct=round(atr_target_pct, 4),
+                    max_tp_pct=round(max_tp_pct, 4),
+                    raw_tp_pct=round(min(atr_target_pct, closest_target, max_tp_pct), 4),
+                    risk_pct=round(sl_distance_pct, 4),
+                    min_required_tp_pct=round(min_tp_pct, 4),
                     structure_target_type=rejected_type,
-                    structure_target_pct=round(closest_target, 2),
-                    first_barrier_pct=round(closest_target, 2),
-                    min_required_tp_pct=round(min_tp_pct, 2),
+                    structure_target_pct=round(closest_target, 4),
+                    first_barrier_pct=round(closest_target, 4),
                     tp_rejected_reason="path_blocked_early",
                 )
                 return None
-            else:
-                # The path is clear up to the first valid barrier, which meets our R:R gate!
-                structure_target = closest_target
-        else:
-            # No structural barriers found in the window, use basic ATR target
-            structure_target = atr_target
 
         # Final calculated TP target in percent
-        raw_tp_pct = min(atr_target, structure_target, max_tp)
+        raw_tp_pct = min(atr_target_pct, structure_target, max_tp_pct)
 
         # Enforce Minimum Risk-to-Reward Ratio (Min R:R = 1.5)
         if raw_tp_pct < min_tp_pct:
             rejected_type = target_types.get(structure_target, "ATR")
             self._log.info(
                 "sl_tp_rejected",
-                entry=round(entry, 4),
-                direction=direction,
+                entry=round(entry, 8),
+                swing_low=round(swing_low, 8),
+                stop_loss=round(stop_loss, 8),
+                sl_distance_pct=round(sl_distance_pct, 4),
+                atr_pct=round(atr_pct, 4),
+                atr_target_pct=round(atr_target_pct, 4),
+                max_tp_pct=round(max_tp_pct, 4),
+                raw_tp_pct=round(raw_tp_pct, 4),
+                risk_pct=round(sl_distance_pct, 4),
+                min_required_tp_pct=round(min_tp_pct, 4),
                 structure_target_type=rejected_type,
-                structure_target_pct=round(structure_target, 2),
-                first_barrier_pct=round(targets_list[0], 2) if targets_list else 0.0,
-                min_required_tp_pct=round(min_tp_pct, 2),
+                structure_target_pct=round(structure_target, 4),
+                first_barrier_pct=round(closest_target, 4),
                 tp_rejected_reason="insufficient_rr",
             )
             return None
 
         # Map TP percent back to absolute price
         tp1 = entry * (1 + raw_tp_pct / 100)
-        tp1_rr = raw_tp_pct / risk_pct
+        tp1_rr = raw_tp_pct / sl_distance_pct
         target_type_selected = target_types.get(structure_target, "ATR")
 
         self._log.info(
             "sl_tp_dynamic_calculated",
-            entry=round(entry, 4),
-            direction=direction,
-            regime=regime,
-            stop_loss=round(stop_loss, 4),
-            tp1=round(tp1, 4),
-            rr_tp1=round(tp1_rr, 2),
-            raw_tp_pct=round(raw_tp_pct, 2),
-            risk_pct=round(risk_pct, 2),
-            sl_near_round=sl_near_round_number,
+            entry=round(entry, 8),
+            swing_low=round(swing_low, 8),
+            stop_loss=round(stop_loss, 8),
+            sl_distance_pct=round(sl_distance_pct, 4),
+            atr_pct=round(atr_pct, 4),
+            atr_target_pct=round(atr_target_pct, 4),
+            max_tp_pct=round(max_tp_pct, 4),
+            raw_tp_pct=round(raw_tp_pct, 4),
+            risk_pct=round(sl_distance_pct, 4),
+            min_required_tp_pct=round(min_tp_pct, 4),
             structure_target_type=target_type_selected,
-            structure_target_pct=round(structure_target, 2),
-            first_barrier_pct=round(targets_list[0], 2) if targets_list else 0.0,
-            min_required_tp_pct=round(min_tp_pct, 2),
+            structure_target_pct=round(structure_target, 4),
+            first_barrier_pct=round(closest_target, 4),
             tp_rejected_reason="",
         )
 
@@ -781,10 +806,17 @@ class RiskEngine:
             sl_buffer_pct=round(sl_buffer_actual, 4),
             sl_near_round_number=sl_near_round_number,
             structure_target_type=target_type_selected,
-            structure_target_pct=round(structure_target, 2),
-            first_barrier_pct=round(targets_list[0], 2) if targets_list else 0.0,
-            min_required_tp_pct=round(min_tp_pct, 2),
+            structure_target_pct=round(structure_target, 4),
+            first_barrier_pct=round(closest_target, 4),
+            min_required_tp_pct=round(min_tp_pct, 4),
             tp_rejected_reason="",
+            sl_distance_pct=round(sl_distance_pct, 4),
+            atr_pct=round(atr_pct, 4),
+            atr_target_pct=round(atr_target_pct, 4),
+            max_tp_pct=round(max_tp_pct, 4),
+            raw_tp_pct=round(raw_tp_pct, 4),
+            risk_pct=round(sl_distance_pct, 4),
+            swing_low=round(swing_low, 8),
         )
 
     # ------------------------------------------------------------------

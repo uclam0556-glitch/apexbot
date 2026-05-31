@@ -367,6 +367,17 @@ async def reset_open_trades():
 
 async def factory_reset_db():
     """Wipes closed trades and ML features, keeping OPEN trades."""
+    # Create database backup before wiping
+    import shutil
+    if os.path.exists(DB_PATH):
+        try:
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            backup_path = f"{DB_PATH}.backup_{timestamp}"
+            shutil.copy2(DB_PATH, backup_path)
+            logger.info(f"Database backup created successfully at {backup_path} before factory reset.")
+        except Exception as e:
+            logger.error(f"Failed to create database backup: {e}")
+
     async with aiosqlite.connect(DB_PATH, isolation_level=None) as db:
         await db.execute("DELETE FROM trades WHERE status != 'OPEN'")
         await db.execute("DELETE FROM feature_store WHERE outcome != 'OPEN'")

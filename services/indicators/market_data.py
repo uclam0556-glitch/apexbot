@@ -181,11 +181,14 @@ async def get_funding_rate(symbol: str) -> dict:
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        if data.get("retCode") == 0 and "result" in data and "list" in data["result"]:
-                            rate_str = data["result"]["list"][0].get("fundingRate", "0")
-                            rate = float(rate_str) * 100  # Convert to %
-                            rate_pct = rate
-                            success = True
+                        if (data and data.get("retCode") == 0 and "result" in data 
+                                and isinstance(data["result"], dict) and "list" in data["result"] 
+                                and isinstance(data["result"]["list"], list) and len(data["result"]["list"]) > 0):
+                            rate_str = data["result"]["list"][0].get("fundingRate")
+                            if rate_str is not None:
+                                rate = float(rate_str) * 100  # Convert to %
+                                rate_pct = rate
+                                success = True
         except Exception as e:
             logger.debug(f"Bybit Funding fetch failed for {symbol}: {e}")
 
@@ -401,11 +404,13 @@ async def get_market_context(symbol: str, price_change_pct: float = 0.0) -> dict
             "rate_pct": funding.get("rate_pct", 0.0),
             "label": fund_label,
             "score": fund_score,
+            "is_valid": funding.get("is_valid", False),
         },
         "open_interest": {
             "change_pct": oi.get("change_pct", 0.0),
             "label": oi_label,
             "score": oi_score_val,
+            "is_valid": oi.get("is_valid", False),
         },
         "btc_dominance": {
             "value": dominance.get("dominance", 55.0),

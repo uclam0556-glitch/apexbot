@@ -312,8 +312,11 @@ def create_app() -> FastAPI:
 
     @app.post("/api/factory-reset")
     async def api_factory_reset():
-        from shared.lite_db import factory_reset_db
+        from shared.lite_db import factory_reset_db, get_open_trades
         try:
+            open_trades = await get_open_trades()
+            if open_trades:
+                return {"status": "error", "message": "Wipe blocked: active positions exist."}
             await factory_reset_db()
             return {"status": "success", "message": "Database wiped."}
         except Exception as e:

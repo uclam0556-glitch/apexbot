@@ -78,11 +78,11 @@ def calculate_cvd(df_5m: pd.DataFrame, lookback: int = 20) -> dict:
     # Penalize true divergence heavily
     if divergence:
         score -= 25  # Massive penalty for true exhaustion
-        logger.debug(f"CVD True Bearish Divergence: HH Price ({p1_high:.2f}->{p2_high:.2f}), LH CVD ({p1_cvd:.0f}->{p2_cvd:.0f})")
+        logger.info(f"CVD True Bearish Divergence detected: HH Price ({p1_high:.2f}->{p2_high:.2f}), LH CVD ({p1_cvd:.0f}->{p2_cvd:.0f})")
 
     score = max(-25, min(2, score))
 
-    logger.debug(f"CVD={cvd:.0f} ({cvd_pct:+.1%}) | Signal={signal} | Divergence={divergence}")
+    logger.info(f"CVD current = {signal.lower()} (val={cvd:.0f}, pct={cvd_pct:+.1%}) | CVD structure = {'bearish divergence' if divergence else 'no divergence'}")
 
     return {
         "cvd": cvd,

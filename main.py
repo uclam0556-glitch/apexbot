@@ -682,10 +682,14 @@ class ApexSystem:
                     from services.indicators.market_data import get_funding_rate
                     funding_data = await get_funding_rate(symbol)
                     funding_pct = funding_data.get("rate_pct", 0.0)
-                    if funding_pct > 0.04 and rsi_now > 65 and cvd_score_val < 0 and trade_direction == "LONG":
-                        logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
-                        await save_filter_block(symbol, trade_direction, "Absorption Trap", current_price)
-                        continue
+                    funding_is_valid = funding_data.get("is_valid", False)
+                    if funding_is_valid:
+                        if funding_pct > 0.04 and rsi_now > 65 and cvd_score_val < 0 and trade_direction == "LONG":
+                            logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
+                            await save_filter_block(symbol, trade_direction, "Absorption Trap", current_price)
+                            continue
+                    else:
+                        logger.warning(f"{symbol} - Absorption Trap filter skipped due to funding rate data source failure.")
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 4: Z-SCORE GRAVITY ─────────────────────
                     ema_100 = df_1h['close'].rolling(100).mean().iloc[-1] if len(df_1h) >= 100 else df_1h['close'].mean()
@@ -970,10 +974,12 @@ class ApexSystem:
 
                     # ─── SQUEEZE ENGINE ────────────────────────────────────────────────────────
                     funding_rate_val = market_ctx["funding"]["rate_pct"]
+                    funding_is_valid = market_ctx["funding"].get("is_valid", True)
                     oi_change_val    = market_ctx["open_interest"]["change_pct"]
+                    oi_is_valid      = market_ctx["open_interest"].get("is_valid", True)
                     is_squeeze       = False
 
-                    if trade_direction == "LONG" and funding_rate_val < -0.05 and oi_change_val > 2.0:
+                    if trade_direction == "LONG" and funding_is_valid and funding_rate_val < -0.05 and oi_is_valid and oi_change_val > 2.0:
                         logger.info(f"🚨 SHORT SQUEEZE on {symbol}! Boosting TP targets.")
                         is_squeeze             = True
                         sltp.take_profit_1     = sltp.take_profit_3 * 0.9

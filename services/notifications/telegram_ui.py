@@ -470,44 +470,89 @@ async def process_confirm_reset(callback: CallbackQuery):
 # FACTORY RESET (WIPE DATA)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# FACTORY RESET (WIPE DATA)
+# ─────────────────────────────────────────────────────────────────────────────
+
 @router.callback_query(F.data == "factory_reset")
 async def process_factory_reset(callback: CallbackQuery):
-    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="⚠️ ДА, СТЕРЕТЬ ВСЕ ДАННЫЕ", callback_data="confirm_factory_reset"),
-        ],
-        [
-            InlineKeyboardButton(text="❌ Отмена", callback_data="home"),
-        ]
-    ])
+    open_trades = await get_open_trades()
+    if open_trades:
+        try:
+            await callback.message.edit_text(
+                "⚠️ <b>СБРОС ЗАБЛОКИРОВАН</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"Обнаружено <b>{len(open_trades)} открытых позиций</b>.\n"
+                "Нельзя удалять историю и данные ML, пока идут активные торги.\n"
+                "Сначала закройте или сбросьте ордера.",
+                reply_markup=get_back_keyboard(),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        await callback.answer()
+        return
+
     try:
         await callback.message.edit_text(
             "⚠️ <b>ВНИМАНИЕ: ПОЛНЫЙ СБРОС (WIPE)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "Это действие удалит <b>ВСЕ</b> исторические сделки, открытые ордера и обнулит ML Feature Store.\n"
             "Статистика дашборда начнется с нуля (0%).\n\n"
-            "<b>Ты уверен, что хочешь полностью стереть базу данных?</b>",
-            reply_markup=confirm_kb,
+            "<b>Ты уверен, что хочешь полностью стереть базу данных?</b>\n"
+            "Для подтверждения отправьте в этот чат точный текст:\n"
+            "<code>CONFIRM_RESET_123</code>",
+            reply_markup=get_back_keyboard(),
             parse_mode="HTML"
         )
     except Exception:
         pass
     await callback.answer()
 
-@router.callback_query(F.data == "confirm_factory_reset")
-async def process_confirm_factory_reset(callback: CallbackQuery):
-    await factory_reset_db()
-    try:
-        await callback.message.edit_text(
-            "✅ <b>База данных полностью очищена! (Factory Reset)</b>\n\n"
-            "Вся история, открытые ордера и ML-данные удалены.\n"
-            "Статистика дашборда обнулена. Бот начинает жизнь с чистого листа. 🚀",
-            reply_markup=get_back_keyboard(),
+@router.message(Command("reset"))
+async def cmd_reset(message: Message):
+    open_trades = await get_open_trades()
+    if open_trades:
+        await message.answer(
+            "⚠️ <b>СБРОС ЗАБЛОКИРОВАН</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Обнаружено <b>{len(open_trades)} открытых позиций</b>.\n"
+            "Нельзя удалять историю и данные ML, пока идут торги.\n"
+            "Сначала закройте или сбросьте ордера.",
             parse_mode="HTML"
         )
-    except Exception:
-        pass
-    await callback.answer("Wipe Complete! ✅")
+        return
+
+    await message.answer(
+        "⚠️ <b>ВНИМАНИЕ: ПОЛНЫЙ СБРОС (WIPE)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Это действие удалит <b>ВСЕ</b> closed сделки, открытые ордера и обнулит ML Feature Store.\n"
+        "Статистика дашборда начнется с нуля (0%).\n\n"
+        "<b>Ты уверен, что хочешь полностью стереть базу данных?</b>\n"
+        "Для подтверждения отправьте в этот чат точный текст:\n"
+        "<code>CONFIRM_RESET_123</code>",
+        parse_mode="HTML"
+    )
+
+@router.message(F.text == "CONFIRM_RESET_123")
+async def process_confirm_factory_reset_text(message: Message):
+    open_trades = await get_open_trades()
+    if open_trades:
+        await message.answer(
+            "⚠️ <b>СБРОС ЗАБЛОКИРОВАН</b>\n\n"
+            f"В системе обнаружено {len(open_trades)} активных сделок. "
+            "Сброс базы данных невозможен.",
+            parse_mode="HTML"
+        )
+        return
+
+    await factory_reset_db()
+    await message.answer(
+        "✅ <b>База данных полностью очищена! (Factory Reset)</b>\n\n"
+        "Вся история, открытые ордера и ML-данные удалены (создана резервная копия БД).\n"
+        "Статистика дашборда обнулена. Бот начинает жизнь с чистого листа. 🚀",
+        reply_markup=get_persistent_keyboard(),
+        parse_mode="HTML"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIGNAL CARD — called from main.py when signal is found

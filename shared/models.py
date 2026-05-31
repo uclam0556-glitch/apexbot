@@ -445,6 +445,13 @@ class SLTPResult(BaseModel):
     first_barrier_pct: Optional[float] = 0.0
     min_required_tp_pct: Optional[float] = 0.0
     tp_rejected_reason: Optional[str] = ""
+    sl_distance_pct: Optional[float] = 0.0
+    atr_pct: Optional[float] = 0.0
+    atr_target_pct: Optional[float] = 0.0
+    max_tp_pct: Optional[float] = 0.0
+    raw_tp_pct: Optional[float] = 0.0
+    risk_pct: Optional[float] = 0.0
+    swing_low: Optional[float] = 0.0
 
 
 class CorrelationResult(BaseModel):
