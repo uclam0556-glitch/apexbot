@@ -809,11 +809,6 @@ class ApexSystem:
                         proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
                         await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Data Health", health_data["reasons"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                         continue
-                        
-                    if health_data["status"] == "DEGRADED":
-                        v7_score -= 10.0
-                    elif health_data["status"] == "DEGRADED_SEVERE":
-                        v7_score -= 20.0
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 4: Z-SCORE GRAVITY ─────────────────────
                     ema_100 = df_1h['close'].rolling(100).mean().iloc[-1] if len(df_1h) >= 100 else df_1h['close'].mean()
