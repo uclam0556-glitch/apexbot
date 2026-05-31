@@ -131,30 +131,27 @@ class TradingConfig(BaseSettings):
 
     # Monitored symbols — Top 60 spot pairs by volume & narrative
     symbols: list[str] = [
-        # Majors
-        "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
-        # Large Caps
-        "AVAX/USDT", "ADA/USDT", "DOT/USDT", "POL/USDT", "LINK/USDT",
-        # DeFi
-        "UNI/USDT", "AAVE/USDT", "ARB/USDT", "OP/USDT", "INJ/USDT",
-        # L1/L2 Trending
-        "TON/USDT", "SUI/USDT", "APT/USDT", "NEAR/USDT", "SEI/USDT",
-        # AI & Data
-        "FET/USDT", "RENDER/USDT", "AR/USDT", "WLD/USDT", "TAO/USDT",
+        # Majors & Large Caps
+        "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
+        "DOGE/USDT", "ADA/USDT", "AVAX/USDT", "LINK/USDT", "TON/USDT",
+        # Majors Continued
+        "TRX/USDT", "DOT/USDT", "LTC/USDT", "BCH/USDT", "ETC/USDT",
+        # High Momentum L1/L2
+        "SUI/USDT", "APT/USDT", "NEAR/USDT", "SEI/USDT", "INJ/USDT",
+        "ARB/USDT", "OP/USDT", "STRK/USDT", "POL/USDT", "TIA/USDT",
+        # AI & Narrative
+        "RENDER/USDT", "FET/USDT", "WLD/USDT", "TAO/USDT", "ARKM/USDT",
+        # DeFi & RWA
+        "ONDO/USDT", "PYTH/USDT", "JUP/USDT", "PENDLE/USDT", "RUNE/USDT",
+        "AAVE/USDT", "UNI/USDT", "LDO/USDT", "GMX/USDT", "GRT/USDT",
+        # Infrastructure & Classics
+        "FIL/USDT", "STX/USDT", "ATOM/USDT", "ICP/USDT", "KAS/USDT",
         # Memes
-        "DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "WIF/USDT", "BONK/USDT",
-        # DeFi 2.0 & DEX
-        "PENDLE/USDT", "GMX/USDT", "LDO/USDT", "RUNE/USDT", "JUP/USDT",
-        # New Narratives
-        "STX/USDT", "TIA/USDT", "STRK/USDT", "BLUR/USDT", "MANTA/USDT",
-        # Real World Assets (RWA) & Infra (NEW)
-        "ONDO/USDT", "LTC/USDT", "PYTH/USDT", "ARKM/USDT", "GRT/USDT",
-        # Gaming & Metaverse (NEW)
-        "IMX/USDT", "GALA/USDT", "SAND/USDT", "BEAMX/USDT", "MANA/USDT",
-        # Fast L1s & Classics (NEW)
-        "KAS/USDT", "XLM/USDT", "MNT/USDT", "ATOM/USDT", "ICP/USDT",
-        # DePIN & Storage (NEW)
-        "FIL/USDT", "HNT/USDT", "IOTX/USDT", "VET/USDT", "ETC/USDT",
+        "PEPE/USDT", "WIF/USDT", "BONK/USDT", "SHIB/USDT", "FLOKI/USDT",
+        # Classics Continued & Infra
+        "MNT/USDT", "HBAR/USDT", "VET/USDT", "ALGO/USDT", "XLM/USDT",
+        # Gaming & Metaverse & Ecosystems
+        "GALA/USDT", "IMX/USDT", "SAND/USDT", "MANA/USDT", "BLUR/USDT"
     ]
 
     # Timeframes
