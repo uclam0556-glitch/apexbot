@@ -163,8 +163,13 @@ class ApexSystem:
         # Global State
         self.macro_state = None
         self.signals_sent_today = 0
+        
+        # Exposure Manager (P1)
+        from services.engine.exposure_manager import ExposureManager
+        self.exposure_manager = ExposureManager(self.config)
         self.market_breadth = 50.0
         self.dominance_flow_bonus = 0.0
+        self.breadth_last_updated = 0.0
         
     async def fetch_market_data(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> pd.DataFrame:
         """Helper to fetch OHLCV and convert to DataFrame."""
@@ -433,12 +438,11 @@ class ApexSystem:
                 await asyncio.sleep(300)
                 continue
             
-            open_trades = await get_open_trades()
-            open_symbols = [t['symbol'] for t in open_trades]
-            
-            # Fetch active limit watchlist items for correlation checks (APEX v10.3)
-            active_pb = await get_pullback_items_by_status('WAITING')
-            active_pb_symbols = list(set([item['symbol'] for item in active_pb]))
+            exposure = await self.exposure_manager.get_current_exposure()
+            open_trades = exposure["open_trades"]
+            open_symbols = list(exposure["open_symbols"])
+            active_pb = exposure["waiting_pullbacks"]
+            active_pb_symbols = list(exposure["waiting_symbols"])
             open_and_pending_symbols = list(set(open_symbols + active_pb_symbols))
             
             # ─── PRE-FETCH CORRELATION DATA ──────────────────────────────────────────
@@ -456,50 +460,76 @@ class ApexSystem:
             scan_symbols = [c['symbol'] for c in top_rs_coins] if top_rs_coins else self.config.trading.symbols[:30]
             logger.info(f"Pre-filtered top {len(scan_symbols)} strongest coins for scanning.")
 
-            # ─── MARKET BREADTH ENGINE (EMA200) & DOMINANCE FLOW ─────────────────────
-            macro_breadth_symbols = self.config.trading.symbols[:50] if len(self.config.trading.symbols) >= 50 else self.config.trading.symbols
-            logger.info(f"Calculating Market Breadth ({len(macro_breadth_symbols)} Macro Coins vs EMA200)...")
-            breadth_tasks = [self.fetch_market_data(sym, '1d', 210) for sym in macro_breadth_symbols]
-            breadth_results = await asyncio.gather(*breadth_tasks, return_exceptions=True)
-            
-            coins_above_ema200 = 0
-            valid_coins = 0
-            btc_7d_return = 0.0
-            alt_7d_returns = []
-            
-            for sym, df_breadth in zip(macro_breadth_symbols, breadth_results):
-                if isinstance(df_breadth, pd.DataFrame) and len(df_breadth) >= 200:
-                    valid_coins += 1
-                    current_close = df_breadth['close'].iloc[-1]
-                    ema_200 = df_breadth['close'].rolling(200).mean().iloc[-1]
-                    if current_close > ema_200:
-                        coins_above_ema200 += 1
-                        
-                    if len(df_breadth) >= 8:
-                        close_7d = df_breadth['close'].iloc[-8]
-                        ret_7d = (current_close - close_7d) / close_7d * 100
-                        if sym == 'BTC/USDT':
-                            btc_7d_return = ret_7d
-                        else:
-                            alt_7d_returns.append(ret_7d)
-            
-            breadth_pct = (coins_above_ema200 / valid_coins * 100) if valid_coins > 0 else 50.0
-            self.market_breadth = breadth_pct
-            logger.info(f"Market Breadth: {breadth_pct:.1f}% of top coins are above 1D EMA200.")
-            
-            # DOMINANCE FLOW CALCULATION
-            avg_alt_7d_return = sum(alt_7d_returns) / len(alt_7d_returns) if alt_7d_returns else 0.0
-            dominance_7d_change = btc_7d_return - avg_alt_7d_return
-            self.dominance_flow_bonus = 0.0
-            
-            if dominance_7d_change > 1.5:
-                self.dominance_flow_bonus = -5.0
-                logger.info(f"DOMINANCE FLOW: BTC ({btc_7d_return:+.1f}%) > Alts ({avg_alt_7d_return:+.1f}%). Flow to BTC. Alt Penalty: -5")
-            elif dominance_7d_change < -1.5:
-                self.dominance_flow_bonus = 5.0
-                logger.info(f"DOMINANCE FLOW: BTC ({btc_7d_return:+.1f}%) < Alts ({avg_alt_7d_return:+.1f}%). Flow to Alts. Alt Bonus: +5")
+            # ─── GLOBAL REGIME CLASSIFICATION (BTC) ──────────────────────────────────
+            try:
+                logger.info("Calculating Global Market Regime (BTC-driven)...")
+                btc_df = await self.fetch_market_data('BTC/USDT', '1h', 100)
+                if isinstance(btc_df, pd.DataFrame) and not btc_df.empty:
+                    if not self.ml_classifier.is_trained:
+                        self.ml_classifier.train_hmm(btc_df)
+                    btc_regime = self.ml_classifier.classify_current_regime(btc_df)
+                    global_state.regime = btc_regime.value
+                    logger.info(f"Global Market Regime updated: {global_state.regime}")
+                else:
+                    logger.warning("Could not fetch BTC data for global regime. Using default SIDEWAYS.")
+                    global_state.regime = "SIDEWAYS"
+            except Exception as e:
+                logger.error(f"Failed to calculate global regime: {e}")
+                global_state.regime = "SIDEWAYS"
+                
+
+            # ─── MARKET BREADTH ENGINE (EMA200) & DOMINANCE FLOW (CACHED) ─────────────────────
+            import time
+            current_time = time.time()
+            if current_time - self.breadth_last_updated > 3600:  # 60 minutes cache
+                macro_breadth_symbols = self.config.trading.symbols[:50] if len(self.config.trading.symbols) >= 50 else self.config.trading.symbols
+                logger.info(f"Calculating Market Breadth ({len(macro_breadth_symbols)} Macro Coins vs EMA200)...")
+                breadth_tasks = [self.fetch_market_data(sym, '1d', 210) for sym in macro_breadth_symbols]
+                breadth_results = await asyncio.gather(*breadth_tasks, return_exceptions=True)
+                
+                coins_above_ema200 = 0
+                valid_coins = 0
+                btc_7d_return = 0.0
+                alt_7d_returns = []
+                
+                for sym, df_breadth in zip(macro_breadth_symbols, breadth_results):
+                    if isinstance(df_breadth, pd.DataFrame) and len(df_breadth) >= 200:
+                        valid_coins += 1
+                        current_close = df_breadth['close'].iloc[-1]
+                        ema_200 = df_breadth['close'].rolling(200).mean().iloc[-1]
+                        if current_close > ema_200:
+                            coins_above_ema200 += 1
+                            
+                        if len(df_breadth) >= 8:
+                            close_7d = df_breadth['close'].iloc[-8]
+                            ret_7d = (current_close - close_7d) / close_7d * 100
+                            if sym == 'BTC/USDT':
+                                btc_7d_return = ret_7d
+                            else:
+                                alt_7d_returns.append(ret_7d)
+                
+                breadth_pct = (coins_above_ema200 / valid_coins * 100) if valid_coins > 0 else 50.0
+                self.market_breadth = breadth_pct
+                logger.info(f"Market Breadth updated: {breadth_pct:.1f}% of top coins are above 1D EMA200.")
+                
+                # DOMINANCE FLOW CALCULATION
+                avg_alt_7d_return = sum(alt_7d_returns) / len(alt_7d_returns) if alt_7d_returns else 0.0
+                dominance_7d_change = btc_7d_return - avg_alt_7d_return
+                self.dominance_flow_bonus = 0.0
+                
+                if dominance_7d_change > 1.5:
+                    self.dominance_flow_bonus = -5.0
+                    logger.info(f"DOMINANCE FLOW updated: BTC ({btc_7d_return:+.1f}%) > Alts ({avg_alt_7d_return:+.1f}%). Flow to BTC. Alt Penalty: -5")
+                elif dominance_7d_change < -1.5:
+                    self.dominance_flow_bonus = 5.0
+                    logger.info(f"DOMINANCE FLOW updated: BTC ({btc_7d_return:+.1f}%) < Alts ({avg_alt_7d_return:+.1f}%). Flow to Alts. Alt Bonus: +5")
+                else:
+                    logger.info(f"DOMINANCE FLOW updated: Neutral (Diff: {dominance_7d_change:.1f}%). No penalty/bonus.")
+                    
+                self.breadth_last_updated = current_time
             else:
-                logger.info(f"DOMINANCE FLOW: Neutral (Diff: {dominance_7d_change:.1f}%). No penalty/bonus.")
+                breadth_pct = self.market_breadth
+                logger.info(f"Using cached Market Breadth: {breadth_pct:.1f}% (valid for {int((3600 - (current_time - self.breadth_last_updated)) / 60)} more mins)")
             
             # Dynamic config based on breadth
             dynamic_min_score = 65
@@ -582,15 +612,12 @@ class ApexSystem:
                     
                     logger.info(f"{symbol} | Price=${format_price(current_price)} | RSI={rsi_now:.1f} | Vol={vol_ratio:.2f}x | TFs loaded={list(tf_data.keys())}")
 
-                    # ─── FILTER 1: REGIME CLASSIFICATION ─────────────────────────────────
-                    if not self.ml_classifier.is_trained:
-                        self.ml_classifier.train_hmm(df_1h)
-                    current_regime = self.ml_classifier.classify_current_regime(df_1h)
-                    regime_val = current_regime.value
-                    global_state.regime = regime_val
+                    # ─── FILTER 1: GLOBAL REGIME ASSIGNMENT ──────────────────────────────
+                    regime_val = global_state.regime
+                    current_regime = MarketRegime(regime_val)
 
                     # ─── FILTER 1.1: CIRCUIT BREAKER ──────────────────────────────────────
-                    if not await can_open_new_position(regime_val):
+                    if not await self.exposure_manager.can_add_market_position(symbol, breadth_pct, regime_val):
                         continue
 
                     # ─── FILTER 1.2: COOLDOWN FILTER ──────────────────────────────────────
