@@ -556,6 +556,7 @@
   <div class="header-right">
     <div class="last-update" id="last-update">Обновление...</div>
     <button class="refresh-btn" onclick="loadAll()">↻ Обновить</button>
+    <button class="shadow-btn" onclick="openShadowModal()" style="background: rgba(124,58,237,0.1); color: var(--purple); border: 1px solid rgba(124,58,237,0.5); margin-left: 10px; padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: 0.2s;">🕵️ Shadow Analysis</button>
     <button class="wipe-btn" onclick="factoryReset()" style="background: rgba(255,71,87,0.1); color: #ff4757; border: 1px solid rgba(255,71,87,0.5); margin-left: 10px; padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: 0.2s;">⚠️ СБРОС</button>
   </div>
 </header>
@@ -1423,6 +1424,108 @@ async function openModal(title, filterType) {
 
   } catch(e) {
     bodyEl.innerHTML = `<div class="empty-state"><div class="emoji">❌</div>Ошибка загрузки</div>`;
+  }
+}
+
+// ── SHADOW ANALYSIS MODAL ───────────────────────────────────────────────────
+
+async function openShadowModal() {
+  document.getElementById('modal-title').innerHTML = '<span class="icon">🕵️</span> Shadow Trades Analysis';
+  const bodyEl = document.getElementById('modal-body');
+  bodyEl.innerHTML = `<div class="empty-state"><div class="emoji">⏳</div>Загрузка Shadow Analysis...</div>`;
+  document.getElementById('interactive-modal').classList.add('active');
+
+  try {
+    const [statsRes, tradesRes] = await Promise.all([
+      fetch('/api/shadow-stats'),
+      fetch('/api/shadow-trades')
+    ]);
+    const stats = await statsRes.json();
+    const trades = await tradesRes.json();
+
+    let html = `
+      <div style="padding: 20px;">
+        <h3 style="margin-bottom: 10px; font-size: 14px; color: var(--cyan);">Статистика по фильтрам</h3>
+        <table class="trade-table" style="margin-bottom: 24px; background: rgba(255,255,255,0.02); border-radius: 8px;">
+          <thead>
+            <tr>
+              <th>Фильтр (Блокировка)</th>
+              <th>Всего заблочено</th>
+              <th><span class="text-green">TP (Упущен профит)</span></th>
+              <th><span class="text-red">SL (Спасен убыток)</span></th>
+              <th>Таймаут (Флэт)</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
+    if (stats.length === 0) {
+      html += `<tr><td colspan="5" style="text-align: center; color: var(--text3);">Нет данных для анализа</td></tr>`;
+    } else {
+      stats.forEach(s => {
+        html += `
+          <tr>
+            <td><strong>${s.primary_block_reason}</strong></td>
+            <td>${s.total}</td>
+            <td class="text-green"><strong>${s.won}</strong></td>
+            <td class="text-red"><strong>${s.lost}</strong></td>
+            <td style="color: var(--text3);">${s.timeout}</td>
+          </tr>
+        `;
+      });
+    }
+
+    html += `
+          </tbody>
+        </table>
+
+        <h3 style="margin-bottom: 10px; font-size: 14px; color: var(--cyan);">Последние Shadow Trades</h3>
+        <table class="trade-table">
+          <thead>
+            <tr>
+              <th>Символ</th>
+              <th>Направление</th>
+              <th>Статус</th>
+              <th>MFE / MAE</th>
+              <th>Блокировка</th>
+              <th>Score</th>
+              <th>Время (UTC)</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
+    if (trades.length === 0) {
+      html += `<tr><td colspan="7" style="text-align: center; color: var(--text3);">История Shadow Trades пуста</td></tr>`;
+    } else {
+      trades.forEach(t => {
+        let dirClass = t.direction === 'LONG' ? 'badge-won' : 'badge-lost';
+        let statusColor = t.status === 'TRACKING' ? 'text-cyan' : (t.status === 'WON' ? 'text-green' : (t.status === 'LOST' ? 'text-red' : ''));
+        
+        let mfeText = t.mfe_pct ? `<span class="text-green">+${t.mfe_pct.toFixed(2)}%</span>` : '—';
+        let maeText = t.mae_pct ? `<span class="text-red">${t.mae_pct.toFixed(2)}%</span>` : '—';
+        
+        const dateStr = new Date(t.created_at).toLocaleString('ru-RU', {day: '2-digit', month: '2-digit', hour: '2-digit', minute:'2-digit'});
+
+        html += `
+          <tr style="transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">
+            <td class="symbol-cell">${t.symbol}</td>
+            <td><span class="status-badge ${dirClass}">${t.direction}</span></td>
+            <td class="${statusColor}"><strong>${t.status}</strong></td>
+            <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${mfeText} / ${maeText}</td>
+            <td style="color: var(--text2); font-size: 11px;">${t.primary_block_reason}</td>
+            <td style="font-family: 'JetBrains Mono', monospace;">${t.v7_score.toFixed(1)}</td>
+            <td style="color: var(--text3);">${dateStr}</td>
+          </tr>
+        `;
+      });
+    }
+
+    html += `</tbody></table></div>`;
+    bodyEl.innerHTML = html;
+
+  } catch (e) {
+    bodyEl.innerHTML = `<div class="empty-state"><div class="emoji">❌</div>Ошибка загрузки Shadow Trades</div>`;
   }
 }
 

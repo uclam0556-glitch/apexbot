@@ -221,6 +221,50 @@ def create_app() -> FastAPI:
             logger.error(f"Limit orders error: {e}")
             return []
 
+    @app.get("/api/shadow-trades")
+    async def get_shadow_trades(limit: int = 100):
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT id, symbol, direction, strategy, entry_price, stop_loss, take_profit_1,
+                           primary_block_reason, all_block_reasons, v7_score, status,
+                           mfe_pct, mae_pct, created_at, resolved_at
+                    FROM shadow_trades
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (limit,)) as cur:
+                    rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Shadow trades error: {e}")
+            return []
+
+    @app.get("/api/shadow-stats")
+    async def get_shadow_stats():
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                # Group by primary_block_reason to see which filter saves/costs us the most
+                async with db.execute('''
+                    SELECT 
+                        primary_block_reason,
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status = 'WON' THEN 1 ELSE 0 END) as won,
+                        SUM(CASE WHEN status = 'LOST' THEN 1 ELSE 0 END) as lost,
+                        SUM(CASE WHEN status = 'TIMEOUT' THEN 1 ELSE 0 END) as timeout
+                    FROM shadow_trades 
+                    WHERE status != 'TRACKING'
+                    GROUP BY primary_block_reason
+                    ORDER BY total DESC
+                ''') as cur:
+                    stats_rows = await cur.fetchall()
+                    
+            return [dict(r) for r in stats_rows]
+        except Exception as e:
+            logger.error(f"Shadow stats error: {e}")
+            return []
+
     @app.get("/api/rs-matrix")
     async def get_rs_matrix():
         try:
