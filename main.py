@@ -1343,7 +1343,6 @@ class ApexSystem:
                                 logger.info(f"LIVE Market Fill for {symbol} at {entry_price}")
                                 
                                 # 2. Immediate SL with RETRIES
-                                import asyncio
                                 sl_success = False
                                 for attempt in range(3):
                                     try:
