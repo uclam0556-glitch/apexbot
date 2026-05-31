@@ -137,6 +137,27 @@ async def init_lite_db():
             )
         ''')
 
+        # V6.0 Shadow Trades Table
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS shadow_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                direction TEXT,
+                strategy TEXT,
+                entry_price REAL,
+                stop_loss REAL,
+                take_profit_1 REAL,
+                primary_block_reason TEXT,
+                all_block_reasons TEXT,
+                v7_score REAL,
+                status TEXT DEFAULT 'TRACKING',
+                mfe_pct REAL DEFAULT 0.0,
+                mae_pct REAL DEFAULT 0.0,
+                created_at TIMESTAMP,
+                resolved_at TIMESTAMP
+            )
+        ''')
+
         # Add columns to pullback_watchlist if they don't exist
         pb_new_columns = [
             ("original_breadth", "REAL"),
@@ -711,3 +732,60 @@ async def is_pullback_on_structure_cooldown(symbol: str) -> bool:
         ''', (symbol,)) as cursor:
             row = await cursor.fetchone()
             return row is not None
+
+async def create_shadow_trade(
+    symbol: str,
+    direction: str,
+    strategy: str,
+    entry_price: float,
+    stop_loss: float,
+    take_profit_1: float,
+    primary_block_reason: str,
+    all_block_reasons: list,
+    v7_score: float
+):
+    """Creates a new shadow trade, ensuring no duplicates within 15 minutes."""
+    if entry_price <= 0 or stop_loss <= 0 or take_profit_1 <= 0:
+        return
+        
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        # Check 15-minute duplicate
+        async with db.execute('''
+            SELECT id FROM shadow_trades
+            WHERE symbol = ? AND direction = ? AND primary_block_reason = ?
+              AND datetime(created_at, '+15 minutes') > datetime('now')
+        ''', (symbol, direction, primary_block_reason)) as cursor:
+            if await cursor.fetchone():
+                return  # Duplicate prevented
+                
+        import json
+        reasons_json = json.dumps(all_block_reasons)
+        
+        await db.execute('''
+            INSERT INTO shadow_trades (
+                symbol, direction, strategy, entry_price, stop_loss, take_profit_1, 
+                primary_block_reason, all_block_reasons, v7_score, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ''', (symbol, direction, strategy, entry_price, stop_loss, take_profit_1, primary_block_reason, reasons_json, v7_score))
+        await db.commit()
+
+async def get_tracking_shadow_trades():
+    """Fetches all shadow trades that are currently TRACKING."""
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('''
+            SELECT * FROM shadow_trades
+            WHERE status = 'TRACKING'
+        ''') as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def update_shadow_trade_status(trade_id: int, new_status: str, mfe: float = 0.0, mae: float = 0.0):
+    """Updates the status of a shadow trade (WON, LOST, TIMEOUT)."""
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        await db.execute('''
+            UPDATE shadow_trades
+            SET status = ?, mfe_pct = ?, mae_pct = ?, resolved_at = datetime('now')
+            WHERE id = ?
+        ''', (new_status, mfe, mae, trade_id))
+        await db.commit()

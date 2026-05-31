@@ -63,7 +63,7 @@ from services.engine.risk_engine import RiskEngine
 from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
-from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown, save_filter_block, update_trade_sl, get_pullback_items_by_status, update_pullback_limit_entries, is_pullback_on_structure_cooldown
+from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown, save_filter_block, update_trade_sl, get_pullback_items_by_status, update_pullback_limit_entries, is_pullback_on_structure_cooldown, create_shadow_trade
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
@@ -75,6 +75,10 @@ from services.data.ws_manager import ExchangeWSManager
 from services.intelligence.ml_regime import MLRegimeClassifier
 from services.optimization.dynamic_weights import DynamicWeightsOptimizer
 from shared.state import global_state
+
+# V6.0 Shadow & Health
+from services.engine.shadow_monitor import ShadowTradeMonitor
+from services.engine.data_health import compute_data_health
 
 # 🌟 NEW: Ultra indicators
 from services.indicators.technical import run_all_indicators
@@ -148,6 +152,7 @@ class ApexSystem:
         
         from services.engine.order_fill_monitor import OrderFillMonitor
         self.fill_monitor = OrderFillMonitor(self.exchange, self.config)
+        self.shadow_monitor = ShadowTradeMonitor()
         
         # v5.0 Engines
         self.ws_manager = ExchangeWSManager()
@@ -1873,6 +1878,7 @@ class ApexSystem:
         asyncio.create_task(self.background_missed_signals_tracker())
         asyncio.create_task(self.background_pullback_tracker())
         asyncio.create_task(self.fill_monitor.start())
+        asyncio.create_task(self.shadow_monitor.start())
         asyncio.create_task(self.ws_manager.start(self.config.trading.symbols))
         asyncio.create_task(rs_matrix_engine.fast_price_poller(self.config.trading.symbols))
         
