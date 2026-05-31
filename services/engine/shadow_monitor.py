@@ -43,16 +43,38 @@ class ShadowTradeMonitor:
         if not trades:
             return
             
-        # We need live prices for tracking. Since this runs every 60s, a simple fetch_tickers is fine.
-        symbols_to_fetch = list(set([t['symbol'] for t in trades]))
-        if not symbols_to_fetch:
+        # Fetch markets if not loaded
+        if not self.exchange.markets:
+            try:
+                await self.exchange.load_markets()
+            except Exception as e:
+                logger.error(f"Failed to load markets in ShadowMonitor: {e}")
+                return
+
+        # Filter symbols that exist in exchange markets
+        valid_symbols = []
+        for symbol in list(set([t['symbol'] for t in trades])):
+            if symbol in self.exchange.markets:
+                valid_symbols.append(symbol)
+            else:
+                # Many futures use linear contracts, e.g., 'FLOKI/USDT:USDT' or '1000FLOKI/USDT'
+                # For simplicity, we just skip invalid spot symbols on the futures exchange
+                pass
+                
+        if not valid_symbols:
             return
             
+        tickers = {}
         try:
-            tickers = await self.exchange.fetch_tickers(symbols_to_fetch)
+            tickers = await self.exchange.fetch_tickers(valid_symbols)
         except Exception as e:
-            logger.error(f"Failed to fetch tickers in ShadowMonitor: {e}")
-            return
+            logger.warning(f"Batch fetch_tickers failed in ShadowMonitor: {e}. Falling back to individual fetches.")
+            for sym in valid_symbols:
+                try:
+                    ticker = await self.exchange.fetch_ticker(sym)
+                    tickers[sym] = ticker
+                except Exception:
+                    pass
             
         now = datetime.utcnow()
         

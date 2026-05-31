@@ -20,9 +20,10 @@ def compute_data_health(
     """
     score = 100.0
     
+    import time
     # 1. WebSocket Freshness (penalty if no updates in the last 15 seconds)
     if last_ws_update:
-        delay = datetime.utcnow().timestamp() - last_ws_update
+        delay = time.time() - last_ws_update
         if delay > 15.0:
             logger.warning(f"[DATA HEALTH] {symbol} WS data is stale (delay: {delay:.1f}s). Penalty -30.")
             score -= 30.0

@@ -768,6 +768,9 @@ async def create_shadow_trade(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ''', (symbol, direction, strategy, entry_price, stop_loss, take_profit_1, primary_block_reason, reasons_json, v7_score))
         await db.commit()
+        
+        import logging
+        logging.getLogger("ShadowTrade").info(f"[SHADOW TRADE CREATED] {symbol} {direction} [{strategy}] - Blocked by: {primary_block_reason} - Score: {v7_score:.1f}")
 
 async def get_tracking_shadow_trades():
     """Fetches all shadow trades that are currently TRACKING."""
