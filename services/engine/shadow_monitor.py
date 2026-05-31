@@ -78,8 +78,9 @@ class ShadowTradeMonitor:
                 try:
                     ticker = await self.exchange.fetch_ticker(sym)
                     tickers[sym] = ticker
-                except Exception:
-                    pass
+                except Exception as ind_err:
+                    logger.warning(f"Individual fetch failed for {sym}. Adding to invalid cache.")
+                    self.invalid_symbol_cache.add(sym)
             
         now = datetime.utcnow()
         
@@ -137,15 +138,25 @@ class ShadowTradeMonitor:
                         status = 'WON'
             
             if status != 'TRACKING':
-                # Basic MFE/MAE approximation at point of resolution
+                # Calculate true MFE/MAE using OHLCV since creation
                 mfe = 0.0
                 mae = 0.0
-                if direction == 'LONG':
-                    if status == 'WON': mfe = (tp1 - entry) / entry * 100
-                    if status == 'LOST': mae = (sl - entry) / entry * 100
-                else:
-                    if status == 'WON': mfe = (entry - tp1) / entry * 100
-                    if status == 'LOST': mae = (entry - sl) / entry * 100
+                try:
+                    since_ms = int(created_at.timestamp() * 1000)
+                    ohlcv = await self.exchange.fetch_ohlcv(sym, '5m', since=since_ms, limit=200)
+                    if ohlcv:
+                        highs = [candle[2] for candle in ohlcv]
+                        lows = [candle[3] for candle in ohlcv]
+                        max_high = max(highs)
+                        min_low = min(lows)
+                        if direction == 'LONG':
+                            mfe = (max_high - entry) / entry * 100
+                            mae = (entry - min_low) / entry * 100
+                        else:
+                            mfe = (entry - min_low) / entry * 100
+                            mae = (max_high - entry) / entry * 100
+                except Exception as e:
+                    logger.debug(f"Could not fetch OHLCV for MFE/MAE calc on {sym}: {e}")
                     
                 await update_shadow_trade_status(t['id'], status, mfe, mae)
                 logger.info(f"[SHADOW TRADE] {sym} {direction} [{strategy}] resolved as {status}. MFE: {mfe:.2f}%, MAE: {mae:.2f}%")
