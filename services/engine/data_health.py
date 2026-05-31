@@ -1,7 +1,9 @@
 import logging
-from datetime import datetime
+import time
 
 logger = logging.getLogger("DataHealth")
+
+START_TIME = time.time()
 
 def compute_data_health(
     symbol: str, 
@@ -17,7 +19,9 @@ def compute_data_health(
     reasons = []
     
     import time
+    
     # 1. WebSocket Freshness (penalty if no updates in the last 15 seconds)
+    uptime = time.time() - START_TIME
     if last_ws_update:
         delay = time.time() - last_ws_update
         if delay > 15.0:
@@ -27,9 +31,12 @@ def compute_data_health(
         elif delay > 5.0:
             score -= 10.0
     else:
-        reasons.append("WS missing completely")
-        logger.warning(f"[DATA HEALTH] {symbol} WS data missing completely. Penalty -50.")
-        score -= 50.0
+        if uptime < 60.0:
+            logger.info(f"[DATA HEALTH] {symbol} WS missing but in 60s startup grace period. No penalty.")
+        else:
+            reasons.append("WS missing completely")
+            logger.warning(f"[DATA HEALTH] {symbol} WS data missing completely. Penalty -50.")
+            score -= 50.0
         
     # 2. Volume Anomalies
     if avg_vol_3 == 0:

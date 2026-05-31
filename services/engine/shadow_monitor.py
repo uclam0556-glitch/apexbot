@@ -17,7 +17,7 @@ class ShadowTradeMonitor:
         self.exchange = ccxt.binance({
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future'
+                'defaultType': 'spot'
             }
         })
 
