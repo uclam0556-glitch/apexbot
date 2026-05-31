@@ -130,9 +130,24 @@ async def init_lite_db():
                 ttl_expiry TIMESTAMP,
                 regime TEXT,
                 status TEXT,
-                created_at TIMESTAMP
+                created_at TIMESTAMP,
+                original_breadth REAL,
+                original_mtf REAL,
+                original_cvd REAL
             )
         ''')
+
+        # Add columns to pullback_watchlist if they don't exist
+        pb_new_columns = [
+            ("original_breadth", "REAL"),
+            ("original_mtf", "REAL"),
+            ("original_cvd", "REAL")
+        ]
+        for col_name, col_type in pb_new_columns:
+            try:
+                await db.execute(f'ALTER TABLE pullback_watchlist ADD COLUMN {col_name} {col_type}')
+            except Exception:
+                pass
 
         # V7 Institutional ML Features
         new_columns = [
@@ -574,7 +589,10 @@ async def save_pullback_item(
     position_usd: float,
     ttl_minutes: int,
     regime: str,
-    status: str = 'WAITING'
+    status: str = 'WAITING',
+    original_breadth: float = 50.0,
+    original_mtf: float = 0.0,
+    original_cvd: float = 0.0
 ):
     """Saves a pullback watchlist setup to track limit entries with specified status."""
     from datetime import timedelta
@@ -586,12 +604,14 @@ async def save_pullback_item(
             INSERT INTO pullback_watchlist (
                 symbol, direction, score, original_entry, swing_low,
                 limit_entries, stop_loss, take_profit_1, take_profit_2, take_profit_3,
-                position_usd, ttl_expiry, regime, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                position_usd, ttl_expiry, regime, status, created_at,
+                original_breadth, original_mtf, original_cvd
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             symbol, direction, score, original_entry, swing_low,
             limit_json, stop_loss, take_profit_1, take_profit_2, take_profit_3,
-            position_usd, expiry, regime, status, datetime.utcnow()
+            position_usd, expiry, regime, status, datetime.utcnow(),
+            original_breadth, original_mtf, original_cvd
         ))
         await db.commit()
 
@@ -646,11 +666,29 @@ async def update_pullback_limit_entries(
         await db.commit()
 
 async def expire_old_pullback_items():
-    """Finds all WAITING and WAITING_STRUCTURE pullback items that have passed their TTL and marks them EXPIRED."""
+    """Finds all WAITING and WAITING_STRUCTURE pullback items that have passed their TTL and marks them EXPIRED/EXPIRED_STRUCTURE."""
     async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        # Expire active limit orders to EXPIRED
         await db.execute('''
             UPDATE pullback_watchlist
             SET status = 'EXPIRED'
-            WHERE status IN ('WAITING', 'WAITING_STRUCTURE') AND datetime(ttl_expiry) <= datetime('now')
+            WHERE status = 'WAITING' AND datetime(ttl_expiry) <= datetime('now')
+        ''')
+        # Expire watchlist structures to EXPIRED_STRUCTURE
+        await db.execute('''
+            UPDATE pullback_watchlist
+            SET status = 'EXPIRED_STRUCTURE'
+            WHERE status = 'WAITING_STRUCTURE' AND datetime(ttl_expiry) <= datetime('now')
         ''')
         await db.commit()
+
+async def is_pullback_on_structure_cooldown(symbol: str) -> bool:
+    """Checks if a symbol has an active 120-minute cooldown after expiring as EXPIRED_STRUCTURE."""
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        async with db.execute('''
+            SELECT id FROM pullback_watchlist
+            WHERE symbol = ? AND status = 'EXPIRED_STRUCTURE'
+              AND datetime(ttl_expiry, '+120 minutes') > datetime('now')
+        ''', (symbol,)) as cursor:
+            row = await cursor.fetchone()
+            return row is not None

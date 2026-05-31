@@ -17,32 +17,21 @@ def format_price(price: float) -> str:
     if price >= 0.00001: return f"{price:.8f}"
     return f"{price:.10f}"
 
-# Programmatic coin classification sectors for APEX pullback limits
-SECTORS = {
-    # AI & Narrative
-    "RENDER/USDT": "AI", "FET/USDT": "AI", "WLD/USDT": "AI", "TAO/USDT": "AI", "ARKM/USDT": "AI",
-    # Memes
-    "DOGE/USDT": "MEME", "PEPE/USDT": "MEME", "WIF/USDT": "MEME", "BONK/USDT": "MEME", "SHIB/USDT": "MEME", "FLOKI/USDT": "MEME",
-    # Majors
-    "BTC/USDT": "MAJORS", "ETH/USDT": "MAJORS", "SOL/USDT": "MAJORS", "BNB/USDT": "MAJORS", "XRP/USDT": "MAJORS",
-    "ADA/USDT": "MAJORS", "LINK/USDT": "MAJORS", "LTC/USDT": "MAJORS", "BCH/USDT": "MAJORS", "ETC/USDT": "MAJORS",
-    "XLM/USDT": "MAJORS", "DOT/USDT": "MAJORS",
-    # High Momentum L1/L2
-    "AVAX/USDT": "L1_L2", "TON/USDT": "L1_L2", "TRX/USDT": "L1_L2", "SUI/USDT": "L1_L2", "APT/USDT": "L1_L2",
-    "NEAR/USDT": "L1_L2", "SEI/USDT": "L1_L2", "INJ/USDT": "L1_L2", "ARB/USDT": "L1_L2", "OP/USDT": "L1_L2",
-    "STRK/USDT": "L1_L2", "POL/USDT": "L1_L2", "TIA/USDT": "L1_L2", "MNT/USDT": "L1_L2", "HBAR/USDT": "L1_L2",
-    "VET/USDT": "L1_L2", "ALGO/USDT": "L1_L2",
-    # DeFi & RWA
-    "ONDO/USDT": "DEFI_RWA", "PYTH/USDT": "DEFI_RWA", "JUP/USDT": "DEFI_RWA", "PENDLE/USDT": "DEFI_RWA", "RUNE/USDT": "DEFI_RWA",
-    "AAVE/USDT": "DEFI_RWA", "UNI/USDT": "DEFI_RWA", "LDO/USDT": "DEFI_RWA", "GMX/USDT": "DEFI_RWA", "GRT/USDT": "DEFI_RWA",
-    # Infrastructure & Classics
-    "FIL/USDT": "INFRA", "STX/USDT": "INFRA", "ATOM/USDT": "INFRA", "ICP/USDT": "INFRA", "KAS/USDT": "INFRA",
-    # Gaming & Metaverse
-    "GALA/USDT": "GAMING", "IMX/USDT": "GAMING", "SAND/USDT": "GAMING", "MANA/USDT": "GAMING", "BLUR/USDT": "GAMING"
-}
-
+# Programmatic coin classification sectors for APEX pullback limits (APEX v10.4 manual sectors)
 def get_sector(symbol: str) -> str:
-    return SECTORS.get(symbol, "OTHER")
+    base = symbol.split('/')[0]
+    if base in ["FET", "RENDER", "WLD", "ARKM", "TAO"]:
+        return "AI"
+    elif base in ["ARB", "OP", "STRK", "MATIC", "POL"]:
+        return "L2"
+    elif base in ["PEPE", "WIF", "BONK", "SHIB", "FLOKI", "DOGE"]:
+        return "MEME"
+    elif base in ["SOL", "AVAX", "SUI", "APT", "SEI", "NEAR"]:
+        return "L1"
+    elif base in ["AAVE", "UNI", "LDO", "PENDLE", "GMX", "RUNE"]:
+        return "DEFI"
+    else:
+        return "OTHER"
 
 # Configure structlogging
 import asyncio
@@ -74,7 +63,7 @@ from services.engine.risk_engine import RiskEngine
 from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
-from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown, save_filter_block, update_trade_sl, get_pullback_items_by_status, update_pullback_limit_entries
+from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown, save_filter_block, update_trade_sl, get_pullback_items_by_status, update_pullback_limit_entries, is_pullback_on_structure_cooldown
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
@@ -98,6 +87,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("ApexMain")
+struct_logger = structlog.get_logger("telemetry")
 _config = get_config()
 
 def check_mtf_gate(symbol: str, mtf_score: float, direction: str, regime: str, strategy: str = "TREND") -> bool:
@@ -165,6 +155,7 @@ class ApexSystem:
         # Global State
         self.macro_state = None
         self.rotation_state = None
+        self.market_breadth = 50.0
         
     async def fetch_market_data(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> pd.DataFrame:
         """Helper to fetch OHLCV and convert to DataFrame."""
@@ -473,6 +464,7 @@ class ApexSystem:
                         coins_above_ema200 += 1
             
             breadth_pct = (coins_above_ema200 / valid_coins * 100) if valid_coins > 0 else 50.0
+            self.market_breadth = breadth_pct
             logger.info(f"Market Breadth: {breadth_pct:.1f}% of top coins are above 1D EMA200.")
             
             # Dynamic config based on breadth
@@ -569,6 +561,11 @@ class ApexSystem:
 
                     # ─── FILTER 1.2: COOLDOWN FILTER ──────────────────────────────────────
                     if await is_on_cooldown(symbol, cooldown_hours=4):
+                        continue
+                        
+                    # ─── FILTER 1.2b: PULLBACK STRUCTURE COOLDOWN FILTER ──────────────────
+                    if await is_pullback_on_structure_cooldown(symbol):
+                        logger.info(f"{symbol} - [BLOCKED] Pullback Structure Cooldown: active EXPIRED_STRUCTURE within 120 min. Skipping.")
                         continue
 
                     # ─── FILTER 1.3: EXHAUSTION FILTER ────────────────────────────────────
@@ -970,13 +967,28 @@ class ApexSystem:
                     except Exception as adv_err:
                         logger.debug(f"{symbol} - Adversarial check skipped: {adv_err}")
 
-                    # Check active portfolio/sector/meme slot availability (APEX v10.3)
+                    # Check active portfolio/sector/meme slot availability (APEX v10.3 / v10.4)
                     latest_active_pb = await get_pullback_items_by_status('WAITING')
                     sec = get_sector(symbol)
                     active_total = len(latest_active_pb)
                     active_sector = sum(1 for item in latest_active_pb if get_sector(item['symbol']) == sec)
                     active_meme = sum(1 for item in latest_active_pb if get_sector(item['symbol']) == "MEME")
                     slots_ok = (active_total < 5) and (active_sector < 2) and (not (sec == "MEME" and active_meme >= 1))
+                    
+                    # Total exposure slots: open trades + waiting pullbacks (APEX v10.4)
+                    open_count = len(open_trades)
+                    total_exposure = open_count + active_total
+                    if breadth_pct < 15.0:
+                        max_exposure = 0
+                    elif breadth_pct < 40.0:
+                        max_exposure = 3
+                    elif regime_val == "SIDEWAYS" or breadth_pct <= 70.0:
+                        max_exposure = 5
+                    else:
+                        max_exposure = 8
+                        
+                    exposure_slots_ok = total_exposure < max_exposure
+                    slots_ok = slots_ok and exposure_slots_ok
                     
                     ema20_1h = df_1h['close'].ewm(span=20, adjust=False).mean().iloc[-1]
                     ema50_1h = df_1h['close'].ewm(span=50, adjust=False).mean().iloc[-1]
@@ -1286,6 +1298,36 @@ class ApexSystem:
         while self.running:
             try:
                 # 1. Expire outdated watchlists
+                try:
+                    import aiosqlite
+                    db_path = "apex_lite.db"
+                    async with aiosqlite.connect(db_path) as db:
+                        db.row_factory = aiosqlite.Row
+                        async with db.execute('''
+                            SELECT * FROM pullback_watchlist
+                            WHERE (status = 'WAITING' OR status = 'WAITING_STRUCTURE') AND datetime(ttl_expiry) <= datetime('now')
+                        ''') as cursor:
+                            expiring_items = [dict(row) for row in await cursor.fetchall()]
+                            
+                    for exp_item in expiring_items:
+                        exp_symbol = exp_item['symbol']
+                        exp_status = 'EXPIRED' if exp_item['status'] == 'WAITING' else 'EXPIRED_STRUCTURE'
+                        struct_logger.info(
+                            exp_status,
+                            symbol=exp_symbol,
+                            original_score=exp_item['score'],
+                            current_score=exp_item['score'],
+                            original_breadth=exp_item.get('original_breadth', 50.0),
+                            current_breadth=self.market_breadth,
+                            original_mtf=exp_item.get('original_mtf', 0.0),
+                            current_mtf=exp_item.get('original_mtf', 0.0),
+                            original_cvd=exp_item.get('original_cvd', 0.0),
+                            current_cvd=0.0,
+                            reason="TTL expired. Lifespan exceeded."
+                        )
+                except Exception as exp_err:
+                    logger.debug(f"Failed to log watchlist expiration telemetry: {exp_err}")
+                
                 await expire_old_pullback_items()
                 
                 current_time = time.time()
@@ -1337,9 +1379,69 @@ class ApexSystem:
                             new_score = confluence.raw_score
                             original_score = item['score']
                             
+                            # Enriched Cancellations Check (APEX v10.4)
+                            current_price = df_1h['close'].iloc[-1]
+                            stop_loss = item['stop_loss']
+                            is_stop_hit = current_price <= stop_loss
+                            is_breadth_weak = self.market_breadth < 15.0
+                            
+                            # Check BTC Dump
+                            btc_dump = False
+                            btc_change_5m = 0.0
+                            try:
+                                btc_df = await self.fetch_market_data("BTC/USDT", "1m", limit=6)
+                                if not btc_df.empty and len(btc_df) >= 6:
+                                    btc_change_5m = (btc_df['close'].iloc[-1] - btc_df['close'].iloc[-6]) / btc_df['close'].iloc[-6] * 100
+                                    if btc_change_5m < -1.5:
+                                        btc_dump = True
+                            except Exception:
+                                pass
+                                
+                            # Check CVD & trend decay
+                            cvd_score = 0
+                            cvd_signal = "NEUTRAL"
+                            if not df_5m.empty:
+                                cvd_res = calculate_cvd(df_5m, lookback=20)
+                                cvd_score = cvd_res.get("score", 0)
+                                cvd_signal = cvd_res.get("cvd_signal", "NEUTRAL")
+                            is_trend_decay = cvd_signal == "BEARISH" and cvd_score <= -2 and mtf_val < 4.0
+                            
+                            cancel_reason = None
+                            event_name = None
                             if new_score < 65.0 or new_score < (original_score - 20.0):
-                                logger.warning(f"[PULLBACK TRACKER] {symbol} score degraded significantly (Original: {original_score:.1f}, Current: {new_score:.1f}). CANCELLING active limit grid!")
-                                await update_pullback_status(item['id'], 'CANCELLED')
+                                cancel_reason = f"Confluence score degraded (Original: {original_score:.1f}, Current: {new_score:.1f})."
+                                event_name = "CANCELLED_SCORE_DECAY"
+                            elif is_stop_hit:
+                                cancel_reason = f"Current price ${current_price:.4f} is at or below Stop Loss ${stop_loss:.4f}."
+                                event_name = "CANCELLED"
+                            elif is_breadth_weak:
+                                cancel_reason = f"Systemic weakness: Market Breadth is {self.market_breadth:.1f}% (below 15% Risk-Off)."
+                                event_name = "CANCELLED_BREADTH"
+                            elif btc_dump:
+                                cancel_reason = f"BTC cascading: BTC returned {btc_change_5m:+.2f}% in last 5m."
+                                event_name = "CANCELLED_BTC_DUMP"
+                            elif is_trend_decay:
+                                cancel_reason = f"Trend breakdown: Bearish CVD Flow (Score={cvd_score}) and MTF score decay (Score={mtf_val:.1f})."
+                                event_name = "CANCELLED_CVD_MTF"
+                                
+                            if cancel_reason:
+                                logger.warning(f"[PULLBACK TRACKER] {symbol} cancelled due to: {cancel_reason}. Removing active limit grid!")
+                                await update_pullback_status(item['id'], event_name or 'CANCELLED')
+                                
+                                # Log enriched telemetry (APEX v10.4)
+                                struct_logger.info(
+                                    event_name or "CANCELLED",
+                                    symbol=symbol,
+                                    original_score=original_score,
+                                    current_score=new_score,
+                                    original_breadth=item.get('original_breadth', 50.0),
+                                    current_breadth=self.market_breadth,
+                                    original_mtf=item.get('original_mtf', 0.0),
+                                    current_mtf=float(mtf_val),
+                                    original_cvd=item.get('original_cvd', 0.0),
+                                    current_cvd=float(cvd_score),
+                                    reason=cancel_reason
+                                )
                                 
                                 # Send Telegram cancellation notification
                                 try:
@@ -1351,9 +1453,9 @@ class ApexSystem:
                                         msg = (
                                             f"⚠️ <b>LIMIT CANCELLED | {symbol}</b>\n"
                                             f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                            f"📉 <b>Reason:</b> Confluence Score degraded below edge thresholds.\n"
+                                            f"📉 <b>Reason:</b> {cancel_reason}\n"
                                             f"📊 <b>Original Score:</b> {original_score:.1f}/100\n"
-                                            f"📉 <b>Current Score:</b> {new_score:.1f}/100 <i>(Required: >= 65.0)</i>\n\n"
+                                            f"📉 <b>Current Score:</b> {new_score:.1f}/100\n\n"
                                             f"<i>Лимитная сетка отменена для защиты капитала.</i>"
                                         )
                                         await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
@@ -1378,8 +1480,25 @@ class ApexSystem:
                             
                             slots_ok = (active_total < 5) and (active_sector < 2) and (not (sec == "MEME" and active_meme >= 1))
                             
+                            # Total exposure slots: open trades + waiting pullbacks (APEX v10.4)
+                            open_trades = await get_open_trades()
+                            open_count = len(open_trades)
+                            total_exposure = open_count + active_total
+                            breadth_pct = self.market_breadth
+                            if breadth_pct < 15.0:
+                                max_exposure = 0
+                            elif breadth_pct < 40.0:
+                                max_exposure = 3
+                            elif item['regime'] == "SIDEWAYS" or breadth_pct <= 70.0:
+                                max_exposure = 5
+                            else:
+                                max_exposure = 8
+                                
+                            exposure_slots_ok = total_exposure < max_exposure
+                            slots_ok = slots_ok and exposure_slots_ok
+                            
                             if not slots_ok:
-                                logger.info(f"[PULLBACK TRACKER] {symbol} (WAITING_STRUCTURE) - Active limit slots full. Skipping promotion.")
+                                logger.info(f"[PULLBACK TRACKER] {symbol} (WAITING_STRUCTURE) - Active limit slots or total exposure limits full. Skipping promotion.")
                                 continue
                                 
                             # Fetch 1h data to check structure
@@ -1472,6 +1591,21 @@ class ApexSystem:
                                         new_status='WAITING'
                                     )
                                     logger.info(f"[PULLBACK TRACKER] {symbol} promoted successfully from WAITING_STRUCTURE to WAITING! Limit grid placed.")
+                                    
+                                    # Log promotion telemetry (APEX v10.4)
+                                    struct_logger.info(
+                                        "PROMOTED_TO_WAITING",
+                                        symbol=symbol,
+                                        original_score=item['score'],
+                                        current_score=item['score'],
+                                        original_breadth=item.get('original_breadth', 50.0),
+                                        current_breadth=self.market_breadth,
+                                        original_mtf=item.get('original_mtf', 0.0),
+                                        current_mtf=float(mtf_val),
+                                        original_cvd=item.get('original_cvd', 0.0),
+                                        current_cvd=0.0,
+                                        reason="SMC structural zone detected, promoting to active waiting limits."
+                                    )
                                     
                                     # Send Telegram notification
                                     try:
@@ -1575,6 +1709,23 @@ class ApexSystem:
                         if filled_brackets_indices:
                             # Update limit_entries in db
                             all_filled = all([b.get("filled", False) for b in limit_entries])
+                            
+                            # Log filled/partial fill telemetry (APEX v10.4)
+                            fill_event = "FILLED" if all_filled else "PARTIAL_FILLED"
+                            struct_logger.info(
+                                fill_event,
+                                symbol=symbol,
+                                original_score=item['score'],
+                                current_score=item['score'],
+                                original_breadth=item.get('original_breadth', 50.0),
+                                current_breadth=self.market_breadth,
+                                original_mtf=item.get('original_mtf', 0.0),
+                                current_mtf=item.get('original_mtf', 0.0),
+                                original_cvd=item.get('original_cvd', 0.0),
+                                current_cvd=0.0,
+                                reason=f"Limit order hit at bracket indices {filled_brackets_indices}."
+                            )
+                            
                             if all_filled:
                                 await update_pullback_status(item['id'], 'FILLED')
                             else:

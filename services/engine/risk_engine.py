@@ -712,13 +712,22 @@ class RiskEngine:
         if sl_distance > max_sl_allowed:
             raw_tp_est = min(atr_target_pct, max_tp_pct)
             
-            # If the score is high and we are in BULL/SIDEWAYS, we evaluate for Pullback Watchlist
-            if v7_score >= 80.0 and regime in ["BULL", "SIDEWAYS"]:
-                # Check Market Breadth Gates first!
+            # If the score is high and we are in BULL/SIDEWAYS/CAPITULATION, we evaluate for Pullback Watchlist
+            if v7_score >= 80.0 and regime in ["BULL", "SIDEWAYS", "CAPITULATION"]:
+                is_capitulation = regime == "CAPITULATION"
                 is_major = symbol.split('/')[0] in ["BTC", "ETH", "SOL", "BNB"]
                 is_aplus = v7_score >= 90.0
                 
-                if market_breadth < 15.0:
+                # Check CAPITULATION gate first: strictly majors only (BTC/ETH/SOL/BNB)
+                if is_capitulation and symbol.split('/')[0] not in ["BTC", "ETH", "SOL", "BNB"]:
+                    self._log.info(
+                        "pullback_watchlist_blocked",
+                        symbol=symbol,
+                        regime=regime,
+                        reason="CAPITULATION regime strictly limits pullbacks to Majors (BTC/ETH/SOL/BNB). Setup skipped."
+                    )
+                # Check Market Breadth Gates
+                elif market_breadth < 15.0:
                     self._log.info(
                         "pullback_watchlist_blocked",
                         symbol=symbol,
@@ -799,8 +808,16 @@ class RiskEngine:
                             reason=f"{reason} Registering setup as WAITING_STRUCTURE to monitor for zones/slots."
                         )
                         
+                        # Scale WAITING_STRUCTURE TTL dynamically (APEX v10.4)
+                        if is_capitulation:
+                            ttl_minutes = 30
+                        else:
+                            ttl_minutes = 120 if regime == "BULL" else 60
+                            
+                        # Reduced position size for CAPITULATION (50%)
+                        position_usd = 15.0 if is_capitulation else 30.0
+                        
                         # Save to database as WAITING_STRUCTURE with empty limit entries
-                        ttl_minutes = 90 if regime == "BULL" else 45
                         import asyncio
                         try:
                             from shared.lite_db import save_pullback_item
@@ -817,17 +834,20 @@ class RiskEngine:
                                     take_profit_1=0.0,
                                     take_profit_2=0.0,
                                     take_profit_3=0.0,
-                                    position_usd=30.0,
+                                    position_usd=position_usd,
                                     ttl_minutes=ttl_minutes,
                                     regime=regime,
-                                    status='WAITING_STRUCTURE'
+                                    status='WAITING_STRUCTURE',
+                                    original_breadth=market_breadth,
+                                    original_mtf=mtf_score,
+                                    original_cvd=0.0
                                 ))
                         except Exception as db_ex:
                             self._log.error("pullback_structure_save_failed", error=str(db_ex))
                             
-                        # Telemetry audit log for WAITING_STRUCTURE
+                        # Telemetry audit log for CREATED_WAITING_STRUCTURE (APEX v10.4)
                         self._log.info(
-                            "pullback_watchlist_added",
+                            "CREATED_WAITING_STRUCTURE",
                             symbol=symbol,
                             original_score=v7_score,
                             original_price=round(entry, 8),
@@ -843,7 +863,14 @@ class RiskEngine:
                             fill_status="WAITING_STRUCTURE",
                             mfe_after_fill=0.0,
                             mae_after_fill=0.0,
-                            final_result="WAITING_STRUCTURE"
+                            final_result="WAITING_STRUCTURE",
+                            original_breadth=round(market_breadth, 2),
+                            current_breadth=round(market_breadth, 2),
+                            original_mtf=round(mtf_score, 2),
+                            current_mtf=round(mtf_score, 2),
+                            original_cvd=0.0,
+                            current_cvd=0.0,
+                            reason="Watchlist item initialized in structural observing mode."
                         )
                     else:
                         # Bracket 1 is the shallower support (closest to entry, highest price)
@@ -862,15 +889,29 @@ class RiskEngine:
                                 {"price": round(deeper_limit, 8), "size_pct": 60.0, "label": "Deep Support Grid"}
                             ]
                             
-                        ttl_minutes = 90 if regime == "BULL" else 45
+                        # Scale WAITING TTL dynamically (APEX v10.4)
+                        if is_capitulation:
+                            ttl_minutes = 30
+                        else:
+                            ttl_minutes = 90 if regime == "BULL" else 45
+                            
+                        # Reduced position size for CAPITULATION (50%)
+                        position_usd = 15.0 if is_capitulation else 30.0
                         
                         # Estimate TP/SL for telemetry from best_limit
                         new_sl_dist_pct = (best_limit - stop_loss) / best_limit * 100
                         new_tp_pct = max(new_sl_dist_pct * 1.5, raw_tp_est)
                         
-                        tp1_pb = best_limit * (1 + new_tp_pct / 100)
-                        tp2_pb = best_limit * (1 + new_tp_pct * 1.2 / 100)
-                        tp3_pb = best_limit * (1 + new_tp_pct * 1.5 / 100)
+                        # Clamped profit targets for CAPITULATION (2% to 4%) (APEX v10.4)
+                        if is_capitulation:
+                            new_tp_pct = max(2.0, min(new_tp_pct, 4.0))
+                            tp1_pb = best_limit * (1 + 2.0 / 100)
+                            tp2_pb = best_limit * (1 + 3.0 / 100)
+                            tp3_pb = best_limit * (1 + 4.0 / 100)
+                        else:
+                            tp1_pb = best_limit * (1 + new_tp_pct / 100)
+                            tp2_pb = best_limit * (1 + new_tp_pct * 1.2 / 100)
+                            tp3_pb = best_limit * (1 + new_tp_pct * 1.5 / 100)
                         
                         # Phase 1 / Phase 2 Paper Watchlist Integration
                         import asyncio
@@ -889,17 +930,20 @@ class RiskEngine:
                                     take_profit_1=tp1_pb,
                                     take_profit_2=tp2_pb,
                                     take_profit_3=tp3_pb,
-                                    position_usd=30.0,
+                                    position_usd=position_usd,
                                     ttl_minutes=ttl_minutes,
                                     regime=regime,
-                                    status='WAITING'
+                                    status='WAITING',
+                                    original_breadth=market_breadth,
+                                    original_mtf=mtf_score,
+                                    original_cvd=0.0
                                 ))
                         except Exception as db_ex:
                             self._log.error("pullback_save_failed", error=str(db_ex))
                             
-                        # Institutional Symmetrical Telemetry Log
+                        # Telemetry audit log for CREATED_WAITING (APEX v10.4)
                         self._log.info(
-                            "pullback_watchlist_added",
+                            "CREATED_WAITING",
                             symbol=symbol,
                             original_score=v7_score,
                             original_price=round(entry, 8),
@@ -915,7 +959,14 @@ class RiskEngine:
                             fill_status="WAITING",
                             mfe_after_fill=0.0,
                             mae_after_fill=0.0,
-                            final_result="WAITING"
+                            final_result="WAITING",
+                            original_breadth=round(market_breadth, 2),
+                            current_breadth=round(market_breadth, 2),
+                            original_mtf=round(mtf_score, 2),
+                            current_mtf=round(mtf_score, 2),
+                            original_cvd=0.0,
+                            current_cvd=0.0,
+                            reason="Limit order pullback grid created."
                         )
 
             self._log.info(
