@@ -683,6 +683,9 @@ class ApexSystem:
                     mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
 
                     if not check_mtf_gate(symbol, mtf_score.score, trade_direction, regime_val, trade_strategy):
+                        proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
+                        proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
+                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "MTF Gate", [f"MTF={mtf_score.score:.1f}"], 0.0)
                         continue
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 1: ATR MOMENTUM EXHAUSTION ─────────────
@@ -697,6 +700,9 @@ class ApexSystem:
                         if price_change_4h_pct > (2 * atr_1h_pct) or price_change_4h_pct > 8.0:
                             logger.info(f"{symbol} - [BLOCKED] Momentum Exhaustion. Up {price_change_4h_pct:.2f}% (>{2*atr_1h_pct:.2f}% ATR threshold or >8%). Late impulse trap. Skipping.")
                             await save_filter_block(symbol, trade_direction, "Momentum Exhaustion", current_price)
+                            proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
+                            proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
+                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Momentum Exhaustion", [f"Up {price_change_4h_pct:.2f}%"], 0.0)
                             continue
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 2: GRADIENT PREMIUM ZONE ────────────────
@@ -726,9 +732,24 @@ class ApexSystem:
                         if funding_pct > 0.04 and rsi_now > 65 and cvd_score_val < 0 and trade_direction == "LONG":
                             logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
                             await save_filter_block(symbol, trade_direction, "Absorption Trap", current_price)
+                            # Create shadow trade
+                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, current_price * 0.98, current_price * 1.06, "Absorption Trap", ["Retail FOMO against MM CVD"], 0.0)
                             continue
                     else:
                         logger.warning(f"{symbol} - Absorption Trap filter skipped due to funding rate data source failure.")
+
+                    # ─── V6.0 DATA HEALTH CHECK ────────────────────────────────────────────────
+                    ws_data = global_state.live_prices.get(symbol, {})
+                    last_ws_ts = ws_data.get("timestamp", 0)
+                    health_score = compute_data_health(symbol, last_ws_ts, avg_vol_3, baseline_hourly_vol, funding_pct)
+                    
+                    if health_score < 60.0:
+                        logger.warning(f"{symbol} - [BLOCKED] Data Health Score {health_score:.1f} < 60. Data is too corrupt/stale.")
+                        await save_filter_block(symbol, trade_direction, "Data Health < 60", current_price)
+                        proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
+                        proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
+                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Data Health", [f"Score={health_score:.1f}"], 0.0)
+                        continue
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 4: Z-SCORE GRAVITY ─────────────────────
                     ema_100 = df_1h['close'].rolling(100).mean().iloc[-1] if len(df_1h) >= 100 else df_1h['close'].mean()
@@ -809,6 +830,13 @@ class ApexSystem:
                     
                     # ─── V7 ADAPTIVE SCORING (0-100) ───────────────────────────────────────────
                     v7_score = ultra_score * 10.0
+                    
+                    if 75 <= health_score < 90:
+                        v7_score -= 10
+                        logger.info(f"{symbol} - Data Health penalty: -10 (Score: {health_score:.1f}). MARKET disabled.")
+                    elif 60 <= health_score < 75:
+                        v7_score -= 20
+                        logger.info(f"{symbol} - Data Health penalty: -20 (Score: {health_score:.1f}). Only LIMIT/Shadow.")
                     
                     # ─── V9 QUANT INDICES (MULTICOLLINEARITY FIX) ─────────────────────────
                     # 1. OVEREXTENSION INDEX
@@ -909,6 +937,12 @@ class ApexSystem:
                             from shared.lite_db import save_missed_signal
                             asyncio.create_task(save_missed_signal(symbol, trade_direction, v7_score, current_price))
                         logger.info(f"{symbol} - [BLOCKED] V7 Score: {v7_score:.1f}/100. Insufficient edge. Skipping.")
+                        
+                        # Create Shadow Trade
+                        proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
+                        proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
+                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "V7 Score", [f"Score={v7_score:.1f}"], v7_score)
+                        
                         continue
                         
                     ultra_score = v7_score
@@ -1187,7 +1221,8 @@ class ApexSystem:
                         cvd_signal != "BEARISH" and
                         breadth_pct >= 30.0 and
                         market_ctx.get("funding", {}).get("is_valid", False) and
-                        market_ctx.get("open_interest", {}).get("is_valid", False)
+                        market_ctx.get("open_interest", {}).get("is_valid", False) and
+                        health_score >= 90.0
                     )
 
                     if is_market_entry:

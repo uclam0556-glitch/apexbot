@@ -42,7 +42,8 @@ class ExchangeWSManager:
                 from shared.state import global_state
                 global_state.live_prices[symbol] = {
                     "price": ticker.get("last"),
-                    "change": ticker.get("percentage")
+                    "change": ticker.get("percentage"),
+                    "timestamp": time.time()
                 }
                 
                 # If we have a callback registered, push the data to it
