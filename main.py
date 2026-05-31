@@ -767,52 +767,67 @@ class ApexSystem:
                     # ─── V7 ADAPTIVE SCORING (0-100) ───────────────────────────────────────────
                     v7_score = ultra_score * 10.0
                     
-                    if premium_penalty > 0:
-                        v7_score -= premium_penalty
+                    # ─── V9 QUANT INDICES (MULTICOLLINEARITY FIX) ─────────────────────────
+                    # 1. OVEREXTENSION INDEX
+                    overext_points = 0
                     
-                    # ─── MTF HARD CAP ──────────────────────────────────────────────────────────
-                    if mtf_val < 0:
-                        v7_score = min(v7_score, 50.0)  # Максимум 50/100 против тренда
-
-                    # ─── SMC EXHAUSTION PENALTIES (Score Inflation Fix) ────────────────────────
+                    rsi_max = 80 if regime_val == "BULL" else 73
+                    if rsi_now > rsi_max: overext_points += 2
+                    if z_score > 2.0: overext_points += 2
+                    if premium_penalty > 0: overext_points += 1
+                    
                     fvg_count = len(smc_analysis.imbalance_zones)
-                    sweep_count = len(smc_analysis.liquidity_sweeps)
+                    if fvg_count > 12: overext_points += 3
+                    elif fvg_count > 10: overext_points += 2
+                    elif fvg_count > 8: overext_points += 1
                     
-                    if fvg_count > 12:
-                        v7_score -= 25.0
-                        logger.info(f"{symbol} - SMC Penalty: Too many FVGs ({fvg_count} > 12). Trend likely exhausted.")
-                    elif fvg_count > 10:
-                        v7_score -= 15.0
-                        logger.info(f"{symbol} - SMC Penalty: Elevated FVGs ({fvg_count} > 10). Momentum fading.")
-                    elif fvg_count > 8:
-                        v7_score -= 8.0
-                        logger.info(f"{symbol} - SMC Penalty: High FVGs ({fvg_count} > 8). Minor exhaustion.")
+                    overext_penalty = 0
+                    if overext_points >= 6: overext_penalty = 30
+                    elif overext_points >= 4: overext_penalty = 20
+                    elif overext_points == 3: overext_penalty = 10
                     
-                    if sweep_count > 65:
-                        v7_score -= 22.0
-                        logger.info(f"{symbol} - SMC Penalty: Too many sweeps ({sweep_count} > 65). Market highly chopped.")
-                    elif sweep_count > 50:
-                        v7_score -= 12.0
-                        logger.info(f"{symbol} - SMC Penalty: Elevated sweeps ({sweep_count} > 50). Range bound.")
-                    elif sweep_count > 40:
-                        v7_score -= 6.0
-                        logger.info(f"{symbol} - SMC Penalty: High sweeps ({sweep_count} > 40). Minor chop.")
+                    if overext_penalty > 0:
+                        v7_score -= overext_penalty
+                        logger.info(f"{symbol} - Overextension Index: {overext_points} pts. Applied penalty: -{overext_penalty}")
 
-                    # 1. Entry Candle Penalty
+                    # 2. STRUCTURAL CHOP INDEX
+                    chop_points = 0
+                    
+                    if cvd_result.get("divergence"): chop_points += 2
+                    if cvd_signal == "BEARISH" and cvd_score_val <= -2: chop_points += 1
+                    
+                    sweep_count = len(smc_analysis.liquidity_sweeps)
+                    if sweep_count > 65: chop_points += 3
+                    elif sweep_count > 50: chop_points += 2
+                    elif sweep_count > 40: chop_points += 1
+                    
                     df_15m_check = tf_data.get('15m', pd.DataFrame())
                     if not df_15m_check.empty and len(df_15m_check) >= 3:
                         last3 = df_15m_check.iloc[-4:-1]
                         last1 = df_15m_check.iloc[-2]
                         if trade_strategy in ["MEAN_REVERSION", "CAPITULATION"]:
                             green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
-                            if green_count == 0: v7_score -= 15
+                            if green_count == 0: chop_points += 1
                         elif regime_val == "SIDEWAYS":
                             green_count = sum(1 for _, c in last3.iterrows() if c['close'] > c['open'])
-                            if green_count < 2: v7_score -= 10
+                            if green_count < 2: chop_points += 1
                         else:
-                            if last1['close'] < last1['open']: v7_score -= 10
+                            if last1['close'] < last1['open']: chop_points += 1
                             
-                    # 2. BTC Correlation Penalty
+                    chop_penalty = 0
+                    if chop_points >= 5: chop_penalty = 25
+                    elif chop_points >= 3: chop_penalty = 15
+                    elif chop_points == 2: chop_penalty = 10
+                    
+                    if chop_penalty > 0:
+                        v7_score -= chop_penalty
+                        logger.info(f"{symbol} - Structural Chop Index: {chop_points} pts. Applied penalty: -{chop_penalty}")
+
+                    # ─── MTF HARD CAP ──────────────────────────────────────────────────────────
+                    if mtf_val < 0:
+                        v7_score = min(v7_score, 50.0)  # Максимум 50/100 против тренда
+
+                    # 3. INDEPENDENT MACRO PENALTY: BTC CORRELATION
                     btc_rsi = 50.0
                     if 'BTC' not in symbol:
                         try:
@@ -836,16 +851,6 @@ class ApexSystem:
                             pass
                     else:
                         btc_rsi = rsi_now
-                    
-                    # 3. CVD Divergence & Bearishness Penalty
-                    if cvd_result.get("divergence"): 
-                        v7_score -= 25
-                        logger.info(f"{symbol} - CVD Divergence Penalty applied: -25.")
-                    if cvd_signal == "BEARISH" and cvd_score_val <= -2: v7_score -= 20
-                    
-                    # 4. Overheated RSI Penalty
-                    rsi_max = 80 if regime_val == "BULL" else 73
-                    if rsi_now > rsi_max: v7_score -= 20
                     
                     # ─── A+ SETUP BONUS (NO LONGER AN OVERRIDE) ────────────────────────────────
                     if trade_direction == "LONG" and rsi_now < 28 and cvd_score_val >= 0 and ofi_real.ofi_score > 0:
