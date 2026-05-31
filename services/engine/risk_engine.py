@@ -535,50 +535,36 @@ class RiskEngine:
         entry: float,
         direction: str,
         atr: float,
-        swing_points: list[SwingPoint],
-        imbalance_zones: list[ImbalanceZone],
-        volume_nodes: list[VolumeNode],
+        swing_points: list[SwingPoint] | dict,
+        imbalance_zones: list[ImbalanceZone] | dict,
+        volume_nodes: list[VolumeNode] | dict,
         key_levels: Optional[list[float]] = None,
-    ) -> SLTPResult:
+        regime: str = "SIDEWAYS",
+        v7_score: float = 50.0,
+        mtf_score: float = 0.0,
+        z_score: float = 0.0,
+        rsi: float = 50.0,
+    ) -> Optional[SLTPResult]:
         """
-        Calculate Stop Loss and three Take Profit levels anchored to market structure.
+        Calculate Stop Loss and Take Profit levels dynamically anchored to market structure,
+        regime-based targets, volatility expansion caps, and a strict risk-reward confluence gate.
 
         Stop Loss placement:
-            For LONG trades:
-                SL = nearest swing LOW below entry, minus SL_BUFFER_PCT (0.3%)
-                If no swing low found: SL = entry - 2.0 × ATR
-            For SHORT trades:
-                SL = nearest swing HIGH above entry, plus SL_BUFFER_PCT (0.3%)
-                If no swing high found: SL = entry + 2.0 × ATR
-            Round-number warning: if SL is within ±0.1% of a round number
-            (multiple of 100, 1000, or 10000), set sl_near_round_number=True
+            Structural SL behind nearest swing LOW (or HIGH) capped between 0.7% and 2.5%.
+            If required structural stop exceeds 2.5%, the trade is skipped.
 
-        Take Profit levels:
-            TP1: Nearest LVN (Low Volume Node) in the direction of trade.
-                 WHY LVN: Price moves quickly through low-volume zones;
-                 a TP at the near edge of an LVN has high fill probability.
-                 Fallback: entry ± 1.5 × ATR
-            TP2: Next significant key level (from key_levels list) or
-                 nearest bullish/bearish FVG midpoint beyond TP1.
-                 Fallback: entry ± 2.5 × ATR
-            TP3: Structural target — next swing high/low in direction.
-                 Fallback: entry ± 4.0 × ATR
-            Minimum R:R enforced at TP1: (TP1 - entry) / (entry - SL) >= 1.5
+        Take Profit placement:
+            Dynamic target scaled to market regime, capped at ATR volatility expansion limits:
+                - BULL: 2.0x ATR, capped at 6.0% (A+ Setup up to 8.0%)
+                - SIDEWAYS: 1.3x ATR, capped at 3.5% (A+ Setup up to 4.0%)
+                - CAPITULATION: 1.5x ATR, capped at 4.0%
+                - BEAR: 1.2x ATR, capped at 3.0%
+            Target is reduced by 30% if the asset is overextended (RSI > 75 or Z-Score > 2.5).
+            Friction points: locks in profit at the absolute closest structural level (min of resistance, LVN, FVG).
 
-        Args:
-            entry: Planned entry price.
-            direction: 'LONG' or 'SHORT'.
-            atr: ATR value for the current timeframe (used for fallbacks).
-            swing_points: List of SwingPoint models (both HIGHs and LOWs).
-            imbalance_zones: List of ImbalanceZone models.
-            volume_nodes: List of VolumeNode models.
-            key_levels: Optional additional key price levels (e.g. from HTF).
-
-        Returns:
-            SLTPResult with SL, TP1/TP2/TP3, allocation, R:R, and metadata.
-
-        Raises:
-            ValueError: If entry <= 0, ATR <= 0, or direction is invalid.
+        Risk-Reward Gate:
+            Enforces a strict minimum R:R of 1.5x stop loss distance. If the realistic structure
+            cannot support this, the setup is rejected (returns None).
         """
         if entry <= 0:
             raise ValueError(f"Entry price must be positive, got {entry}")
@@ -590,91 +576,135 @@ class RiskEngine:
         is_long = True
         key_levels = key_levels or []
 
-        # ── Stop Loss ──────────────────────────────────────────────────────
+        # 1. Stop Loss - Structural Placement
         stop_loss = self._calculate_stop_loss(entry, is_long, atr, swing_points)
-
-        # Calculate Stop Loss distance
         sl_distance = abs(entry - stop_loss)
         
-        # MINIMUM SL CHECK (Protection against wicks and noise)
-        # 1. At least 1.5% absolute minimum for crypto volatility
-        min_sl_pct_dist = entry * 0.015
-        # 2. At least 1.5x ATR minimum for current market noise
-        min_sl_atr_dist = atr * 1.5
-        
-        min_required_distance = max(min_sl_pct_dist, min_sl_atr_dist)
-        
-        if sl_distance < min_required_distance:
-            self._log.debug("sl_too_tight_widening", original=sl_distance, new=min_required_distance)
-            sl_distance = min_required_distance
-            stop_loss = entry - sl_distance if is_long else entry + sl_distance
-            
-        # ─── REMOVED HARD CAP: Risk is now controlled by Position Sizing (Lot Size) ───
-        # max_sl_distance = entry * 0.02
-        # if sl_distance > max_sl_distance: ...
+        # SL minimum: 0.7% (structural but safe against minor noise)
+        min_sl_dist = entry * 0.007
+        if sl_distance < min_sl_dist:
+            sl_distance = min_sl_dist
+            stop_loss = entry - sl_distance
+
+        # SL maximum check: 2.5% cap
+        # If the required structural stop loss exceeds 2.5%, we skip the trade to maintain good P&L math
+        max_sl_allowed = entry * 0.025
+        if sl_distance > max_sl_allowed:
+            self._log.info("sl_too_wide_skipping", entry=round(entry, 4), sl_pct=round(sl_distance/entry*100, 2))
+            return None
 
         # Round-number proximity check
         sl_near_round_number = self._is_near_round_number(stop_loss)
+        sl_buffer_actual = sl_distance / entry * 100
 
-        # Buffer percentage
-        sl_buffer_actual = abs(stop_loss - entry) / entry * 100
+        # 2. Dynamic Take Profit Calculations (User's Multi-Regime Quant Blueprint)
+        risk_pct = sl_distance / entry * 100
+        atr_pct = atr / entry * 100
 
-        # ── Take Profits (Dynamic based on LVN/FVG/ATR) ──
-        min_tp1_distance = sl_distance * 1.5
-        min_tp1_price = entry + min_tp1_distance if is_long else entry - min_tp1_distance
-
-        tp1 = 0.0
-        
-        # 1. Look for nearest LVN in the direction of trade
-        valid_lvns = [vn.price for vn in volume_nodes if vn.type == "LVN"]
-        if is_long:
-            target_lvns = sorted([p for p in valid_lvns if p >= min_tp1_price])
-            tp1 = target_lvns[0] if target_lvns else 0.0
+        # Regime-based limits & volatility-based ATR targets
+        if regime == "BULL":
+            atr_target = atr_pct * 2.0
+            max_tp = 6.0
+        elif regime == "SIDEWAYS":
+            atr_target = atr_pct * 1.3
+            max_tp = 3.5
+        elif regime == "CAPITULATION":
+            atr_target = atr_pct * 1.5
+            max_tp = 4.0
         else:
-            target_lvns = sorted([p for p in valid_lvns if p <= min_tp1_price], reverse=True)
-            tp1 = target_lvns[0] if target_lvns else 0.0
+            # Bear or default
+            atr_target = atr_pct * 1.2
+            max_tp = 3.0
 
-        # 2. If no LVN, look for nearest FVG (Imbalance Zone)
-        if tp1 == 0.0:
-            if is_long:
-                target_fvgs = sorted([fvg.low for fvg in imbalance_zones if fvg.type == "BEARISH_FVG" and fvg.low >= min_tp1_price])
-                tp1 = target_fvgs[0] if target_fvgs else 0.0
-            else:
-                target_fvgs = sorted([fvg.high for fvg in imbalance_zones if fvg.type == "BULLISH_FVG" and fvg.high <= min_tp1_price], reverse=True)
-                tp1 = target_fvgs[0] if target_fvgs else 0.0
+        # A+ Setup Bonus: expansion of maximum TP limit
+        if v7_score >= 85 and mtf_score >= 6.0 and regime == "BULL":
+            max_tp = 8.0
+        elif v7_score >= 85 and regime == "SIDEWAYS":
+            max_tp = 4.0
 
-        # 3. Fallback to volatility-based TP (ATR)
-        if tp1 == 0.0:
-            if is_long:
-                tp1 = entry + max(2.0 * atr, sl_distance * 2.0)
-            else:
-                tp1 = entry - max(2.0 * atr, sl_distance * 2.0)
+        # Overextension check (If Z-Score or RSI is hot, compress the target to prevent late-reversal traps)
+        if z_score > 2.5 or rsi > 75:
+            max_tp *= 0.7
 
-        # ─── VOLATILITY & R:R CAP (2-HOUR WINDOW REALISTIC TARGETS) ───
-        # For a standard 2-hour trade limit, the maximum realistic price expansion
-        # is capped based on 2-hour volatility (approx 2.5x 1h_ATR) and a professional
-        # maximum R:R of 3.0x stop loss risk.
-        max_tp1_dist = max(sl_distance * 1.5, min(2.5 * atr, sl_distance * 3.0))
-        if is_long:
-            max_tp1_price = entry + max_tp1_dist
-            if tp1 > max_tp1_price:
-                self._log.info("tp1_too_wide_capping", original_tp1=round(tp1, 4), capped_tp1=round(max_tp1_price, 4), reason="2h volatility/RR cap")
-                tp1 = max_tp1_price
-        else:
-            max_tp1_price = entry - max_tp1_dist
-            if tp1 < max_tp1_price:
-                self._log.info("tp1_too_wide_capping", original_tp1=round(tp1, 4), capped_tp1=round(max_tp1_price, 4), reason="2h volatility/RR cap")
-                tp1 = max_tp1_price
-                
-        tp1_rr = abs(tp1 - entry) / sl_distance if sl_distance > 0 else 2.0
+        # 3. Locate closest structural target/friction point (min of nearest resistance, LVN, and FVG)
+        # Safely parse swing points list or dict
+        swing_list = []
+        if isinstance(swing_points, list):
+            swing_list = swing_points
+        elif isinstance(swing_points, dict):
+            swing_list = swing_points.get("highs", []) + swing_points.get("lows", [])
+
+        swing_highs = []
+        for sp in swing_list:
+            if hasattr(sp, 'type') and hasattr(sp, 'price'):
+                if sp.type == "HIGH" and sp.price > entry:
+                    swing_highs.append(sp.price)
+            elif isinstance(sp, dict) and sp.get("type") == "HIGH" and sp.get("price", 0) > entry:
+                swing_highs.append(sp.get("price"))
+        nearest_resistance = min(swing_highs) if swing_highs else None
+        nearest_resistance_pct = (nearest_resistance - entry) / entry * 100 if nearest_resistance else None
+
+        # LVN (Low Volume Node)
+        lvn_list = []
+        if isinstance(volume_nodes, list):
+            lvn_list = volume_nodes
+        elif isinstance(volume_nodes, dict):
+            lvn_list = volume_nodes.get("lvn", []) + volume_nodes.get("lvns", [])
+            
+        valid_lvns = []
+        for vn in lvn_list:
+            if hasattr(vn, 'type') and hasattr(vn, 'price'):
+                if vn.type == "LVN" and vn.price > entry:
+                    valid_lvns.append(vn.price)
+            elif isinstance(vn, dict) and vn.get("type") == "LVN" and vn.get("price", 0) > entry:
+                valid_lvns.append(vn.get("price"))
+        nearest_lvn = min(valid_lvns) if valid_lvns else None
+        nearest_lvn_pct = (nearest_lvn - entry) / entry * 100 if nearest_lvn else None
+
+        # FVG (Bearish FVG low)
+        fvg_list = []
+        if isinstance(imbalance_zones, list):
+            fvg_list = imbalance_zones
+        elif isinstance(imbalance_zones, dict):
+            fvg_list = imbalance_zones.get("zones", [])
+            
+        valid_fvgs = []
+        for fvg in fvg_list:
+            if hasattr(fvg, 'type') and hasattr(fvg, 'low'):
+                if fvg.type == "BEARISH_FVG" and fvg.low > entry:
+                    valid_fvgs.append(fvg.low)
+            elif isinstance(fvg, dict) and fvg.get("type") == "BEARISH_FVG" and fvg.get("low", 0) > entry:
+                valid_fvgs.append(fvg.get("low"))
+        nearest_fvg = min(valid_fvgs) if valid_fvgs else None
+        nearest_fvg_pct = (nearest_fvg - entry) / entry * 100 if nearest_fvg else None
+
+        # Gather all valid positive structural targets
+        valid_targets = [t for t in [nearest_resistance_pct, nearest_lvn_pct, nearest_fvg_pct] if t is not None and t > 0]
+        structure_target = min(valid_targets) if valid_targets else atr_target
+
+        # Final calculated TP target in percent
+        raw_tp_pct = min(atr_target, structure_target, max_tp)
+
+        # Enforce Minimum Risk-to-Reward Ratio (Min R:R = 1.5)
+        min_tp_pct = risk_pct * 1.5
+        if raw_tp_pct < min_tp_pct:
+            self._log.info("rr_ratio_insufficient_skipping", raw_tp=round(raw_tp_pct, 2), required_tp=round(min_tp_pct, 2))
+            return None
+
+        # Map TP percent back to absolute price
+        tp1 = entry * (1 + raw_tp_pct / 100)
+        tp1_rr = raw_tp_pct / risk_pct
 
         self._log.info(
-            "sl_tp_calculated",
+            "sl_tp_dynamic_calculated",
             entry=round(entry, 4),
             direction=direction,
+            regime=regime,
             stop_loss=round(stop_loss, 4),
             tp1=round(tp1, 4),
             rr_tp1=round(tp1_rr, 2),
+            raw_tp_pct=round(raw_tp_pct, 2),
+            risk_pct=round(risk_pct, 2),
             sl_near_round=sl_near_round_number,
         )
 
@@ -934,7 +964,7 @@ class RiskEngine:
         entry: float,
         is_long: bool,
         atr: float,
-        swing_points: list[SwingPoint],
+        swing_points: list[SwingPoint] | dict,
     ) -> float:
         """
         Find the nearest structural stop loss level.
@@ -942,23 +972,24 @@ class RiskEngine:
         For LONG trades: nearest swing LOW below entry, minus SL_BUFFER_PCT.
         For SHORT trades: nearest swing HIGH above entry, plus SL_BUFFER_PCT.
         Fallback: ATR-based SL (2.0 × ATR).
-
-        Args:
-            entry: Entry price.
-            is_long: True for long trade, False for short.
-            atr: Current ATR value.
-            swing_points: List of SwingPoint models.
-
-        Returns:
-            float: Stop loss price.
         """
         buffer_mult = 1.0 - SL_BUFFER_PCT
 
+        swing_list = []
+        if isinstance(swing_points, list):
+            swing_list = swing_points
+        elif isinstance(swing_points, dict):
+            swing_list = swing_points.get("lows", []) + swing_points.get("highs", [])
+
         # Candidate: swing LOWS below entry
-        candidates = [
-            sp.price for sp in swing_points
-            if sp.type == "LOW" and sp.price < entry
-        ]
+        candidates = []
+        for sp in swing_list:
+            if hasattr(sp, 'type') and hasattr(sp, 'price'):
+                if sp.type == "LOW" and sp.price < entry:
+                    candidates.append(sp.price)
+            elif isinstance(sp, dict) and sp.get("type") == "LOW" and sp.get("price", 0) < entry:
+                candidates.append(sp.get("price"))
+
         if candidates:
             nearest = max(candidates)  # highest low below entry
             return nearest * buffer_mult

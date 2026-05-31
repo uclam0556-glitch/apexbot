@@ -942,8 +942,17 @@ class ApexSystem:
                         swing_points=all_swing_points,
                         imbalance_zones=smc_analysis.imbalance_zones,
                         volume_nodes=smc_analysis.volume_nodes,
-                        key_levels=[]
+                        key_levels=[],
+                        regime=regime_val,
+                        v7_score=v7_score,
+                        mtf_score=mtf_val,
+                        z_score=z_score,
+                        rsi=rsi_now
                     )
+
+                    if sltp is None:
+                        logger.info(f"{symbol} - Setup rejected by Risk Engine: did not meet min R:R ratio (> 1.5) or structural SL exceeded 2.5%.")
+                        continue
 
                     # ATR Stop Cap
                     sl_pct_check = abs(current_price - sltp.stop_loss) / current_price
