@@ -112,6 +112,28 @@ async def init_lite_db():
             )
         ''')
 
+        # V10 pullback watchlist table
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS pullback_watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                direction TEXT,
+                score REAL,
+                original_entry REAL,
+                swing_low REAL,
+                limit_entries TEXT,
+                stop_loss REAL,
+                take_profit_1 REAL,
+                take_profit_2 REAL,
+                take_profit_3 REAL,
+                position_usd REAL,
+                ttl_expiry TIMESTAMP,
+                regime TEXT,
+                status TEXT,
+                created_at TIMESTAMP
+            )
+        ''')
+
         # V7 Institutional ML Features
         new_columns = [
             ("max_profit_pct", "REAL"),
@@ -534,4 +556,101 @@ async def update_filter_audit_result(audit_id: int, p_1h: float, p_4h: float, p_
             SET checked = 1, outcome_1h_pct = ?, outcome_4h_pct = ?, outcome_24h_pct = ?
             WHERE id = ?
         ''', (p_1h, p_4h, p_24h, audit_id))
+        await db.commit()
+
+# ─── V10 PULLBACK WATCHLIST ENGINE ───────────────────────────────────────────
+
+async def save_pullback_item(
+    symbol: str,
+    direction: str,
+    score: float,
+    original_entry: float,
+    swing_low: float,
+    limit_entries: list[dict],
+    stop_loss: float,
+    take_profit_1: float,
+    take_profit_2: float,
+    take_profit_3: float,
+    position_usd: float,
+    ttl_minutes: int,
+    regime: str,
+    status: str = 'WAITING'
+):
+    """Saves a pullback watchlist setup to track limit entries with specified status."""
+    from datetime import timedelta
+    expiry = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+    limit_json = json.dumps(limit_entries)
+    
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        await db.execute('''
+            INSERT INTO pullback_watchlist (
+                symbol, direction, score, original_entry, swing_low,
+                limit_entries, stop_loss, take_profit_1, take_profit_2, take_profit_3,
+                position_usd, ttl_expiry, regime, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            symbol, direction, score, original_entry, swing_low,
+            limit_json, stop_loss, take_profit_1, take_profit_2, take_profit_3,
+            position_usd, expiry, regime, status, datetime.utcnow()
+        ))
+        await db.commit()
+
+async def get_active_pullback_items() -> list[dict]:
+    """Fetches all pullback watchlist setups currently waiting and not expired."""
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('''
+            SELECT * FROM pullback_watchlist
+            WHERE status = 'WAITING' AND datetime(ttl_expiry) > datetime('now')
+        ''') as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def get_pullback_items_by_status(status: str) -> list[dict]:
+    """Fetches all pullback watchlist setups with a specific status and not expired."""
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('''
+            SELECT * FROM pullback_watchlist
+            WHERE status = ? AND datetime(ttl_expiry) > datetime('now')
+        ''', (status,)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def update_pullback_status(item_id: int, new_status: str):
+    """Updates the status of a watchlist setup (e.g. FILLED, EXPIRED, CANCELLED)."""
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        await db.execute('''
+            UPDATE pullback_watchlist
+            SET status = ?
+            WHERE id = ?
+        ''', (new_status, item_id))
+        await db.commit()
+
+async def update_pullback_limit_entries(
+    item_id: int,
+    limit_entries: list[dict],
+    take_profit_1: float,
+    take_profit_2: float,
+    take_profit_3: float,
+    new_status: str
+):
+    """Promotes a pullback watchlist item by adding limit entries and setting new status."""
+    limit_json = json.dumps(limit_entries)
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        await db.execute('''
+            UPDATE pullback_watchlist
+            SET limit_entries = ?, take_profit_1 = ?, take_profit_2 = ?, take_profit_3 = ?, status = ?
+            WHERE id = ?
+        ''', (limit_json, take_profit_1, take_profit_2, take_profit_3, new_status, item_id))
+        await db.commit()
+
+async def expire_old_pullback_items():
+    """Finds all WAITING and WAITING_STRUCTURE pullback items that have passed their TTL and marks them EXPIRED."""
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        await db.execute('''
+            UPDATE pullback_watchlist
+            SET status = 'EXPIRED'
+            WHERE status IN ('WAITING', 'WAITING_STRUCTURE') AND datetime(ttl_expiry) <= datetime('now')
+        ''')
         await db.commit()

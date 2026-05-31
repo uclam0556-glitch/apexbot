@@ -544,6 +544,11 @@ class RiskEngine:
         mtf_score: float = 0.0,
         z_score: float = 0.0,
         rsi: float = 50.0,
+        market_breadth: float = 50.0,
+        symbol: str = "UNKNOWN",
+        ema20: Optional[float] = None,
+        ema50: Optional[float] = None,
+        pullback_slots_available: bool = True
     ) -> Optional[SLTPResult]:
         """
         Calculate Stop Loss and Take Profit levels dynamically anchored to market structure,
@@ -705,6 +710,214 @@ class RiskEngine:
 
         # Let's perform SL Too Wide check here!
         if sl_distance > max_sl_allowed:
+            raw_tp_est = min(atr_target_pct, max_tp_pct)
+            
+            # If the score is high and we are in BULL/SIDEWAYS, we evaluate for Pullback Watchlist
+            if v7_score >= 80.0 and regime in ["BULL", "SIDEWAYS"]:
+                # Check Market Breadth Gates first!
+                is_major = symbol.split('/')[0] in ["BTC", "ETH", "SOL", "BNB"]
+                is_aplus = v7_score >= 90.0
+                
+                if market_breadth < 15.0:
+                    self._log.info(
+                        "pullback_watchlist_blocked",
+                        symbol=symbol,
+                        market_breadth=round(market_breadth, 2),
+                        reason="Market Breadth < 15% (Strict Risk-Off). No new pullback limit orders allowed."
+                    )
+                elif market_breadth < 20.0 and not (is_major or is_aplus):
+                    self._log.info(
+                        "pullback_watchlist_blocked",
+                        symbol=symbol,
+                        market_breadth=round(market_breadth, 2),
+                        score=v7_score,
+                        reason="Market Breadth < 20% and not a Major asset or A+ setup (Score < 90). Watchlist skipped."
+                    )
+                else:
+                    # Candidates list for support zones strictly below entry and above stop_loss / swing_low
+                    limit_candidates = []
+                    
+                    # 1. EMA20 Support
+                    if ema20 and swing_low < ema20 < entry:
+                        limit_candidates.append(ema20)
+                    # 2. EMA50 Support
+                    if ema50 and swing_low < ema50 < entry:
+                        limit_candidates.append(ema50)
+                        
+                    # 3. Bullish Swing Lows (Order Block supports)
+                    for sp in swing_list:
+                        price = getattr(sp, 'price', None) or (isinstance(sp, dict) and sp.get("price"))
+                        sp_type = getattr(sp, 'type', None) or (isinstance(sp, dict) and sp.get("type"))
+                        if sp_type == "LOW" and price and swing_low < price < entry:
+                            limit_candidates.append(price)
+                            
+                    # 4. Bullish FVG Equilibrium (Midpoints)
+                    fvg_list = []
+                    if isinstance(imbalance_zones, list):
+                        fvg_list = imbalance_zones
+                    elif isinstance(imbalance_zones, dict):
+                        fvg_list = imbalance_zones.get("zones", [])
+                        
+                    for fvg in fvg_list:
+                        fvg_type = getattr(fvg, 'type', None) or (isinstance(fvg, dict) and fvg.get("type"))
+                        fvg_low = getattr(fvg, 'low', None) or (isinstance(fvg, dict) and fvg.get("low"))
+                        fvg_high = getattr(fvg, 'high', None) or (isinstance(fvg, dict) and fvg.get("high"))
+                        if fvg_type == "BULLISH_FVG" and fvg_low and fvg_high:
+                            fvg_mid = (fvg_low + fvg_high) / 2.0
+                            if swing_low < fvg_mid < entry:
+                                limit_candidates.append(fvg_mid)
+                                
+                    # 5. HVN/POC Supports
+                    hvn_list = []
+                    if isinstance(volume_nodes, list):
+                        hvn_list = volume_nodes
+                    elif isinstance(volume_nodes, dict):
+                        hvn_list = volume_nodes.get("lvn", []) + volume_nodes.get("lvns", []) + volume_nodes.get("hvn", []) + volume_nodes.get("hvns", []) + volume_nodes.get("poc", [])
+                        
+                    for vn in hvn_list:
+                        vn_type = getattr(vn, 'type', None) or (isinstance(vn, dict) and vn.get("type"))
+                        vn_price = getattr(vn, 'price', None) or (isinstance(vn, dict) and vn.get("price"))
+                        if vn_type in ["HVN", "POC"] and vn_price and swing_low < vn_price < entry:
+                            limit_candidates.append(vn_price)
+                            
+                    # Filter unique candidates strictly inside the valid window
+                    valid_candidates = list(set([p for p in limit_candidates if swing_low < p < entry]))
+                    
+                    # Rule 2: Safe candidates (Bracket 2 safety - distance to SL must be >= 0.7% post-entry)
+                    safe_candidates = []
+                    for p in valid_candidates:
+                        sl_dist_pct = (p - stop_loss) / p * 100
+                        if 0.7 <= sl_dist_pct <= 2.5:
+                            safe_candidates.append(p)
+                            
+                    # Rule 1: No fallback if empty candidates OR limit order slots full. We save as WAITING_STRUCTURE instead!
+                    if not safe_candidates or not pullback_slots_available:
+                        reason = "No valid structural support candidates found below entry." if not safe_candidates else "Active portfolio pullback limit order slots are full."
+                        self._log.info(
+                            "pullback_watchlist_waiting_structure",
+                            symbol=symbol,
+                            reason=f"{reason} Registering setup as WAITING_STRUCTURE to monitor for zones/slots."
+                        )
+                        
+                        # Save to database as WAITING_STRUCTURE with empty limit entries
+                        ttl_minutes = 90 if regime == "BULL" else 45
+                        import asyncio
+                        try:
+                            from shared.lite_db import save_pullback_item
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                loop.create_task(save_pullback_item(
+                                    symbol=symbol,
+                                    direction=direction,
+                                    score=v7_score,
+                                    original_entry=entry,
+                                    swing_low=swing_low,
+                                    limit_entries=[],
+                                    stop_loss=stop_loss,
+                                    take_profit_1=0.0,
+                                    take_profit_2=0.0,
+                                    take_profit_3=0.0,
+                                    position_usd=30.0,
+                                    ttl_minutes=ttl_minutes,
+                                    regime=regime,
+                                    status='WAITING_STRUCTURE'
+                                ))
+                        except Exception as db_ex:
+                            self._log.error("pullback_structure_save_failed", error=str(db_ex))
+                            
+                        # Telemetry audit log for WAITING_STRUCTURE
+                        self._log.info(
+                            "pullback_watchlist_added",
+                            symbol=symbol,
+                            original_score=v7_score,
+                            original_price=round(entry, 8),
+                            limit_entry_1=0.0,
+                            limit_entry_2=0.0,
+                            swing_low=round(swing_low, 8),
+                            stop_loss=round(stop_loss, 8),
+                            expected_sl_pct=0.0,
+                            expected_tp_pct=0.0,
+                            expected_rr=0.0,
+                            ttl_minutes=ttl_minutes,
+                            cancel_reason="N/A",
+                            fill_status="WAITING_STRUCTURE",
+                            mfe_after_fill=0.0,
+                            mae_after_fill=0.0,
+                            final_result="WAITING_STRUCTURE"
+                        )
+                    else:
+                        # Bracket 1 is the shallower support (closest to entry, highest price)
+                        best_limit = max(safe_candidates)
+                        # Bracket 2 is the deeper support (closest to SL, lowest price)
+                        deeper_limit = min(safe_candidates)
+                        
+                        # Bracket grid creation
+                        if abs(best_limit - deeper_limit) / best_limit * 100 < 0.1:
+                            limit_entries = [
+                                {"price": round(best_limit, 8), "size_pct": 100.0, "label": "Structural Support Grid"}
+                            ]
+                        else:
+                            limit_entries = [
+                                {"price": round(best_limit, 8), "size_pct": 40.0, "label": "Shallow Support Grid"},
+                                {"price": round(deeper_limit, 8), "size_pct": 60.0, "label": "Deep Support Grid"}
+                            ]
+                            
+                        ttl_minutes = 90 if regime == "BULL" else 45
+                        
+                        # Estimate TP/SL for telemetry from best_limit
+                        new_sl_dist_pct = (best_limit - stop_loss) / best_limit * 100
+                        new_tp_pct = max(new_sl_dist_pct * 1.5, raw_tp_est)
+                        
+                        tp1_pb = best_limit * (1 + new_tp_pct / 100)
+                        tp2_pb = best_limit * (1 + new_tp_pct * 1.2 / 100)
+                        tp3_pb = best_limit * (1 + new_tp_pct * 1.5 / 100)
+                        
+                        # Phase 1 / Phase 2 Paper Watchlist Integration
+                        import asyncio
+                        try:
+                            from shared.lite_db import save_pullback_item
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                loop.create_task(save_pullback_item(
+                                    symbol=symbol,
+                                    direction=direction,
+                                    score=v7_score,
+                                    original_entry=entry,
+                                    swing_low=swing_low,
+                                    limit_entries=limit_entries,
+                                    stop_loss=stop_loss,
+                                    take_profit_1=tp1_pb,
+                                    take_profit_2=tp2_pb,
+                                    take_profit_3=tp3_pb,
+                                    position_usd=30.0,
+                                    ttl_minutes=ttl_minutes,
+                                    regime=regime,
+                                    status='WAITING'
+                                ))
+                        except Exception as db_ex:
+                            self._log.error("pullback_save_failed", error=str(db_ex))
+                            
+                        # Institutional Symmetrical Telemetry Log
+                        self._log.info(
+                            "pullback_watchlist_added",
+                            symbol=symbol,
+                            original_score=v7_score,
+                            original_price=round(entry, 8),
+                            limit_entry_1=round(best_limit, 8),
+                            limit_entry_2=round(deeper_limit, 8) if len(limit_entries) > 1 else 0.0,
+                            swing_low=round(swing_low, 8),
+                            stop_loss=round(stop_loss, 8),
+                            expected_sl_pct=round(new_sl_dist_pct, 2),
+                            expected_tp_pct=round(new_tp_pct, 2),
+                            expected_rr=round(new_tp_pct / new_sl_dist_pct, 2),
+                            ttl_minutes=ttl_minutes,
+                            cancel_reason="N/A",
+                            fill_status="WAITING",
+                            mfe_after_fill=0.0,
+                            mae_after_fill=0.0,
+                            final_result="WAITING"
+                        )
+
             self._log.info(
                 "sl_tp_rejected",
                 entry=round(entry, 8),

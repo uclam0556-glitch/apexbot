@@ -17,6 +17,33 @@ def format_price(price: float) -> str:
     if price >= 0.00001: return f"{price:.8f}"
     return f"{price:.10f}"
 
+# Programmatic coin classification sectors for APEX pullback limits
+SECTORS = {
+    # AI & Narrative
+    "RENDER/USDT": "AI", "FET/USDT": "AI", "WLD/USDT": "AI", "TAO/USDT": "AI", "ARKM/USDT": "AI",
+    # Memes
+    "DOGE/USDT": "MEME", "PEPE/USDT": "MEME", "WIF/USDT": "MEME", "BONK/USDT": "MEME", "SHIB/USDT": "MEME", "FLOKI/USDT": "MEME",
+    # Majors
+    "BTC/USDT": "MAJORS", "ETH/USDT": "MAJORS", "SOL/USDT": "MAJORS", "BNB/USDT": "MAJORS", "XRP/USDT": "MAJORS",
+    "ADA/USDT": "MAJORS", "LINK/USDT": "MAJORS", "LTC/USDT": "MAJORS", "BCH/USDT": "MAJORS", "ETC/USDT": "MAJORS",
+    "XLM/USDT": "MAJORS", "DOT/USDT": "MAJORS",
+    # High Momentum L1/L2
+    "AVAX/USDT": "L1_L2", "TON/USDT": "L1_L2", "TRX/USDT": "L1_L2", "SUI/USDT": "L1_L2", "APT/USDT": "L1_L2",
+    "NEAR/USDT": "L1_L2", "SEI/USDT": "L1_L2", "INJ/USDT": "L1_L2", "ARB/USDT": "L1_L2", "OP/USDT": "L1_L2",
+    "STRK/USDT": "L1_L2", "POL/USDT": "L1_L2", "TIA/USDT": "L1_L2", "MNT/USDT": "L1_L2", "HBAR/USDT": "L1_L2",
+    "VET/USDT": "L1_L2", "ALGO/USDT": "L1_L2",
+    # DeFi & RWA
+    "ONDO/USDT": "DEFI_RWA", "PYTH/USDT": "DEFI_RWA", "JUP/USDT": "DEFI_RWA", "PENDLE/USDT": "DEFI_RWA", "RUNE/USDT": "DEFI_RWA",
+    "AAVE/USDT": "DEFI_RWA", "UNI/USDT": "DEFI_RWA", "LDO/USDT": "DEFI_RWA", "GMX/USDT": "DEFI_RWA", "GRT/USDT": "DEFI_RWA",
+    # Infrastructure & Classics
+    "FIL/USDT": "INFRA", "STX/USDT": "INFRA", "ATOM/USDT": "INFRA", "ICP/USDT": "INFRA", "KAS/USDT": "INFRA",
+    # Gaming & Metaverse
+    "GALA/USDT": "GAMING", "IMX/USDT": "GAMING", "SAND/USDT": "GAMING", "MANA/USDT": "GAMING", "BLUR/USDT": "GAMING"
+}
+
+def get_sector(symbol: str) -> str:
+    return SECTORS.get(symbol, "OTHER")
+
 # Configure structlogging
 import asyncio
 import logging
@@ -47,7 +74,7 @@ from services.engine.risk_engine import RiskEngine
 from services.macro.correlation import CrossAssetCorrelationEngine
 from services.macro.rotation_engine import CapitalRotationEngine
 from services.executor.order_executor import OrderExecutor
-from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown, save_filter_block, update_trade_sl
+from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown, save_filter_block, update_trade_sl, get_pullback_items_by_status, update_pullback_limit_entries
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
@@ -409,13 +436,18 @@ class ApexSystem:
             open_trades = await get_open_trades()
             open_symbols = [t['symbol'] for t in open_trades]
             
+            # Fetch active limit watchlist items for correlation checks (APEX v10.3)
+            active_pb = await get_pullback_items_by_status('WAITING')
+            active_pb_symbols = list(set([item['symbol'] for item in active_pb]))
+            open_and_pending_symbols = list(set(open_symbols + active_pb_symbols))
+            
             # ─── PRE-FETCH CORRELATION DATA ──────────────────────────────────────────
             prices_30d = {}
-            if open_symbols:
-                logger.info(f"Fetching 30d history for {len(open_symbols)} open positions for correlation matrix...")
-                open_tasks = [self.fetch_market_data(sym, '1d', 35) for sym in open_symbols]
+            if open_and_pending_symbols:
+                logger.info(f"Fetching 30d history for {len(open_and_pending_symbols)} open/pending positions for correlation matrix...")
+                open_tasks = [self.fetch_market_data(sym, '1d', 35) for sym in open_and_pending_symbols]
                 open_results = await asyncio.gather(*open_tasks, return_exceptions=True)
-                for sym, df_1d_open in zip(open_symbols, open_results):
+                for sym, df_1d_open in zip(open_and_pending_symbols, open_results):
                     if isinstance(df_1d_open, pd.DataFrame) and not df_1d_open.empty:
                         prices_30d[sym] = df_1d_open['close']
 
@@ -489,11 +521,11 @@ class ApexSystem:
                         
                     # ─── ADVANCED INSTITUTIONAL FILTER: CORRELATION RISK ──────────────────
                     df_1d_sym = tf_data.get('1d', pd.DataFrame())
-                    if not df_1d_sym.empty and open_symbols:
+                    if not df_1d_sym.empty and open_and_pending_symbols:
                         prices_30d[symbol] = df_1d_sym['close']
-                        corr_result = self.risk_engine.check_correlation(symbol, open_symbols, prices_30d)
+                        corr_result = self.risk_engine.check_correlation(symbol, open_and_pending_symbols, prices_30d)
                         if not corr_result.correlation_ok:
-                            logger.info(f"{symbol} - [BLOCKED] Correlation Risk. Highly correlated ({corr_result.max_correlation:.2f}) with open position {corr_result.correlated_with}. Skipping.")
+                            logger.info(f"{symbol} - [BLOCKED] Correlation Risk. Highly correlated ({corr_result.max_correlation:.2f}) with open/pending position {corr_result.correlated_with}. Skipping.")
                             await save_filter_block(symbol, "UNKNOWN", "Correlation Risk", 0.0)
                             continue
                     
@@ -938,6 +970,17 @@ class ApexSystem:
                     except Exception as adv_err:
                         logger.debug(f"{symbol} - Adversarial check skipped: {adv_err}")
 
+                    # Check active portfolio/sector/meme slot availability (APEX v10.3)
+                    latest_active_pb = await get_pullback_items_by_status('WAITING')
+                    sec = get_sector(symbol)
+                    active_total = len(latest_active_pb)
+                    active_sector = sum(1 for item in latest_active_pb if get_sector(item['symbol']) == sec)
+                    active_meme = sum(1 for item in latest_active_pb if get_sector(item['symbol']) == "MEME")
+                    slots_ok = (active_total < 5) and (active_sector < 2) and (not (sec == "MEME" and active_meme >= 1))
+                    
+                    ema20_1h = df_1h['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                    ema50_1h = df_1h['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+
                     # ─── RISK ENGINE — SL/TP ──────────────────────────────────────────────────
                     sltp = self.risk_engine.calculate_sl_tp(
                         entry=current_price,
@@ -951,7 +994,12 @@ class ApexSystem:
                         v7_score=v7_score,
                         mtf_score=mtf_val,
                         z_score=z_score,
-                        rsi=rsi_now
+                        rsi=rsi_now,
+                        market_breadth=breadth_pct,
+                        symbol=symbol,
+                        ema20=float(ema20_1h),
+                        ema50=float(ema50_1h),
+                        pullback_slots_available=slots_ok
                     )
 
                     if sltp is None:
@@ -1092,7 +1140,6 @@ class ApexSystem:
                             logger.info(f"{dir_emoji} 🚀 SIGNAL SENT: {symbol} {trade_direction} [{strat_label}] | Score={ultra_score:.1f}/100 | Entry=${format_price(current_price)}")
                     except Exception as send_err:
                         logger.error(f"Failed to send signal: {send_err}")
-
                     # ─── SAVE TO DB ────────────────────────────────────────────────────────────
                     features_dict = {
                         "regime":               regime_val,
@@ -1167,6 +1214,384 @@ class ApexSystem:
                 
             await asyncio.sleep(1800)  # Check every 30 minutes
 
+    async def pre_route_gate_check(self, symbol: str, direction: str) -> bool:
+        """
+        Runs the pre-execution checks for the pullback limit order execution.
+        Returns True if passed (safe to buy), False if cancelled (danger).
+        """
+        try:
+            # 1. Fetch 1h dataframe for indicators/context
+            df_1h = await self.fetch_market_data(symbol, '1h', limit=50)
+            if df_1h.empty or len(df_1h) < 20:
+                logger.warning(f"[PRE-ROUTE GATE] {symbol} - Empty/low historical data. Skipping execution.")
+                return False
+
+            # Check MTF Trend Score
+            from services.indicators.market_data import get_market_context
+            from services.intelligence.cvd_engine import calculate_cvd
+            
+            price_change = (df_1h['close'].iloc[-1] - df_1h['close'].iloc[-5]) / df_1h['close'].iloc[-5] * 100
+            market_ctx = await get_market_context(symbol, price_change)
+            
+            # Check BTC returns
+            btc_df = await self.fetch_market_data("BTC/USDT", "1m", limit=6)
+            if not btc_df.empty and len(btc_df) >= 6:
+                btc_change_5m = (btc_df['close'].iloc[-1] - btc_df['close'].iloc[-6]) / btc_df['close'].iloc[-6] * 100
+                if btc_change_5m < -1.5:
+                    logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] BTC is dumping heavily ({btc_change_5m:+.2f}% in last 5m).")
+                    return False
+
+            # Check CVD Sentiment
+            df_5m = await self.fetch_market_data(symbol, '5m', limit=30)
+            if not df_5m.empty:
+                cvd_res = calculate_cvd(df_5m, lookback=20)
+                cvd_score = cvd_res.get("score", 0)
+                cvd_signal = cvd_res.get("cvd_signal", "NEUTRAL")
+                if cvd_signal == "BEARISH" and cvd_score <= -2:
+                    logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] CVD is strongly bearish (Score={cvd_score}). MM active selling.")
+                    return False
+
+            # Check MTF trend breakdown
+            ema20_1h = df_1h['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+            if df_1h['close'].iloc[-1] < ema20_1h:
+                # Price broke below 1h EMA20, dynamic trend is failing
+                logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] Price broke below dynamic 1h EMA20 support.")
+                return False
+
+            logger.info(f"[PRE-ROUTE GATE] {symbol} - [PASSED] Pre-execution metrics are healthy. Executing pullback entry!")
+            return True
+        except Exception as e:
+            logger.error(f"Error in Pre-Route Gate for {symbol}: {e}")
+            return False
+
+    async def background_pullback_tracker(self):
+        """Continuously monitors pullback watchlist items for limit grid hits, audits score decays, and handles promotions."""
+        from shared.lite_db import (
+            get_active_pullback_items, 
+            update_pullback_status, 
+            expire_old_pullback_items, 
+            save_trade,
+            get_pullback_items_by_status,
+            update_pullback_limit_entries
+        )
+        from services.indicators.market_data import get_market_context
+        from services.intelligence.cvd_engine import calculate_cvd
+        import json
+        import aiosqlite
+        import time
+        
+        last_score_audit_time = 0.0
+        last_promotion_time = 0.0
+        
+        while self.running:
+            try:
+                # 1. Expire outdated watchlists
+                await expire_old_pullback_items()
+                
+                current_time = time.time()
+                
+                # ─── SCORE DEGRADATION AUDIT TASK (Every 5 Minutes) ───────────────────
+                if current_time - last_score_audit_time >= 300.0:
+                    last_score_audit_time = current_time
+                    logger.info("[PULLBACK TRACKER] Starting periodic score audit for active limit orders...")
+                    active_items = await get_pullback_items_by_status('WAITING')
+                    for item in active_items:
+                        symbol = item['symbol']
+                        df_1h = await self.fetch_market_data(symbol, '1h', limit=50)
+                        if not df_1h.empty and len(df_1h) >= 20:
+                            price_change = (df_1h['close'].iloc[-1] - df_1h['close'].iloc[-5]) / df_1h['close'].iloc[-5] * 100 if len(df_1h) >= 5 else 0.0
+                            market_ctx = await get_market_context(symbol, price_change)
+                            
+                            # Compute current RSI
+                            delta = df_1h['close'].diff()
+                            gain = delta.clip(lower=0).rolling(14).mean()
+                            loss = (-delta.clip(upper=0)).rolling(14).mean()
+                            rs = gain / loss.replace(0, 1e-9)
+                            rsi_val = (100 - (100 / (1 + rs))).iloc[-1]
+                            
+                            # Fetch multi-timeframe alignment score
+                            df_15m = await self.fetch_market_data(symbol, '15m', limit=50)
+                            df_5m = await self.fetch_market_data(symbol, '5m', limit=50)
+                            tf_data = {'1h': df_1h, '15m': df_15m, '5m': df_5m}
+                            
+                            df_1d = await self.fetch_market_data(symbol, '1d', limit=50)
+                            df_4h = await self.fetch_market_data(symbol, '4h', limit=50)
+                            if not df_1d.empty: tf_data['1d'] = df_1d
+                            if not df_4h.empty: tf_data['4h'] = df_4h
+                            
+                            mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
+                            mtf_val = mtf_score.score
+                            
+                            # SMC analysis
+                            smc_analysis = self.smc_core.analyze(df_1h, symbol)
+                            
+                            # Confluence V7 score re-calculation
+                            confluence = rs_matrix_engine.confluence_v4.calculate_confluence_score(
+                                symbol=symbol,
+                                mtf_score=mtf_val,
+                                rsi=rsi_val,
+                                regime=item['regime'],
+                                smc=smc_analysis
+                            )
+                            
+                            new_score = confluence.raw_score
+                            original_score = item['score']
+                            
+                            if new_score < 65.0 or new_score < (original_score - 20.0):
+                                logger.warning(f"[PULLBACK TRACKER] {symbol} score degraded significantly (Original: {original_score:.1f}, Current: {new_score:.1f}). CANCELLING active limit grid!")
+                                await update_pullback_status(item['id'], 'CANCELLED')
+                                
+                                # Send Telegram cancellation notification
+                                try:
+                                    token = self.config.alerts.telegram_bot_token.get_secret_value()
+                                    chat_id = self.config.alerts.telegram_chat_id
+                                    if token and chat_id:
+                                        from aiogram import Bot
+                                        bot = Bot(token=token)
+                                        msg = (
+                                            f"⚠️ <b>LIMIT CANCELLED | {symbol}</b>\n"
+                                            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                            f"📉 <b>Reason:</b> Confluence Score degraded below edge thresholds.\n"
+                                            f"📊 <b>Original Score:</b> {original_score:.1f}/100\n"
+                                            f"📉 <b>Current Score:</b> {new_score:.1f}/100 <i>(Required: >= 65.0)</i>\n\n"
+                                            f"<i>Лимитная сетка отменена для защиты капитала.</i>"
+                                        )
+                                        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+                                        await bot.session.close()
+                                except Exception as tg_err:
+                                    logger.error(f"Failed to send score cancellation TG alert: {tg_err}")
+                
+                # ─── WAITING_STRUCTURE PROMOTION TASK (Every 2 Minutes) ───────────────
+                if current_time - last_promotion_time >= 120.0:
+                    last_promotion_time = current_time
+                    logger.info("[PULLBACK TRACKER] Starting periodic re-evaluation for WAITING_STRUCTURE items...")
+                    structure_items = await get_pullback_items_by_status('WAITING_STRUCTURE')
+                    if structure_items:
+                        latest_active_pb = await get_pullback_items_by_status('WAITING')
+                        active_total = len(latest_active_pb)
+                        
+                        for item in structure_items:
+                            symbol = item['symbol']
+                            sec = get_sector(symbol)
+                            active_sector = sum(1 for active_item in latest_active_pb if get_sector(active_item['symbol']) == sec)
+                            active_meme = sum(1 for active_item in latest_active_pb if get_sector(active_item['symbol']) == "MEME")
+                            
+                            slots_ok = (active_total < 5) and (active_sector < 2) and (not (sec == "MEME" and active_meme >= 1))
+                            
+                            if not slots_ok:
+                                logger.info(f"[PULLBACK TRACKER] {symbol} (WAITING_STRUCTURE) - Active limit slots full. Skipping promotion.")
+                                continue
+                                
+                            # Fetch 1h data to check structure
+                            df_1h = await self.fetch_market_data(symbol, '1h', limit=50)
+                            if not df_1h.empty and len(df_1h) >= 20:
+                                # Re-calculate EMAs
+                                ema20_1h = df_1h['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                                ema50_1h = df_1h['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                                
+                                # SMC Analysis
+                                smc_analysis = self.smc_core.analyze(df_1h, symbol)
+                                
+                                limit_candidates = []
+                                swing_low = item['swing_low']
+                                entry = df_1h['close'].iloc[-1]
+                                stop_loss = item['stop_loss']
+                                
+                                # 1. EMA20 Support
+                                if swing_low < ema20_1h < entry:
+                                    limit_candidates.append(ema20_1h)
+                                # 2. EMA50 Support
+                                if swing_low < ema50_1h < entry:
+                                    limit_candidates.append(ema50_1h)
+                                    
+                                # 3. Swing Lows
+                                for sp in smc_analysis.swing_lows:
+                                    if swing_low < sp.price < entry:
+                                        limit_candidates.append(sp.price)
+                                        
+                                # 4. Bullish FVG midpoints
+                                for fvg in smc_analysis.imbalance_zones:
+                                    if fvg.type == "BULLISH_FVG":
+                                        fvg_mid = (fvg.low + fvg.high) / 2.0
+                                        if swing_low < fvg_mid < entry:
+                                            limit_candidates.append(fvg_mid)
+                                            
+                                # 5. HVN/POC Supports
+                                for vn in smc_analysis.volume_nodes:
+                                    if vn.type in ["HVN", "POC"] and swing_low < vn.price < entry:
+                                        limit_candidates.append(vn.price)
+                                        
+                                # Safe candidates check
+                                valid_candidates = list(set([p for p in limit_candidates if swing_low < p < entry]))
+                                safe_candidates = []
+                                for p in valid_candidates:
+                                    sl_dist_pct = (p - stop_loss) / p * 100
+                                    if 0.7 <= sl_dist_pct <= 2.5:
+                                        safe_candidates.append(p)
+                                        
+                                if safe_candidates:
+                                    best_limit = max(safe_candidates)
+                                    deeper_limit = min(safe_candidates)
+                                    
+                                    if abs(best_limit - deeper_limit) / best_limit * 100 < 0.1:
+                                        limit_entries = [
+                                            {"price": round(best_limit, 8), "size_pct": 100.0, "label": "Structural Support Grid"}
+                                        ]
+                                    else:
+                                        limit_entries = [
+                                            {"price": round(best_limit, 8), "size_pct": 40.0, "label": "Shallow Support Grid"},
+                                            {"price": round(deeper_limit, 8), "size_pct": 60.0, "label": "Deep Support Grid"}
+                                        ]
+                                        
+                                    new_sl_dist_pct = (best_limit - stop_loss) / best_limit * 100
+                                    atr_1h = (df_1h['high'] - df_1h['low']).rolling(14).mean().iloc[-1]
+                                    atr_pct = atr_1h / entry * 100
+                                    
+                                    regime = item['regime']
+                                    if regime == "BULL":
+                                        atr_target_pct = atr_pct * 2.0
+                                        max_tp_pct = 8.0 if item['score'] >= 85 else 6.0
+                                    else:
+                                        atr_target_pct = atr_pct * 1.3
+                                        max_tp_pct = 4.0 if item['score'] >= 85 else 3.5
+                                        
+                                    raw_tp_est = min(atr_target_pct, max_tp_pct)
+                                    new_tp_pct = max(new_sl_dist_pct * 1.5, raw_tp_est)
+                                    
+                                    tp1_pb = best_limit * (1 + new_tp_pct / 100)
+                                    tp2_pb = best_limit * (1 + new_tp_pct * 1.2 / 100)
+                                    tp3_pb = best_limit * (1 + new_tp_pct * 1.5 / 100)
+                                    
+                                    # Perform promotion
+                                    await update_pullback_limit_entries(
+                                        item_id=item['id'],
+                                        limit_entries=limit_entries,
+                                        take_profit_1=tp1_pb,
+                                        take_profit_2=tp2_pb,
+                                        take_profit_3=tp3_pb,
+                                        new_status='WAITING'
+                                    )
+                                    logger.info(f"[PULLBACK TRACKER] {symbol} promoted successfully from WAITING_STRUCTURE to WAITING! Limit grid placed.")
+                                    
+                                    # Send Telegram notification
+                                    try:
+                                        token = self.config.alerts.telegram_bot_token.get_secret_value()
+                                        chat_id = self.config.alerts.telegram_chat_id
+                                        if token and chat_id:
+                                            from aiogram import Bot
+                                            bot = Bot(token=token)
+                                            msg = (
+                                                f"🚀 <b>LIMIT PLACED | {symbol}</b>\n"
+                                                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                                f"📈 <b>Status:</b> Promoted from WAITING_STRUCTURE to active WAITING.\n"
+                                                f"📥 <b>Limit Entry 1:</b> ${best_limit:.4f} (40%)\n"
+                                                f"📥 <b>Limit Entry 2:</b> ${deeper_limit:.4f} (60%)\n"
+                                                f"🛑 <b>Stop Loss:</b> ${stop_loss:.4f} <i>(-{new_sl_dist_pct:.2f}%)</i>\n"
+                                                f"🏁 <b>TP Target (TP3):</b> ${tp3_pb:.4f} <i>(+{new_tp_pct * 1.5:.2f}%)</i>\n\n"
+                                                f"<i>Структурная зона найдена. Лимитные ордера выставлены в стакан.</i>"
+                                            )
+                                            await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+                                            await bot.session.close()
+                                    except Exception as tg_err:
+                                        logger.error(f"Failed to send promotion TG alert: {tg_err}")
+                                        
+                                    # Update active limits state for next items
+                                    latest_active_pb = await get_pullback_items_by_status('WAITING')
+                                    active_total = len(latest_active_pb)
+                
+                # 3. Get active watchlists
+                active_items = await get_active_pullback_items()
+                if active_items:
+                    for item in active_items:
+                        symbol = item['symbol']
+                        direction = item['direction']
+                        
+                        # Fetch MEXC price using fetch_ohlcv (1m)
+                        ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=2)
+                        if not ohlcv:
+                            continue
+                        recent_low = min([c[3] for c in ohlcv])
+                        current_price = ohlcv[-1][4]
+                        
+                        # Parse limit order brackets from JSON
+                        limit_entries = json.loads(item['limit_entries'])
+                        
+                        # We track if any bracket has been touched
+                        filled_brackets_indices = []
+                        for idx, bracket in enumerate(limit_entries):
+                            if bracket.get("filled", False):
+                                continue
+                            bracket_price = float(bracket['price'])
+                            
+                            # For LONG entry: if recent_low is below or equal to the limit price
+                            if recent_low <= bracket_price:
+                                # Candidate for fill! Run the Pre-Route Trigger check
+                                logger.info(f"[PULLBACK TRACKER] {symbol} touched pullback limit price {bracket_price}. Running Pre-Route Gate...")
+                                passed = await self.pre_route_gate_check(symbol, direction)
+                                
+                                if passed:
+                                    # Execute paper entry!
+                                    await save_trade(
+                                        signal_id=f"pullback_{item['id']}_{idx}",
+                                        symbol=symbol,
+                                        direction=direction,
+                                        entry_price=bracket_price,
+                                        stop_loss=item['stop_loss'],
+                                        take_profit_1=item['take_profit_1'],
+                                        take_profit_2=item['take_profit_2'],
+                                        take_profit_3=item['take_profit_3'],
+                                        position_usd=item['position_usd'] * (bracket['size_pct'] / 100.0),
+                                        strategy="PULLBACK"
+                                    )
+                                    bracket["filled"] = True
+                                    filled_brackets_indices.append(idx)
+                                    
+                                    # Send Telegram notification
+                                    try:
+                                        token = self.config.alerts.telegram_bot_token.get_secret_value()
+                                        chat_id = self.config.alerts.telegram_chat_id
+                                        if token and chat_id:
+                                            from aiogram import Bot
+                                            bot = Bot(token=token)
+                                            msg = (
+                                                f"⚡ <b>LIMIT FILLED | {symbol}</b>\n"
+                                                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                                f"📥 <b>Limit Entry Price:</b> ${bracket_price:.4f} ({bracket['label']})\n"
+                                                f"🛑 <b>Stop Loss:</b> ${item['stop_loss']:.4f} <i>(-{abs(bracket_price - item['stop_loss']) / bracket_price * 100:.2f}%)</i>\n"
+                                                f"🏁 <b>TP Target (TP3):</b> ${item['take_profit_3']:.4f}\n"
+                                                f"⚖️ <b>Position Size:</b> ${item['position_usd'] * (bracket['size_pct'] / 100.0):.0f}\n\n"
+                                                f"<i>Защитные фильтры пройдены. Сделка ведется в рынке.</i>"
+                                            )
+                                            await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+                                            await bot.session.close()
+                                    except Exception as tg_err:
+                                        logger.error(f"Failed to send pullback TG notification: {tg_err}")
+                                else:
+                                    # Pre-route gate failed, cancel the whole watchlist item to protect capital!
+                                    await update_pullback_status(item['id'], 'CANCELLED')
+                                    logger.warning(f"[PULLBACK TRACKER] {symbol} - Setup cancelled due to Pre-Route Gate failure.")
+                                    break
+                                    
+                        if filled_brackets_indices:
+                            # Update limit_entries in db
+                            all_filled = all([b.get("filled", False) for b in limit_entries])
+                            if all_filled:
+                                await update_pullback_status(item['id'], 'FILLED')
+                            else:
+                                # Partially filled, save updated brackets JSON
+                                db_path = "apex_lite.db"
+                                async with aiosqlite.connect(db_path) as db:
+                                    await db.execute('''
+                                        UPDATE pullback_watchlist
+                                        SET limit_entries = ?
+                                        WHERE id = ?
+                                    ''', (json.dumps(limit_entries), item['id']))
+                                    await db.commit()
+            except Exception as e:
+                logger.error(f"Error in background pullback tracker: {e}")
+                
+            await asyncio.sleep(10)  # Check every 10 seconds
+
     async def start(self):
         self.running = True
         logger.info("Starting APEX System v5.0...")
@@ -1175,6 +1600,7 @@ class ApexSystem:
         asyncio.create_task(self.background_macro_updater())
         asyncio.create_task(self.background_trade_tracker())
         asyncio.create_task(self.background_missed_signals_tracker())
+        asyncio.create_task(self.background_pullback_tracker())
         asyncio.create_task(self.ws_manager.start(self.config.trading.symbols))
         asyncio.create_task(rs_matrix_engine.fast_price_poller(self.config.trading.symbols))
         
