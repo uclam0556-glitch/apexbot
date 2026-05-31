@@ -141,13 +141,20 @@ async def init_lite_db():
         pb_new_columns = [
             ("original_breadth", "REAL"),
             ("original_mtf", "REAL"),
-            ("original_cvd", "REAL")
+            ("original_cvd", "REAL"),
+            ("exchange_order_id", "TEXT")
         ]
         for col_name, col_type in pb_new_columns:
             try:
                 await db.execute(f'ALTER TABLE pullback_watchlist ADD COLUMN {col_name} {col_type}')
-            except Exception:
-                pass
+            except aiosqlite.OperationalError:
+                pass # Column already exists
+                
+        # Add source column to trades
+        try:
+            await db.execute('ALTER TABLE trades ADD COLUMN source VARCHAR(20) DEFAULT "MARKET"')
+        except aiosqlite.OperationalError:
+            pass # Column already exists
 
         # V7 Institutional ML Features
         new_columns = [
@@ -198,18 +205,19 @@ async def save_trade(
     position_usd: float,
     reasoning: str,
     strategy: str = "TREND",
-    features_dict: dict = None
+    features_dict: dict = None,
+    source: str = "MARKET"
 ):
     """Saves a new open trade to SQLite."""
     async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         cursor = await db.execute('''
             INSERT INTO trades (
                 signal_id, symbol, direction, strategy, entry_price, stop_loss, 
-                take_profit_1, take_profit_2, take_profit_3, position_usd, status, opened_at, reasoning
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+                take_profit_1, take_profit_2, take_profit_3, position_usd, status, opened_at, reasoning, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)
         ''', (
             signal_id, symbol, direction, strategy, entry_price, stop_loss, 
-            take_profit_1, None, None, position_usd, datetime.utcnow(), reasoning
+            take_profit_1, None, None, position_usd, datetime.utcnow(), reasoning, source
         ))
         trade_id = cursor.lastrowid
         
@@ -289,6 +297,16 @@ async def get_open_trades():
         db.row_factory = aiosqlite.Row
         async with db.execute('SELECT * FROM trades WHERE status IN ("OPEN", "BREAKEVEN")') as cursor:
             return await cursor.fetchall()
+
+async def get_trade_by_signal_id(signal_id: str) -> dict:
+    """Checks if a trade already exists by its signal_id."""
+    async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('SELECT * FROM trades WHERE signal_id = ?', (signal_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
 
 async def close_trade(
     trade_id: int, 
@@ -653,16 +671,17 @@ async def update_pullback_limit_entries(
     take_profit_1: float,
     take_profit_2: float,
     take_profit_3: float,
-    new_status: str
+    new_status: str,
+    exchange_order_id: str = None
 ):
     """Promotes a pullback watchlist item by adding limit entries and setting new status."""
     limit_json = json.dumps(limit_entries)
     async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
         await db.execute('''
             UPDATE pullback_watchlist
-            SET limit_entries = ?, take_profit_1 = ?, take_profit_2 = ?, take_profit_3 = ?, status = ?
+            SET limit_entries = ?, take_profit_1 = ?, take_profit_2 = ?, take_profit_3 = ?, status = ?, exchange_order_id = ?
             WHERE id = ?
-        ''', (limit_json, take_profit_1, take_profit_2, take_profit_3, new_status, item_id))
+        ''', (limit_json, take_profit_1, take_profit_2, take_profit_3, new_status, exchange_order_id, item_id))
         await db.commit()
 
 async def expire_old_pullback_items():

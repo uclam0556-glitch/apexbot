@@ -616,14 +616,24 @@ def build_signal_card(signal_data: dict) -> str:
         
     squeeze_alert = "🚨 <b>VOLATILITY SQUEEZE DETECTED</b>\n" if s.get("is_squeeze") else ""
 
+    source = s.get("source", "LIMIT")
+    
+    if source == "MARKET":
+        header = f"🟢 <b>MARKET ENTRY | {symbol}</b>"
+        action = f"🎯 <b>ACTION:</b> {dir_emoji} (Прямой вход)"
+        entry_text = f"📥 <b>ENTRY PRICE:</b> {fmt(s.get('entry_price', entry_mid))}\n<i>(SL и TP уже выставлены)</i>\n"
+    else:
+        header = f"⏳ <b>LIMIT PLACED | {symbol}</b>"
+        action = f"🎯 <b>ACTION:</b> {dir_emoji} (Ожидаем откат)"
+        entry_text = f"📥 <b>ENTRY ZONE (LIMIT)</b>\n   {fmt(entry_low)} — {fmt(entry_high)}\n"
+
     card = (
-        f"⚡ <b>APEX SIGNAL | {symbol}</b>\n"
+        f"{header}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>ACTION:</b> {dir_emoji}\n"
+        f"{action}\n"
         f"🧠 <b>STRAT:</b>  <code>[{strategy}]</code>\n"
         f"{squeeze_alert}\n"
-        f"📥 <b>ENTRY ZONE</b>\n"
-        f"   {fmt(entry_low)} — {fmt(entry_high)}\n\n"
+        f"{entry_text}\n"
         f"🛑 <b>STOP LOSS</b>\n"
         f"   {fmt(sl)} <i>(-{sl_pct:.1f}%)</i>\n\n"
         f"🏁 <b>TAKE PROFIT (R:R {rr:.1f})</b>\n"

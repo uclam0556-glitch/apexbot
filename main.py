@@ -146,6 +146,9 @@ class ApexSystem:
         
         self.executor = OrderExecutor(self.exchange)
         
+        from services.engine.order_fill_monitor import OrderFillMonitor
+        self.fill_monitor = OrderFillMonitor(self.exchange, self.config)
+        
         # v5.0 Engines
         self.ws_manager = ExchangeWSManager()
         self.ml_classifier = MLRegimeClassifier()
@@ -701,7 +704,9 @@ class ApexSystem:
                         low_48h = df_1h['low'].min()
                         
                     range_48h = high_48h - low_48h
+                    premium_discount = 1.0
                     if range_48h > 0:
+                        premium_discount = (current_price - low_48h) / range_48h
                         premium_threshold = high_48h - (range_48h * 0.30) # Top 30%
                         if current_price >= premium_threshold and trade_strategy == "TREND" and trade_direction == "LONG":
                             in_premium_zone = True
@@ -1139,20 +1144,7 @@ class ApexSystem:
                         "confidence_sample_size": confidence_data["sample_size"]
                     }
 
-                    # ─── SEND TO TELEGRAM ─────────────────────────────────────────────────────
-                    try:
-                        from aiogram import Bot
-                        token        = self.config.alerts.telegram_bot_token.get_secret_value()
-                        chat_id_str  = self.config.alerts.telegram_chat_id
-                        if token and chat_id_str:
-                            bot = Bot(token=token)
-                            await send_signal(bot, int(chat_id_str), signal_data)
-                            await bot.session.close()
-                            global_state.signals_sent_today += 1
-                            logger.info(f"{dir_emoji} 🚀 SIGNAL SENT: {symbol} {trade_direction} [{strat_label}] | Score={ultra_score:.1f}/100 | Entry=${format_price(current_price)}")
-                    except Exception as send_err:
-                        logger.error(f"Failed to send signal: {send_err}")
-                    # ─── SAVE TO DB ────────────────────────────────────────────────────────────
+                    # ─── FEATURES DICT ────────────────────────────────────────────────────────
                     features_dict = {
                         "regime":               regime_val,
                         "ultra_score":          ultra_score,
@@ -1165,26 +1157,138 @@ class ApexSystem:
                         "cvd_score":            cvd_score_val,
                         "strategy":             trade_strategy,
                         "direction":            trade_direction,
-                        # V7 Institutional Metrics
-                        "slippage":             spread_pct / 2.0, # Estimated half-spread as slippage
+                        "slippage":             spread_pct / 2.0, 
                         "spread_at_entry":      spread_pct, 
-                        "btc_trend_strength":   float(market_ctx.get("btc_dominance", {}).get("value", 55.0)), # Re-mapped dominance
+                        "btc_trend_strength":   float(market_ctx.get("btc_dominance", {}).get("value", 55.0)), 
                         "volume_spike_score":   vol_ratio_15m,
                     }
 
-                    await save_trade(
-                        signal_id=str(int(datetime.utcnow().timestamp())),
-                        symbol=symbol,
-                        direction=trade_direction,
-                        entry_price=current_price,
-                        stop_loss=sltp.stop_loss,
-                        take_profit_1=sltp.take_profit_1,
-                        position_usd=position_usd,
-                        reasoning=f"{strat_label} | Score {ultra_score:.1f}/100 | RSI {rsi_now:.0f} | {indicators['ema_ribbon']['label']} | FG={market_ctx['fear_greed']['value']}",
-                        strategy=trade_strategy,
-                        features_dict=features_dict
+                    # ─── DUAL SIGNAL PATH (MARKET vs LIMIT) ──────────────────────────────────
+                    structural_sl_pct = abs(current_price - sltp.stop_loss) / current_price * 100
+                    
+                    is_market_entry = (
+                        ultra_score >= 80.0 and
+                        structural_sl_pct <= 2.0 and
+                        premium_discount < 0.70 and
+                        mtf_score.score >= 4.0 and
+                        cvd_signal != "BEARISH" and
+                        breadth_pct >= 30.0 and
+                        market_ctx.get("funding", {}).get("is_valid", False) and
+                        market_ctx.get("open_interest", {}).get("is_valid", False)
                     )
-                    logger.info(f"Signal saved to DB: {symbol} {trade_direction} [{strat_label}]")
+
+                    if is_market_entry:
+                        # 1. Place Market Order
+                        amount = position_usd / current_price
+                        try:
+                            order = await self.exchange.create_order(symbol, 'market', 'buy', amount)
+                            entry_price = order.get('average', current_price)
+                            filled_amount = order.get('amount', amount)
+                            
+                            sl_order_id = None
+                            tp_order_id = None
+                            
+                            # 2. Immediate SL / TP1
+                            try:
+                                sl_order = await self.exchange.create_order(symbol, "stop", "sell", filled_amount, sltp.stop_loss, params={'stopPrice': sltp.stop_loss})
+                                sl_order_id = sl_order.get('id')
+                                logger.info(f"Placed Stop Market SL for {symbol} at {sltp.stop_loss}")
+                            except Exception as sl_err:
+                                logger.error(f"Failed to place SL for {symbol}: {sl_err}")
+                                import structlog
+                                structlog.get_logger("telemetry").error("SL_PLACE_FAILED", symbol=symbol, error=str(sl_err))
+                                
+                            try:
+                                tp_order = await self.exchange.create_order(symbol, "limit", "sell", filled_amount * 0.40, sltp.take_profit_1)
+                                tp_order_id = tp_order.get('id')
+                                logger.info(f"Placed Limit TP1 for {symbol} at {sltp.take_profit_1}")
+                            except Exception as tp_err:
+                                logger.error(f"Failed to place TP1 for {symbol}: {tp_err}")
+                                import structlog
+                                structlog.get_logger("telemetry").error("TP_PLACE_FAILED", symbol=symbol, error=str(tp_err))
+                                
+                            # 3. Save to trades (MARKET)
+                            await save_trade(
+                                signal_id=str(int(datetime.utcnow().timestamp())),
+                                symbol=symbol,
+                                direction=trade_direction,
+                                entry_price=entry_price,
+                                stop_loss=sltp.stop_loss,
+                                take_profit_1=sltp.take_profit_1,
+                                position_usd=position_usd,
+                                reasoning=f"MARKET ENTRY | {strat_label} | Score {ultra_score:.1f}/100 | RSI {rsi_now:.0f}",
+                                strategy=trade_strategy,
+                                features_dict=features_dict,
+                                source="MARKET"
+                            )
+                            
+                            import structlog
+                            struct_logger = structlog.get_logger("telemetry")
+                            struct_logger.info(
+                                "MARKET_ENTRY",
+                                symbol=symbol,
+                                market_order_id=order.get('id'),
+                                avg_fill_price=entry_price,
+                                sl_order_id=sl_order_id,
+                                tp_order_id=tp_order_id,
+                                source="MARKET"
+                            )
+                            logger.info(f"MARKET Signal executed and saved: {symbol} {trade_direction}")
+                            
+                            # 4. Send Telegram MARKET Alert
+                            signal_data["entry_price"] = entry_price
+                            signal_data["source"] = "MARKET"
+                            try:
+                                from aiogram import Bot
+                                token = self.config.alerts.telegram_bot_token.get_secret_value()
+                                chat_id_str = self.config.alerts.telegram_chat_id
+                                if token and chat_id_str:
+                                    bot = Bot(token=token)
+                                    from services.notifications.telegram_ui import send_signal
+                                    await send_signal(bot, int(chat_id_str), signal_data)
+                                    await bot.session.close()
+                                    global_state.signals_sent_today += 1
+                            except Exception as send_err:
+                                logger.error(f"Failed to send MARKET signal: {send_err}")
+                                
+                        except Exception as mkt_err:
+                            logger.error(f"Market entry failed for {symbol}: {mkt_err}")
+                    else:
+                        # ─── LIMIT / PULLBACK PATH ────────────────────────────────────────────────
+                        from shared.lite_db import save_pullback_item
+                        # Calculate a logical swing low. Assuming sltp.stop_loss is at or below it.
+                        await save_pullback_item(
+                            symbol=symbol,
+                            direction=trade_direction,
+                            score=ultra_score,
+                            original_entry=current_price,
+                            swing_low=sltp.stop_loss, 
+                            stop_loss=sltp.stop_loss,
+                            take_profit_1=sltp.take_profit_1,
+                            take_profit_2=sltp.take_profit_2,
+                            take_profit_3=sltp.take_profit_3,
+                            position_usd=position_usd,
+                            regime=regime_val,
+                            breadth=breadth_pct,
+                            mtf=mtf_score.score,
+                            cvd=cvd_score_val
+                        )
+                        logger.info(f"Signal routed to LIMIT Watchlist: {symbol} {trade_direction} [{strat_label}]")
+                        
+                        signal_data["source"] = "LIMIT"
+                        # ─── SEND TO TELEGRAM ─────────────────────────────────────────────────────
+                        try:
+                            from aiogram import Bot
+                            token = self.config.alerts.telegram_bot_token.get_secret_value()
+                            chat_id_str = self.config.alerts.telegram_chat_id
+                            if token and chat_id_str:
+                                bot = Bot(token=token)
+                                from services.notifications.telegram_ui import send_signal
+                                await send_signal(bot, int(chat_id_str), signal_data)
+                                await bot.session.close()
+                                global_state.signals_sent_today += 1
+                        except Exception as send_err:
+                            logger.error(f"Failed to send LIMIT signal: {send_err}")
 
                 except Exception as e:
                     logger.error(f"Error processing {symbol}: {e}", exc_info=True)
@@ -1752,6 +1856,7 @@ class ApexSystem:
         asyncio.create_task(self.background_trade_tracker())
         asyncio.create_task(self.background_missed_signals_tracker())
         asyncio.create_task(self.background_pullback_tracker())
+        asyncio.create_task(self.fill_monitor.start())
         asyncio.create_task(self.ws_manager.start(self.config.trading.symbols))
         asyncio.create_task(rs_matrix_engine.fast_price_poller(self.config.trading.symbols))
         
