@@ -663,7 +663,7 @@ class ApexSystem:
                             continue
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 2: GRADIENT PREMIUM ZONE ────────────────
-                    premium_penalty = 0.0
+                    in_premium_zone = False
                     if len(df_1h) >= 48:
                         high_48h = df_1h['high'].iloc[-48:].max()
                         low_48h = df_1h['low'].iloc[-48:].min()
@@ -675,8 +675,8 @@ class ApexSystem:
                     if range_48h > 0:
                         premium_threshold = high_48h - (range_48h * 0.30) # Top 30%
                         if current_price >= premium_threshold and trade_strategy == "TREND" and trade_direction == "LONG":
-                            premium_penalty = 15.0
-                            logger.info(f"{symbol} - [PENALTY] Price in Premium Zone (Top 30% of 48h). Applying -15 penalty.")
+                            in_premium_zone = True
+                            logger.info(f"{symbol} - Price in Premium Zone (Top 30% of 48h). Flagged for Overextension Index.")
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 3: ABSORPTION TRAP (FUNDING + RSI + CVD) ────
                     from services.indicators.market_data import get_funding_rate
@@ -774,7 +774,7 @@ class ApexSystem:
                     rsi_max = 80 if regime_val == "BULL" else 73
                     if rsi_now > rsi_max: overext_points += 2
                     if z_score > 2.0: overext_points += 2
-                    if premium_penalty > 0: overext_points += 1
+                    if in_premium_zone: overext_points += 1
                     
                     fvg_count = len(smc_analysis.imbalance_zones)
                     if fvg_count > 12: overext_points += 3
