@@ -148,7 +148,27 @@ class TradingConfig(BaseSettings):
         "FIL/USDT", "STX/USDT", "ATOM/USDT", "ICP/USDT", "KAS/USDT",
         # Memes
         "PEPE/USDT", "WIF/USDT", "BONK/USDT", "SHIB/USDT", "FLOKI/USDT",
-        # Classics Continued & Infra
+    ]
+
+    sector_leaders: dict[str, str] = {
+        "DEFI": "ETH/USDT",
+        "L2":   "ETH/USDT",
+        "AI":   "FET/USDT",
+        "MEME": "DOGE/USDT",
+        "L1":   "SOL/USDT",
+        "MAJORS": "BTC/USDT"
+    }
+
+    token_sectors: dict[str, str] = {
+        "ARB/USDT": "L2", "OP/USDT": "L2", "STRK/USDT": "L2", "POL/USDT": "L2",
+        "AAVE/USDT": "DEFI", "UNI/USDT": "DEFI", "LDO/USDT": "DEFI", "GMX/USDT": "DEFI", "RUNE/USDT": "DEFI", "PENDLE/USDT": "DEFI",
+        "RENDER/USDT": "AI", "FET/USDT": "AI", "WLD/USDT": "AI", "TAO/USDT": "AI", "ARKM/USDT": "AI",
+        "PEPE/USDT": "MEME", "WIF/USDT": "MEME", "BONK/USDT": "MEME", "SHIB/USDT": "MEME", "FLOKI/USDT": "MEME", "DOGE/USDT": "MEME",
+        "SOL/USDT": "L1", "SUI/USDT": "L1", "APT/USDT": "L1", "NEAR/USDT": "L1", "SEI/USDT": "L1", "INJ/USDT": "L1", "AVAX/USDT": "L1", "ADA/USDT": "L1", "TON/USDT": "L1", "TIA/USDT": "L1"
+    }
+
+    # Classics Continued & Infra
+    symbols_extended: list[str] = [
         "MNT/USDT", "HBAR/USDT", "VET/USDT", "ALGO/USDT", "XLM/USDT",
         # Gaming & Metaverse & Ecosystems
         "GALA/USDT", "IMX/USDT", "SAND/USDT", "MANA/USDT", "BLUR/USDT"

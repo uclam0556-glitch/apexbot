@@ -162,8 +162,9 @@ class ApexSystem:
         
         # Global State
         self.macro_state = None
-        self.rotation_state = None
+        self.signals_sent_today = 0
         self.market_breadth = 50.0
+        self.dominance_flow_bonus = 0.0
         
     async def fetch_market_data(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> pd.DataFrame:
         """Helper to fetch OHLCV and convert to DataFrame."""
@@ -455,7 +456,7 @@ class ApexSystem:
             scan_symbols = [c['symbol'] for c in top_rs_coins] if top_rs_coins else self.config.trading.symbols[:30]
             logger.info(f"Pre-filtered top {len(scan_symbols)} strongest coins for scanning.")
 
-            # ─── MARKET BREADTH ENGINE (EMA200) ──────────────────────────────────────
+            # ─── MARKET BREADTH ENGINE (EMA200) & DOMINANCE FLOW ─────────────────────
             macro_breadth_symbols = self.config.trading.symbols[:50] if len(self.config.trading.symbols) >= 50 else self.config.trading.symbols
             logger.info(f"Calculating Market Breadth ({len(macro_breadth_symbols)} Macro Coins vs EMA200)...")
             breadth_tasks = [self.fetch_market_data(sym, '1d', 210) for sym in macro_breadth_symbols]
@@ -463,6 +464,9 @@ class ApexSystem:
             
             coins_above_ema200 = 0
             valid_coins = 0
+            btc_7d_return = 0.0
+            alt_7d_returns = []
+            
             for sym, df_breadth in zip(macro_breadth_symbols, breadth_results):
                 if isinstance(df_breadth, pd.DataFrame) and len(df_breadth) >= 200:
                     valid_coins += 1
@@ -470,10 +474,32 @@ class ApexSystem:
                     ema_200 = df_breadth['close'].rolling(200).mean().iloc[-1]
                     if current_close > ema_200:
                         coins_above_ema200 += 1
+                        
+                    if len(df_breadth) >= 8:
+                        close_7d = df_breadth['close'].iloc[-8]
+                        ret_7d = (current_close - close_7d) / close_7d * 100
+                        if sym == 'BTC/USDT':
+                            btc_7d_return = ret_7d
+                        else:
+                            alt_7d_returns.append(ret_7d)
             
             breadth_pct = (coins_above_ema200 / valid_coins * 100) if valid_coins > 0 else 50.0
             self.market_breadth = breadth_pct
             logger.info(f"Market Breadth: {breadth_pct:.1f}% of top coins are above 1D EMA200.")
+            
+            # DOMINANCE FLOW CALCULATION
+            avg_alt_7d_return = sum(alt_7d_returns) / len(alt_7d_returns) if alt_7d_returns else 0.0
+            dominance_7d_change = btc_7d_return - avg_alt_7d_return
+            self.dominance_flow_bonus = 0.0
+            
+            if dominance_7d_change > 1.5:
+                self.dominance_flow_bonus = -5.0
+                logger.info(f"DOMINANCE FLOW: BTC ({btc_7d_return:+.1f}%) > Alts ({avg_alt_7d_return:+.1f}%). Flow to BTC. Alt Penalty: -5")
+            elif dominance_7d_change < -1.5:
+                self.dominance_flow_bonus = 5.0
+                logger.info(f"DOMINANCE FLOW: BTC ({btc_7d_return:+.1f}%) < Alts ({avg_alt_7d_return:+.1f}%). Flow to Alts. Alt Bonus: +5")
+            else:
+                logger.info(f"DOMINANCE FLOW: Neutral (Diff: {dominance_7d_change:.1f}%). No penalty/bonus.")
             
             # Dynamic config based on breadth
             dynamic_min_score = 65
@@ -898,30 +924,64 @@ class ApexSystem:
                     if mtf_val < 0:
                         v7_score = min(v7_score, 50.0)  # Максимум 50/100 против тренда
 
-                    # 3. INDEPENDENT MACRO PENALTY: BTC CORRELATION
+                    # 3. INDEPENDENT MACRO PENALTY: SECTOR LEADER & COMPOSITE
                     btc_rsi = 50.0
+                    macro_rsi = 50.0
+                    
                     if 'BTC' not in symbol:
                         try:
+                            sector = self.config.trading.token_sectors.get(symbol, "ALT")
+                            leader_sym = self.config.trading.sector_leaders.get(sector, "BTC/USDT")
+                            
                             btc_1h = await self.fetch_market_data('BTC/USDT', '1h', 50)
-                            if not btc_1h.empty:
-                                btc_delta = btc_1h['close'].diff()
-                                btc_gain  = btc_delta.clip(lower=0).rolling(14).mean()
-                                btc_loss  = (-btc_delta.clip(upper=0)).rolling(14).mean()
-                                btc_rsi   = (100 - (100 / (1 + btc_gain / btc_loss.replace(0, 1e-9)))).iloc[-1]
-                                if trade_direction == "LONG" and btc_rsi < 42: v7_score -= 15
-                                if trade_direction == "SHORT" and btc_rsi > 58: v7_score -= 15
+                            eth_1h = await self.fetch_market_data('ETH/USDT', '1h', 50)
+                            
+                            def calc_rsi(df):
+                                if df.empty: return 50.0
+                                delta = df['close'].diff()
+                                gain = delta.clip(lower=0).rolling(14).mean()
+                                loss = (-delta.clip(upper=0)).rolling(14).mean()
+                                return (100 - (100 / (1 + gain / loss.replace(0, 1e-9)))).iloc[-1]
                                 
-                                # ─── ADVANCED INSTITUTIONAL FILTER 5: INTRADAY RELATIVE STRENGTH (ALPHA) ──
-                                if len(btc_1h) >= 5:
-                                    btc_return_4h = (btc_1h['close'].iloc[-1] - btc_1h['close'].iloc[-5]) / btc_1h['close'].iloc[-5] * 100
-                                    sym_return_4h = price_change_4h_pct
-                                    if btc_return_4h < -1.0 and sym_return_4h > 1.0 and trade_direction == "LONG":
-                                        v7_score += 20.0
-                                        logger.info(f"🌟 {symbol} INTRADAY ALPHA BONUS! BTC is dropping ({btc_return_4h:.2f}%), but {symbol} is rising ({sym_return_4h:.2f}%). Strong relative strength.")
-                        except Exception:
-                            pass
+                            btc_rsi = calc_rsi(btc_1h)
+                            eth_rsi = calc_rsi(eth_1h)
+                            
+                            leader_df = btc_1h
+                            if sector in ["L2", "DEFI"]:
+                                leader_rsi = eth_rsi
+                                leader_df = eth_1h
+                            elif sector == "ALT":
+                                leader_rsi = (btc_rsi * 0.6) + (eth_rsi * 0.4)
+                            else:
+                                leader_df = await self.fetch_market_data(leader_sym, '1h', 50)
+                                leader_rsi = calc_rsi(leader_df)
+                                
+                            macro_rsi = leader_rsi
+
+                            # Penalty based on leader/macro RSI
+                            if trade_direction == "LONG" and macro_rsi < 42: v7_score -= 15
+                            if trade_direction == "SHORT" and macro_rsi > 58: v7_score -= 15
+                            
+                            # Dominance Flow Bonus
+                            v7_score += self.dominance_flow_bonus
+                            
+                            # ─── ADVANCED INSTITUTIONAL FILTER 5: INTRADAY RELATIVE STRENGTH (ALPHA) ──
+                            if not leader_df.empty and len(leader_df) >= 5:
+                                leader_return_4h = (leader_df['close'].iloc[-1] - leader_df['close'].iloc[-5]) / leader_df['close'].iloc[-5] * 100
+                                sym_return_4h = price_change_4h_pct
+                                
+                                if leader_return_4h < -1.0 and sym_return_4h > 1.0 and trade_direction == "LONG" and cvd_score_val > 0:
+                                    last_vol = df_15m_check['volume'].iloc[-2] if not df_15m_check.empty else 0
+                                    avg_vol = df_15m_check['volume'].iloc[-12:-2].mean() if not df_15m_check.empty else 1
+                                    if avg_vol > 0 and (last_vol / avg_vol) > 0.8:
+                                        v7_score += 12.0
+                                        logger.info(f"🌟 {symbol} INTRADAY ALPHA BONUS! Leader {leader_sym} dropping ({leader_return_4h:.2f}%), but {symbol} rising ({sym_return_4h:.2f}%). CVD is Bullish. Applying +12 points.")
+                        except Exception as e:
+                            logger.error(f"Error computing sector leader for {symbol}: {e}")
                     else:
                         btc_rsi = rsi_now
+                        macro_rsi = rsi_now
+                        v7_score += self.dominance_flow_bonus
                     
                     # ─── A+ SETUP BONUS (NO LONGER AN OVERRIDE) ────────────────────────────────
                     if trade_direction == "LONG" and rsi_now < 28 and cvd_score_val >= 0 and ofi_real.ofi_score > 0:
