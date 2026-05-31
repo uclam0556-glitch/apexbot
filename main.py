@@ -985,6 +985,7 @@ class ApexSystem:
                     total_exposure = open_count + active_total
                     if breadth_pct < 15.0:
                         max_exposure = 0
+                        logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 15%. ALL new limits BLOCKED for {symbol}.")
                     elif breadth_pct < 40.0:
                         max_exposure = 3
                     elif regime_val == "SIDEWAYS" or breadth_pct <= 70.0:
@@ -1591,6 +1592,7 @@ class ApexSystem:
                             breadth_pct = self.market_breadth
                             if breadth_pct < 15.0:
                                 max_exposure = 0
+                                logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 15%. ALL WAITING_STRUCTURE promotions BLOCKED for {symbol}.")
                             elif breadth_pct < 40.0:
                                 max_exposure = 3
                             elif item['regime'] == "SIDEWAYS" or breadth_pct <= 70.0:

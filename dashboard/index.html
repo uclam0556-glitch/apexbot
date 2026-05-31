@@ -631,7 +631,7 @@
     <div class="panel" style="grid-column: span 2;">
       <div class="panel-header" style="justify-content: space-between;">
         <div style="display:flex; align-items:center; gap: 12px;">
-          <div class="panel-title"><span class="icon">⏳</span> Открытые позиции</div>
+          <div class="panel-title"><span class="icon">⏳</span> Активные Ордера (Открытые + Лимитные)</div>
           <div style="font-size:12px;color:var(--text3);" id="open-count-label">—</div>
         </div>
         <div id="live-total-pnl" style="font-size: 14px; font-weight: 700; font-family: 'JetBrains Mono', monospace; padding: 4px 10px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); transition: all 0.3s;">Live: $0.00</div>
@@ -926,34 +926,71 @@ async function loadEquity() {
 
 async function loadOpenTrades() {
   try {
-    const r = await fetch('/api/open-trades');
-    const trades = await r.json();
+    const [rOpen, rLimit] = await Promise.all([
+      fetch('/api/open-trades'),
+      fetch('/api/limit-orders')
+    ]);
+    const trades = await rOpen.json();
+    const limits = await rLimit.json();
+    
     const el = document.getElementById('open-trades-container');
     const label = document.getElementById('open-count-label');
 
-    label.textContent = trades.length + ' позиций';
+    label.textContent = trades.length + ' Открытых / ' + limits.length + ' Лимитных';
 
-    if (!trades.length) {
-      el.innerHTML = '<div class="empty-state"><div class="emoji">🔍</div>Нет открытых позиций.<br>Бот ищет новые входы...</div>';
+    if (!trades.length && !limits.length) {
+      el.innerHTML = '<div class="empty-state"><div class="emoji">🔍</div>Нет активных ордеров.<br>Бот сканирует рынок...</div>';
       return;
     }
 
     let html = `<table class="trade-table"><thead><tr>
-      <th>Монета</th><th>Статус</th><th>Вход</th><th>Стоп</th><th>TP1</th><th>Позиция</th><th>Лайв Цена</th><th>PnL %</th><th>Открыта</th>
+      <th>Монета</th><th>Статус</th><th>Вход</th><th>Стоп</th><th>TP1</th><th>Позиция</th><th>Лайв Цена</th><th>PnL / Score</th><th>Создан</th>
     </tr></thead><tbody>`;
 
+    // 1. Render Limit Orders
+    for (const t of limits) {
+      const symClean = t.symbol.replace('/USDT','');
+      const dirCls = t.direction === 'LONG' ? 'text-green' : 'text-red';
+      const dirTxt = t.direction === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
+      
+      const badgeHtml = '<span class="status-badge" style="background:rgba(255,215,0,0.1);color:var(--gold);">🎯 LIMIT WAITING</span>';
+      
+      // Attempt to find the entry array
+      let entryTxt = "—";
+      try {
+         const limitsArr = JSON.parse(t.limit_entries);
+         if (limitsArr.length > 0) entryTxt = fmt(limitsArr[0].price);
+      } catch (e) {
+         entryTxt = fmt(t.original_entry);
+      }
+
+      html += `<tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t)).replace(/'/g, "%27")}')">
+        <td><span class="symbol-cell">${symClean}</span></td>
+        <td style="font-weight:700;font-size:11px;" class="${dirCls}">${dirTxt} <br><div style="margin-top:4px">${badgeHtml}</div></td>
+        <td class="price-cell">${entryTxt}</td>
+        <td class="price-cell text-red">${fmt(t.stop_loss)}</td>
+        <td class="price-cell text-green">${fmt(t.take_profit_1)}</td>
+        <td class="price-cell">$${(t.position_usd||0).toFixed(0)}</td>
+        <td class="price-cell" id="live-price-${symClean}-lim" style="font-family:'JetBrains Mono',monospace;color:var(--cyan)">—</td>
+        <td class="price-cell"><span style="color:var(--gold); font-weight:700;">V7 Score: ${(t.score||0).toFixed(1)}</span></td>
+        <td class="price-cell">${fmtDate(t.created_at)}</td>
+      </tr>`;
+    }
+
+    // 2. Render Open Trades
     for (const t of trades) {
       const symClean = t.symbol.replace('/USDT','');
       const dirCls = t.direction === 'LONG' ? 'text-green' : 'text-red';
       let dirTxt = t.direction === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
       
+      let badgeHtml = '<span class="status-badge badge-open">⏳ OPEN</span>';
       if (t.status === 'BREAKEVEN') {
-          dirTxt += ' <span style="color:var(--gold); margin-left:6px; padding:2px 6px; background:rgba(255,215,0,0.1); border-radius:4px;">🎯 TP1 HIT</span>';
+          badgeHtml = '<span class="status-badge" style="background:rgba(255,215,0,0.1);color:var(--gold);">🎯 TP1 HIT</span>';
       }
       
       html += `<tr style="cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'" onclick="showTradeDetails('${encodeURIComponent(JSON.stringify(t)).replace(/'/g, "%27")}')">
         <td><span class="symbol-cell">${symClean}</span></td>
-        <td style="font-weight:700;font-size:11px;" class="${dirCls}">${dirTxt}</td>
+        <td style="font-weight:700;font-size:11px;" class="${dirCls}">${dirTxt} <br><div style="margin-top:4px">${badgeHtml}</div></td>
         <td class="price-cell">${fmt(t.entry_price)}</td>
         <td class="price-cell text-red">${fmt(t.stop_loss)}</td>
         <td class="price-cell text-green">${fmt(t.take_profit_1)}</td>
@@ -963,12 +1000,13 @@ async function loadOpenTrades() {
         <td class="price-cell">${fmtDate(t.opened_at)}</td>
       </tr>`;
     }
+
     html += '</tbody></table>';
     el.innerHTML = html;
     
     // Trigger an immediate live price update for the new rows
     loadLivePrices();
-  } catch (e) { console.error('Open trades error', e); }
+  } catch (e) { console.error('Active orders error', e); }
 }
 
 async function loadHistory() {
@@ -1140,6 +1178,10 @@ async function loadLivePrices() {
         // Update Price Cell
         const priceCell = document.getElementById(`live-price-${cleanSym}`);
         if (priceCell) priceCell.textContent = fmt(livePrice);
+        
+        // Update Limit Order Price Cell if it exists
+        const priceCellLim = document.getElementById(`live-price-${cleanSym}-lim`);
+        if (priceCellLim) priceCellLim.textContent = fmt(livePrice);
         
         // Calculate PnL %
         let pnlPct = 0;

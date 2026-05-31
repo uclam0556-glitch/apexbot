@@ -203,6 +203,24 @@ def create_app() -> FastAPI:
             logger.error(f"Open trades error: {e}")
             return []
 
+    @app.get("/api/limit-orders")
+    async def get_limit_orders():
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT id, symbol, direction, score, original_entry, swing_low, limit_entries,
+                           stop_loss, take_profit_1, position_usd, regime, status, created_at
+                    FROM pullback_watchlist
+                    WHERE status = 'WAITING'
+                    ORDER BY created_at DESC
+                """) as cur:
+                    rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Limit orders error: {e}")
+            return []
+
     @app.get("/api/rs-matrix")
     async def get_rs_matrix():
         try:

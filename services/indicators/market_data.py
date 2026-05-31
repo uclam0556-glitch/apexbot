@@ -152,8 +152,24 @@ async def get_funding_rate(symbol: str) -> dict:
     rate_pct = 0.0
     success = False
 
-    # 1. Try Coinglass
-    if cg_key:
+    # 1. Try Binance (Fastest, most reliable, no API key required)
+    try:
+        url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={binance_symbol}"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if isinstance(data, dict) and "lastFundingRate" in data:
+                        rate_str = data["lastFundingRate"]
+                        if rate_str is not None:
+                            rate_pct = float(rate_str) * 100
+                            success = True
+                            logger.debug(f"Binance Funding fetch successful for {symbol}: {rate_pct}%")
+    except Exception as e:
+        logger.debug(f"Binance Funding fetch failed for {symbol}: {e}")
+
+    # 2. Try Coinglass
+    if not success and cg_key:
         try:
             url = f"https://open-api.coinglass.com/public/v2/funding?exName=Binance&symbol={symbol_base}"
             headers = {"accept": "application/json", "coinglassSecret": cg_key}
@@ -173,7 +189,7 @@ async def get_funding_rate(symbol: str) -> dict:
         except Exception as e:
             logger.debug(f"Coinglass Funding fetch failed for {symbol}: {e}")
 
-    # 2. Fallback to Bybit
+    # 3. Fallback to Bybit
     if not success:
         try:
             url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={binance_symbol}"
