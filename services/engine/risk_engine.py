@@ -626,8 +626,8 @@ class RiskEngine:
         if z_score > 2.5 or rsi > 75:
             max_tp *= 0.7
 
-        # 3. Locate closest structural target/friction point (min of nearest resistance, LVN, and FVG)
-        # Safely parse swing points list or dict
+        # 3. Locate closest structural target/friction point (min of nearest resistance, HVN, and unmitigated FVG)
+        # Safely parse swing points list or dict (Resistance)
         swing_list = []
         if isinstance(swing_points, list):
             swing_list = swing_points
@@ -644,24 +644,24 @@ class RiskEngine:
         nearest_resistance = min(swing_highs) if swing_highs else None
         nearest_resistance_pct = (nearest_resistance - entry) / entry * 100 if nearest_resistance else None
 
-        # LVN (Low Volume Node)
-        lvn_list = []
+        # HVN / POC (High Volume Nodes act as key friction barriers where price stalls)
+        hvn_list = []
         if isinstance(volume_nodes, list):
-            lvn_list = volume_nodes
+            hvn_list = volume_nodes
         elif isinstance(volume_nodes, dict):
-            lvn_list = volume_nodes.get("lvn", []) + volume_nodes.get("lvns", [])
+            hvn_list = volume_nodes.get("lvn", []) + volume_nodes.get("lvns", []) + volume_nodes.get("hvn", []) + volume_nodes.get("hvns", []) + volume_nodes.get("poc", [])
             
-        valid_lvns = []
-        for vn in lvn_list:
+        valid_hvns = []
+        for vn in hvn_list:
             if hasattr(vn, 'type') and hasattr(vn, 'price'):
-                if vn.type == "LVN" and vn.price > entry:
-                    valid_lvns.append(vn.price)
-            elif isinstance(vn, dict) and vn.get("type") == "LVN" and vn.get("price", 0) > entry:
-                valid_lvns.append(vn.get("price"))
-        nearest_lvn = min(valid_lvns) if valid_lvns else None
-        nearest_lvn_pct = (nearest_lvn - entry) / entry * 100 if nearest_lvn else None
+                if vn.type in ["HVN", "POC"] and vn.price > entry:
+                    valid_hvns.append(vn.price)
+            elif isinstance(vn, dict) and vn.get("type") in ["HVN", "POC"] and vn.get("price", 0) > entry:
+                valid_hvns.append(vn.get("price"))
+        nearest_hvn = min(valid_hvns) if valid_hvns else None
+        nearest_hvn_pct = (nearest_hvn - entry) / entry * 100 if nearest_hvn else None
 
-        # FVG (Bearish FVG low)
+        # FVG (Unmitigated Bearish FVGs represent fresh institutional order imbalance acting as strong resistance)
         fvg_list = []
         if isinstance(imbalance_zones, list):
             fvg_list = imbalance_zones
@@ -672,21 +672,43 @@ class RiskEngine:
         for fvg in fvg_list:
             if hasattr(fvg, 'type') and hasattr(fvg, 'low'):
                 if fvg.type == "BEARISH_FVG" and fvg.low > entry:
-                    valid_fvgs.append(fvg.low)
+                    # Only target unmitigated FVGs (not fully filled, fill_pct < 0.8)
+                    filled = getattr(fvg, 'filled', False)
+                    fill_pct = getattr(fvg, 'fill_pct', 0.0)
+                    if not filled and fill_pct < 0.8:
+                        valid_fvgs.append(fvg.low)
             elif isinstance(fvg, dict) and fvg.get("type") == "BEARISH_FVG" and fvg.get("low", 0) > entry:
-                valid_fvgs.append(fvg.get("low"))
+                filled = fvg.get("filled", False)
+                fill_pct = fvg.get("fill_pct", 0.0)
+                if not filled and fill_pct < 0.8:
+                    valid_fvgs.append(fvg.get("low"))
         nearest_fvg = min(valid_fvgs) if valid_fvgs else None
         nearest_fvg_pct = (nearest_fvg - entry) / entry * 100 if nearest_fvg else None
 
-        # Gather all valid positive structural targets
-        valid_targets = [t for t in [nearest_resistance_pct, nearest_lvn_pct, nearest_fvg_pct] if t is not None and t > 0]
-        structure_target = min(valid_targets) if valid_targets else atr_target
+        # 4. Smart Target Selection & Early Friction Path Checking
+        min_tp_pct = risk_pct * 1.5
+        
+        # Gather all valid positive structural targets and sort them ascending
+        targets_list = sorted([t for t in [nearest_resistance_pct, nearest_hvn_pct, nearest_fvg_pct] if t is not None and t > 0])
+        
+        if targets_list:
+            closest_target = targets_list[0]
+            # If the absolute closest structural barrier is too close (< 1.5R), the setup is blocked too early.
+            # Entering the trade would be statistically unsafe as the price is likely to reverse at this near barrier.
+            if closest_target < min_tp_pct:
+                self._log.info("path_blocked_early_skipping", closest_target=round(closest_target, 2), required_tp=round(min_tp_pct, 2))
+                return None
+            else:
+                # The path is clear up to the first valid barrier, which meets our R:R gate!
+                structure_target = closest_target
+        else:
+            # No structural barriers found in the window, use basic ATR target
+            structure_target = atr_target
 
         # Final calculated TP target in percent
         raw_tp_pct = min(atr_target, structure_target, max_tp)
 
         # Enforce Minimum Risk-to-Reward Ratio (Min R:R = 1.5)
-        min_tp_pct = risk_pct * 1.5
         if raw_tp_pct < min_tp_pct:
             self._log.info("rr_ratio_insufficient_skipping", raw_tp=round(raw_tp_pct, 2), required_tp=round(min_tp_pct, 2))
             return None
