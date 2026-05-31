@@ -649,6 +649,22 @@ class RiskEngine:
                 tp1 = entry + max(2.0 * atr, sl_distance * 2.0)
             else:
                 tp1 = entry - max(2.0 * atr, sl_distance * 2.0)
+
+        # ─── VOLATILITY & R:R CAP (2-HOUR WINDOW REALISTIC TARGETS) ───
+        # For a standard 2-hour trade limit, the maximum realistic price expansion
+        # is capped based on 2-hour volatility (approx 2.5x 1h_ATR) and a professional
+        # maximum R:R of 3.0x stop loss risk.
+        max_tp1_dist = max(sl_distance * 1.5, min(2.5 * atr, sl_distance * 3.0))
+        if is_long:
+            max_tp1_price = entry + max_tp1_dist
+            if tp1 > max_tp1_price:
+                self._log.info("tp1_too_wide_capping", original_tp1=round(tp1, 4), capped_tp1=round(max_tp1_price, 4), reason="2h volatility/RR cap")
+                tp1 = max_tp1_price
+        else:
+            max_tp1_price = entry - max_tp1_dist
+            if tp1 < max_tp1_price:
+                self._log.info("tp1_too_wide_capping", original_tp1=round(tp1, 4), capped_tp1=round(max_tp1_price, 4), reason="2h volatility/RR cap")
+                tp1 = max_tp1_price
                 
         tp1_rr = abs(tp1 - entry) / sl_distance if sl_distance > 0 else 2.0
 
