@@ -473,8 +473,8 @@ class ApexSystem:
             # Dynamic config based on breadth
             dynamic_min_score = 65
             if breadth_pct < 40.0:
-                dynamic_min_score = 75
-                logger.warning(f"RISK-OFF: Breadth < 40% ({breadth_pct:.1f}%). Raising min score to 75.")
+                dynamic_min_score = 70
+                logger.warning(f"RISK-OFF: Breadth < 40% ({breadth_pct:.1f}%). Raising min score to 70.")
             elif breadth_pct > 70.0:
                 dynamic_min_score = 60
                 logger.info(f"RISK-ON: Breadth > 70% ({breadth_pct:.1f}%). Lowering min score to 60.")
@@ -588,8 +588,8 @@ class ApexSystem:
                     #     continue
 
                     # ─── FILTER 3: VOLUME GATE ────────────────────────────────────────────────
-                    if avg_vol_3 < baseline_hourly_vol * 0.50:
-                        logger.info(f"{symbol} - [BLOCKED] Volume Gate: Vol={avg_vol_3:.0f} < 50% of 24h baseline {baseline_hourly_vol:.0f}. Skipping.")
+                    if avg_vol_3 < baseline_hourly_vol * 0.40:
+                        logger.info(f"{symbol} - [BLOCKED] Volume Gate: Vol={avg_vol_3:.0f} < 40% of 24h baseline {baseline_hourly_vol:.0f}. Skipping.")
                         continue
 
                     # ─── CVD ANALYSIS ─────────────────────────────────────────────────────────
@@ -983,9 +983,16 @@ class ApexSystem:
                     # Total exposure slots: open trades + waiting pullbacks (APEX v10.4)
                     open_count = len(open_trades)
                     total_exposure = open_count + active_total
-                    if breadth_pct < 15.0:
+                    if breadth_pct < 10.0:
                         max_exposure = 0
-                        logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 15%. ALL new limits BLOCKED for {symbol}.")
+                        logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 10%. ALL new limits BLOCKED for {symbol}.")
+                    elif breadth_pct < 15.0:
+                        if symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"] and ultra_score >= 80:
+                            max_exposure = 1
+                            logger.info(f"RISK-OFF EXCEPTION: Breadth {breadth_pct:.1f}% (10-15%) but {symbol} is Major with score {ultra_score:.1f} >= 80. Allowing limit.")
+                        else:
+                            max_exposure = 0
+                            logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% (10-15%). {symbol} blocked (Score < 80 or not major).")
                     elif breadth_pct < 40.0:
                         max_exposure = 3
                     elif regime_val == "SIDEWAYS" or breadth_pct <= 70.0:
@@ -1590,9 +1597,16 @@ class ApexSystem:
                             open_count = len(open_trades)
                             total_exposure = open_count + active_total
                             breadth_pct = self.market_breadth
-                            if breadth_pct < 15.0:
+                            if breadth_pct < 10.0:
                                 max_exposure = 0
-                                logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 15%. ALL WAITING_STRUCTURE promotions BLOCKED for {symbol}.")
+                                logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 10%. ALL WAITING_STRUCTURE promotions BLOCKED for {symbol}.")
+                            elif breadth_pct < 15.0:
+                                if symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"] and item['score'] >= 80:
+                                    max_exposure = 1
+                                    logger.info(f"RISK-OFF EXCEPTION: Breadth {breadth_pct:.1f}% (10-15%) but {symbol} is Major with score {item['score']:.1f} >= 80. Allowing promotion.")
+                                else:
+                                    max_exposure = 0
+                                    logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% (10-15%). Promotion for {symbol} blocked (Score < 80 or not major).")
                             elif breadth_pct < 40.0:
                                 max_exposure = 3
                             elif item['regime'] == "SIDEWAYS" or breadth_pct <= 70.0:
