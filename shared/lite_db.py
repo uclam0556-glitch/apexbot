@@ -193,6 +193,19 @@ async def init_lite_db():
             except Exception:
                 pass
                 
+        # Add columns to shadow_trades if they don't exist
+        shadow_new_columns = [
+            ("regime", "TEXT"),
+            ("breadth", "REAL"),
+            ("cvd_score", "REAL"),
+            ("mtf_score", "REAL")
+        ]
+        for col_name, col_type in shadow_new_columns:
+            try:
+                await db.execute(f'ALTER TABLE shadow_trades ADD COLUMN {col_name} {col_type}')
+            except Exception:
+                pass
+                
         # Fix for orphaned BREAKEVEN trades from legacy multi-take-profit logic & granular recategorization
         try:
             # First, any true OPEN trades that got stuck at TP1 (legacy BREAKEVEN) and have no closed_at date are technically still running? 
@@ -227,7 +240,8 @@ async def save_trade(
     reasoning: str,
     strategy: str = "TREND",
     features_dict: dict = None,
-    source: str = "MARKET"
+    source: str = "MARKET",
+    status: str = "OPEN"
 ):
     """Saves a new open trade to SQLite."""
     async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
@@ -235,10 +249,10 @@ async def save_trade(
             INSERT INTO trades (
                 signal_id, symbol, direction, strategy, entry_price, stop_loss, 
                 take_profit_1, take_profit_2, take_profit_3, position_usd, status, opened_at, reasoning, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             signal_id, symbol, direction, strategy, entry_price, stop_loss, 
-            take_profit_1, None, None, position_usd, datetime.utcnow(), reasoning, source
+            take_profit_1, None, None, position_usd, status, datetime.utcnow(), reasoning, source
         ))
         trade_id = cursor.lastrowid
         
@@ -742,7 +756,11 @@ async def create_shadow_trade(
     take_profit_1: float,
     primary_block_reason: str,
     all_block_reasons: list,
-    v7_score: float
+    v7_score: float,
+    regime: str = "UNKNOWN",
+    breadth: float = 0.0,
+    cvd_score: float = 0.0,
+    mtf_score: float = 0.0
 ):
     """Creates a new shadow trade, ensuring no duplicates within 15 minutes."""
     if entry_price <= 0 or stop_loss <= 0 or take_profit_1 <= 0:
@@ -764,9 +782,10 @@ async def create_shadow_trade(
         await db.execute('''
             INSERT INTO shadow_trades (
                 symbol, direction, strategy, entry_price, stop_loss, take_profit_1, 
-                primary_block_reason, all_block_reasons, v7_score, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        ''', (symbol, direction, strategy, entry_price, stop_loss, take_profit_1, primary_block_reason, reasons_json, v7_score))
+                primary_block_reason, all_block_reasons, v7_score, 
+                regime, breadth, cvd_score, mtf_score, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ''', (symbol, direction, strategy, entry_price, stop_loss, take_profit_1, primary_block_reason, reasons_json, v7_score, regime, breadth, cvd_score, mtf_score))
         await db.commit()
         
         import logging

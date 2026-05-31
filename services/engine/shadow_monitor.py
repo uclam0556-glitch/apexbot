@@ -53,13 +53,18 @@ class ShadowTradeMonitor:
 
         # Filter symbols that exist in exchange markets
         valid_symbols = []
+        from shared.symbols import is_symbol_supported
+        
+        if not hasattr(self, "invalid_symbol_cache"):
+            self.invalid_symbol_cache = set()
+            
         for symbol in list(set([t['symbol'] for t in trades])):
-            if symbol in self.exchange.markets:
+            if is_symbol_supported(symbol, self.exchange.markets):
                 valid_symbols.append(symbol)
             else:
-                # Many futures use linear contracts, e.g., 'FLOKI/USDT:USDT' or '1000FLOKI/USDT'
-                # For simplicity, we just skip invalid spot symbols on the futures exchange
-                pass
+                if symbol not in self.invalid_symbol_cache:
+                    logger.warning(f"ShadowMonitor: Symbol {symbol} not supported by {self.exchange.id}. Skipping.")
+                    self.invalid_symbol_cache.add(symbol)
                 
         if not valid_symbols:
             return

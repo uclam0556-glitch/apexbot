@@ -129,6 +129,9 @@ class DataSourceConfig(BaseSettings):
 class TradingConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TRADING_", env_file=".env", extra="ignore")
 
+    # LIVE TRADING GUARD
+    live_trading_enabled: bool = False
+
     # Monitored symbols — Top 60 spot pairs by volume & narrative
     symbols: list[str] = [
         # Majors & Large Caps

@@ -110,7 +110,52 @@ class OrderFillMonitor:
             logger.info(f"Trade for {signal_id} already exists. Ignoring duplicate fill.")
             return
 
-        # 1. Create record in trades DB
+        trade_status = "OPEN"
+        
+        # 2. Place SL as stop-market order with RETRIES
+        sl_success = False
+        for attempt in range(3):
+            try:
+                sl_order = await self.exchange.create_order(
+                    symbol, "stop", "sell", 
+                    amount, None,
+                    params={'stopPrice': item['stop_loss']}
+                )
+                sl_order_id = sl_order.get('id')
+                logger.info(f"Placed Stop Market SL for {symbol} at {item['stop_loss']}")
+                sl_success = True
+                break
+            except Exception as e:
+                logger.error(f"Failed to place SL for {symbol} (attempt {attempt+1}/3): {e}")
+                await asyncio.sleep(1 + attempt*2)
+                
+        if not sl_success:
+            trade_status = "UNPROTECTED"
+            struct_logger.error("SL_PLACE_FAILED_CRITICAL", symbol=symbol)
+            logger.critical(f"CRITICAL: Failed to place LIMIT FILL SL for {symbol} after 3 attempts! Position is UNPROTECTED.")
+            
+        # 3. Place TP1 as limit order with RETRIES
+        tp_success = False
+        for attempt in range(3):
+            try:
+                tp_amount = amount * 0.40
+                tp_order = await self.exchange.create_order(
+                    symbol, "limit", "sell",
+                    tp_amount, item['take_profit_1']
+                )
+                tp_order_id = tp_order.get('id')
+                logger.info(f"Placed Limit TP1 for {symbol} at {item['take_profit_1']}")
+                tp_success = True
+                break
+            except Exception as e:
+                logger.error(f"Failed to place TP1 for {symbol} (attempt {attempt+1}/3): {e}")
+                await asyncio.sleep(1 + attempt*2)
+                
+        if not tp_success and sl_success:
+            trade_status = "OPEN_PROTECTED_NO_TP"
+            struct_logger.error("TP_PLACE_FAILED", symbol=symbol)
+            
+        # 4. Create record in trades DB with final status
         await save_trade(
             signal_id=signal_id,
             symbol=symbol,
@@ -121,41 +166,11 @@ class OrderFillMonitor:
             position_usd=entry_price * amount,
             reasoning="PARTIAL_LIMIT_FILL" if is_partial else "LIMIT_FILL",
             strategy="PULLBACK_LIVE",
-            source="LIMIT"
+            source="LIMIT",
+            status=trade_status
         )
-        
-        import structlog
-        struct_logger = structlog.get_logger("telemetry")
-        sl_order_id = None
-        tp_order_id = None
-        
-        # 2. Place SL as stop-market order
-        try:
-            sl_order = await self.exchange.create_order(
-                symbol, "stop", "sell", 
-                amount, None,
-                params={'stopPrice': item['stop_loss']}
-            )
-            sl_order_id = sl_order.get('id')
-            logger.info(f"Placed Stop Market SL for {symbol} at {item['stop_loss']}")
-        except Exception as e:
-            logger.error(f"Failed to place SL for {symbol}: {e}")
-            struct_logger.error("SL_PLACE_FAILED", symbol=symbol, error=str(e))
             
-        # 3. Place TP1 as limit order
-        try:
-            tp_amount = amount * 0.40
-            tp_order = await self.exchange.create_order(
-                symbol, "limit", "sell",
-                tp_amount, item['take_profit_1']
-            )
-            tp_order_id = tp_order.get('id')
-            logger.info(f"Placed Limit TP1 for {symbol} at {item['take_profit_1']}")
-        except Exception as e:
-            logger.error(f"Failed to place TP1 for {symbol}: {e}")
-            struct_logger.error("TP_PLACE_FAILED", symbol=symbol, error=str(e))
-            
-        # 4. Update status in database
+        # 5. Update status in pullback watchlist
         await update_pullback_status(item['id'], "FILLED")
         
         struct_logger.info(

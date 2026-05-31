@@ -711,7 +711,7 @@ class ApexSystem:
                     if not check_mtf_gate(symbol, mtf_score.score, trade_direction, regime_val, trade_strategy):
                         proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
                         proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
-                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "MTF Gate", [f"MTF={mtf_score.score:.1f}"], 0.0)
+                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "MTF Gate", [f"MTF={mtf_score.score:.1f}"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                         continue
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 1: ATR MOMENTUM EXHAUSTION ─────────────
@@ -728,7 +728,7 @@ class ApexSystem:
                             await save_filter_block(symbol, trade_direction, "Momentum Exhaustion", current_price)
                             proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
                             proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
-                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Momentum Exhaustion", [f"Up {price_change_4h_pct:.2f}%"], 0.0)
+                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Momentum Exhaustion", [f"Up {price_change_4h_pct:.2f}%"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                             continue
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 2: GRADIENT PREMIUM ZONE ────────────────
@@ -759,23 +759,34 @@ class ApexSystem:
                             logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
                             await save_filter_block(symbol, trade_direction, "Absorption Trap", current_price)
                             # Create shadow trade
-                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, current_price * 0.98, current_price * 1.06, "Absorption Trap", ["Retail FOMO against MM CVD"], 0.0)
+                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, current_price * 0.98, current_price * 1.06, "Absorption Trap", ["Retail FOMO against MM CVD"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                             continue
                     else:
                         logger.warning(f"{symbol} - Absorption Trap filter skipped due to funding rate data source failure.")
 
                     # ─── V6.0 DATA HEALTH CHECK ────────────────────────────────────────────────
-                    ws_data = global_state.live_prices.get(symbol, {})
-                    last_ws_ts = ws_data.get("timestamp", 0)
-                    health_score = compute_data_health(symbol, last_ws_ts, avg_vol_3, baseline_hourly_vol, funding_pct)
+                    from shared.symbols import normalize_symbol
                     
-                    if health_score < 60.0:
+                    ws_data = global_state.live_prices.get(symbol, {})
+                    if not ws_data:
+                        ws_data = global_state.live_prices.get(normalize_symbol(symbol), {})
+                        
+                    last_ws_ts = ws_data.get("timestamp", 0)
+                    health_data = compute_data_health(symbol, last_ws_ts, avg_vol_3, baseline_hourly_vol, funding_pct)
+                    health_score = health_data["score"]
+                    
+                    if health_data["status"] == "BAD":
                         logger.warning(f"{symbol} - [BLOCKED] Data Health Score {health_score:.1f} < 60. Data is too corrupt/stale.")
                         await save_filter_block(symbol, trade_direction, "Data Health < 60", current_price)
                         proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
                         proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
-                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Data Health", [f"Score={health_score:.1f}"], 0.0)
+                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Data Health", health_data["reasons"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                         continue
+                        
+                    if health_data["status"] == "DEGRADED":
+                        v7_score -= 10.0
+                    elif health_data["status"] == "DEGRADED_SEVERE":
+                        v7_score -= 20.0
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 4: Z-SCORE GRAVITY ─────────────────────
                     ema_100 = df_1h['close'].rolling(100).mean().iloc[-1] if len(df_1h) >= 100 else df_1h['close'].mean()
@@ -1001,7 +1012,7 @@ class ApexSystem:
                         # Create Shadow Trade
                         proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
                         proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
-                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "V7 Score", [f"Score={v7_score:.1f}"], v7_score)
+                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "V7 Score", [f"Score={v7_score:.1f}"], v7_score, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                         
                         continue
                         
@@ -1282,85 +1293,115 @@ class ApexSystem:
                         breadth_pct >= 30.0 and
                         market_ctx.get("funding", {}).get("is_valid", False) and
                         market_ctx.get("open_interest", {}).get("is_valid", False) and
-                        health_score >= 90.0
+                        health_data["market_allowed"]
                     )
 
                     if is_market_entry:
-                        # 1. Place Market Order
                         amount = position_usd / current_price
+                        entry_price = current_price
+                        sl_order_id = None
+                        tp_order_id = None
+                        execution_mode = "DEMO"
+                        trade_status = "OPEN"
+                        
+                        if not self.config.trading.live_trading_enabled:
+                            logger.info(f"[DEMO MODE] {symbol} Market entry simulated. No real order sent.")
+                        else:
+                            execution_mode = "LIVE"
+                            # 1. Place Market Order
+                            try:
+                                order = await self.exchange.create_order(symbol, 'market', 'buy', amount)
+                                entry_price = order.get('average', current_price)
+                                filled_amount = order.get('amount', amount)
+                                logger.info(f"LIVE Market Fill for {symbol} at {entry_price}")
+                                
+                                # 2. Immediate SL with RETRIES
+                                import asyncio
+                                sl_success = False
+                                for attempt in range(3):
+                                    try:
+                                        sl_order = await self.exchange.create_order(symbol, "stop", "sell", filled_amount, sltp.stop_loss, params={'stopPrice': sltp.stop_loss})
+                                        sl_order_id = sl_order.get('id')
+                                        logger.info(f"Placed Stop Market SL for {symbol} at {sltp.stop_loss}")
+                                        sl_success = True
+                                        break
+                                    except Exception as sl_err:
+                                        logger.error(f"Failed SL for {symbol} (attempt {attempt+1}/3): {sl_err}")
+                                        await asyncio.sleep(1 + attempt*2)
+                                
+                                if not sl_success:
+                                    trade_status = "UNPROTECTED"
+                                    import structlog
+                                    structlog.get_logger("telemetry").error("SL_PLACE_FAILED_CRITICAL", symbol=symbol)
+                                    logger.critical(f"CRITICAL: Failed to place SL for {symbol} after 3 attempts! Position is UNPROTECTED.")
+                                
+                                # 3. Immediate TP with RETRIES
+                                tp_success = False
+                                for attempt in range(3):
+                                    try:
+                                        tp_order = await self.exchange.create_order(symbol, "limit", "sell", filled_amount * 0.40, sltp.take_profit_1)
+                                        tp_order_id = tp_order.get('id')
+                                        logger.info(f"Placed Limit TP1 for {symbol} at {sltp.take_profit_1}")
+                                        tp_success = True
+                                        break
+                                    except Exception as tp_err:
+                                        logger.error(f"Failed TP1 for {symbol} (attempt {attempt+1}/3): {tp_err}")
+                                        await asyncio.sleep(1 + attempt*2)
+                                        
+                                if not tp_success and sl_success:
+                                    trade_status = "OPEN_PROTECTED_NO_TP"
+                                
+                            except Exception as exec_err:
+                                logger.error(f"Failed to execute Market Order for {symbol}: {exec_err}")
+                                continue
+                                
+                        # Save to trades
+                        from shared.lite_db import save_trade
+                        await save_trade(
+                            signal_id=str(int(datetime.utcnow().timestamp())),
+                            symbol=symbol,
+                            direction=trade_direction,
+                            entry_price=entry_price,
+                            stop_loss=sltp.stop_loss,
+                            take_profit_1=sltp.take_profit_1,
+                            position_usd=position_usd,
+                            reasoning=f"MARKET ENTRY | {strat_label} | Score {ultra_score:.1f}/100",
+                            strategy=trade_strategy,
+                            features_dict=features_dict,
+                            source="MARKET",
+                            status=trade_status
+                        )
+                        
+                        import structlog
+                        struct_logger = structlog.get_logger("telemetry")
+                        struct_logger.info(
+                            "MARKET_ENTRY",
+                            symbol=symbol,
+                            avg_fill_price=entry_price,
+                            sl_order_id=sl_order_id,
+                            tp_order_id=tp_order_id,
+                            source="MARKET",
+                            mode=execution_mode,
+                            status=trade_status
+                        )
+                        logger.info(f"MARKET Signal executed ({execution_mode}): {symbol} {trade_direction}")
+                        
+                        # 4. Send Telegram MARKET Alert
+                        signal_data["entry_price"] = entry_price
+                        signal_data["source"] = "MARKET"
                         try:
-                            order = await self.exchange.create_order(symbol, 'market', 'buy', amount)
-                            entry_price = order.get('average', current_price)
-                            filled_amount = order.get('amount', amount)
-                            
-                            sl_order_id = None
-                            tp_order_id = None
-                            
-                            # 2. Immediate SL / TP1
-                            try:
-                                sl_order = await self.exchange.create_order(symbol, "stop", "sell", filled_amount, sltp.stop_loss, params={'stopPrice': sltp.stop_loss})
-                                sl_order_id = sl_order.get('id')
-                                logger.info(f"Placed Stop Market SL for {symbol} at {sltp.stop_loss}")
-                            except Exception as sl_err:
-                                logger.error(f"Failed to place SL for {symbol}: {sl_err}")
-                                import structlog
-                                structlog.get_logger("telemetry").error("SL_PLACE_FAILED", symbol=symbol, error=str(sl_err))
-                                
-                            try:
-                                tp_order = await self.exchange.create_order(symbol, "limit", "sell", filled_amount * 0.40, sltp.take_profit_1)
-                                tp_order_id = tp_order.get('id')
-                                logger.info(f"Placed Limit TP1 for {symbol} at {sltp.take_profit_1}")
-                            except Exception as tp_err:
-                                logger.error(f"Failed to place TP1 for {symbol}: {tp_err}")
-                                import structlog
-                                structlog.get_logger("telemetry").error("TP_PLACE_FAILED", symbol=symbol, error=str(tp_err))
-                                
-                            # 3. Save to trades (MARKET)
-                            await save_trade(
-                                signal_id=str(int(datetime.utcnow().timestamp())),
-                                symbol=symbol,
-                                direction=trade_direction,
-                                entry_price=entry_price,
-                                stop_loss=sltp.stop_loss,
-                                take_profit_1=sltp.take_profit_1,
-                                position_usd=position_usd,
-                                reasoning=f"MARKET ENTRY | {strat_label} | Score {ultra_score:.1f}/100 | RSI {rsi_now:.0f}",
-                                strategy=trade_strategy,
-                                features_dict=features_dict,
-                                source="MARKET"
-                            )
-                            
-                            import structlog
-                            struct_logger = structlog.get_logger("telemetry")
-                            struct_logger.info(
-                                "MARKET_ENTRY",
-                                symbol=symbol,
-                                market_order_id=order.get('id'),
-                                avg_fill_price=entry_price,
-                                sl_order_id=sl_order_id,
-                                tp_order_id=tp_order_id,
-                                source="MARKET"
-                            )
-                            logger.info(f"MARKET Signal executed and saved: {symbol} {trade_direction}")
-                            
-                            # 4. Send Telegram MARKET Alert
-                            signal_data["entry_price"] = entry_price
-                            signal_data["source"] = "MARKET"
-                            try:
-                                from aiogram import Bot
-                                token = self.config.alerts.telegram_bot_token.get_secret_value()
-                                chat_id_str = self.config.alerts.telegram_chat_id
-                                if token and chat_id_str:
-                                    bot = Bot(token=token)
-                                    from services.notifications.telegram_ui import send_signal
-                                    await send_signal(bot, int(chat_id_str), signal_data)
-                                    await bot.session.close()
-                                    global_state.signals_sent_today += 1
-                            except Exception as send_err:
-                                logger.error(f"Failed to send MARKET signal: {send_err}")
-                                
-                        except Exception as mkt_err:
-                            logger.error(f"Market entry failed for {symbol}: {mkt_err}")
+                            from aiogram import Bot
+                            token = self.config.alerts.telegram_bot_token.get_secret_value()
+                            chat_id_str = self.config.alerts.telegram_chat_id
+                            if token and chat_id_str:
+                                bot = Bot(token=token)
+                                from services.notifications.telegram_ui import send_signal
+                                await send_signal(bot, int(chat_id_str), signal_data)
+                                await bot.session.close()
+                                global_state.signals_sent_today += 1
+                        except Exception as send_err:
+                            logger.error(f"Failed to send MARKET signal: {send_err}")
+
                     else:
                         # ─── LIMIT / PULLBACK PATH ────────────────────────────────────────────────
                         from shared.lite_db import save_pullback_item
