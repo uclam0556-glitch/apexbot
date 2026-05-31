@@ -6,14 +6,14 @@ import ccxt.async_support as ccxt
 import json
 
 from shared.lite_db import get_tracking_shadow_trades, update_shadow_trade_status
-from shared.config import get_exchange_config
+from shared.config import get_config
 
 logger = logging.getLogger("ShadowMonitor")
 
 class ShadowTradeMonitor:
     def __init__(self):
         self.running = False
-        config = get_exchange_config()
+        config = get_config()
         self.exchange = ccxt.binance({
             'enableRateLimit': True,
             'options': {
