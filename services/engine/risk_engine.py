@@ -590,7 +590,16 @@ class RiskEngine:
         # If the required structural stop loss exceeds 2.5%, we skip the trade to maintain good P&L math
         max_sl_allowed = entry * 0.025
         if sl_distance > max_sl_allowed:
-            self._log.info("sl_too_wide_skipping", entry=round(entry, 4), sl_pct=round(sl_distance/entry*100, 2))
+            self._log.info(
+                "sl_tp_rejected",
+                entry=round(entry, 4),
+                direction=direction,
+                structure_target_type="ATR",
+                structure_target_pct=0.0,
+                first_barrier_pct=0.0,
+                min_required_tp_pct=round(entry * 0.007 / entry * 100 * 1.5, 2),
+                tp_rejected_reason="sl_too_wide",
+            )
             return None
 
         # Round-number proximity check
@@ -685,6 +694,15 @@ class RiskEngine:
         nearest_fvg = min(valid_fvgs) if valid_fvgs else None
         nearest_fvg_pct = (nearest_fvg - entry) / entry * 100 if nearest_fvg else None
 
+        # Helper to classify target types
+        target_types = {}
+        if nearest_resistance_pct is not None and nearest_resistance_pct > 0:
+            target_types[nearest_resistance_pct] = "RESISTANCE"
+        if nearest_hvn_pct is not None and nearest_hvn_pct > 0:
+            target_types[nearest_hvn_pct] = "HVN_POC"
+        if nearest_fvg_pct is not None and nearest_fvg_pct > 0:
+            target_types[nearest_fvg_pct] = "FVG"
+
         # 4. Smart Target Selection & Early Friction Path Checking
         min_tp_pct = risk_pct * 1.5
         
@@ -696,7 +714,17 @@ class RiskEngine:
             # If the absolute closest structural barrier is too close (< 1.5R), the setup is blocked too early.
             # Entering the trade would be statistically unsafe as the price is likely to reverse at this near barrier.
             if closest_target < min_tp_pct:
-                self._log.info("path_blocked_early_skipping", closest_target=round(closest_target, 2), required_tp=round(min_tp_pct, 2))
+                rejected_type = target_types.get(closest_target, "UNKNOWN")
+                self._log.info(
+                    "sl_tp_rejected",
+                    entry=round(entry, 4),
+                    direction=direction,
+                    structure_target_type=rejected_type,
+                    structure_target_pct=round(closest_target, 2),
+                    first_barrier_pct=round(closest_target, 2),
+                    min_required_tp_pct=round(min_tp_pct, 2),
+                    tp_rejected_reason="path_blocked_early",
+                )
                 return None
             else:
                 # The path is clear up to the first valid barrier, which meets our R:R gate!
@@ -710,12 +738,23 @@ class RiskEngine:
 
         # Enforce Minimum Risk-to-Reward Ratio (Min R:R = 1.5)
         if raw_tp_pct < min_tp_pct:
-            self._log.info("rr_ratio_insufficient_skipping", raw_tp=round(raw_tp_pct, 2), required_tp=round(min_tp_pct, 2))
+            rejected_type = target_types.get(structure_target, "ATR")
+            self._log.info(
+                "sl_tp_rejected",
+                entry=round(entry, 4),
+                direction=direction,
+                structure_target_type=rejected_type,
+                structure_target_pct=round(structure_target, 2),
+                first_barrier_pct=round(targets_list[0], 2) if targets_list else 0.0,
+                min_required_tp_pct=round(min_tp_pct, 2),
+                tp_rejected_reason="insufficient_rr",
+            )
             return None
 
         # Map TP percent back to absolute price
         tp1 = entry * (1 + raw_tp_pct / 100)
         tp1_rr = raw_tp_pct / risk_pct
+        target_type_selected = target_types.get(structure_target, "ATR")
 
         self._log.info(
             "sl_tp_dynamic_calculated",
@@ -728,6 +767,11 @@ class RiskEngine:
             raw_tp_pct=round(raw_tp_pct, 2),
             risk_pct=round(risk_pct, 2),
             sl_near_round=sl_near_round_number,
+            structure_target_type=target_type_selected,
+            structure_target_pct=round(structure_target, 2),
+            first_barrier_pct=round(targets_list[0], 2) if targets_list else 0.0,
+            min_required_tp_pct=round(min_tp_pct, 2),
+            tp_rejected_reason="",
         )
 
         return SLTPResult(
@@ -736,6 +780,11 @@ class RiskEngine:
             rr_ratio_tp1=round(tp1_rr, 4),
             sl_buffer_pct=round(sl_buffer_actual, 4),
             sl_near_round_number=sl_near_round_number,
+            structure_target_type=target_type_selected,
+            structure_target_pct=round(structure_target, 2),
+            first_barrier_pct=round(targets_list[0], 2) if targets_list else 0.0,
+            min_required_tp_pct=round(min_tp_pct, 2),
+            tp_rejected_reason="",
         )
 
     # ------------------------------------------------------------------

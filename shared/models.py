@@ -440,6 +440,11 @@ class SLTPResult(BaseModel):
     rr_ratio_tp1: float
     sl_buffer_pct: float
     sl_near_round_number: bool  # adversarial warning
+    structure_target_type: Optional[str] = "ATR"
+    structure_target_pct: Optional[float] = 0.0
+    first_barrier_pct: Optional[float] = 0.0
+    min_required_tp_pct: Optional[float] = 0.0
+    tp_rejected_reason: Optional[str] = ""
 
 
 class CorrelationResult(BaseModel):
