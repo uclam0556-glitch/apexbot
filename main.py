@@ -1730,7 +1730,8 @@ class ApexSystem:
                                 rotation_signal=self.rotation_state
                             )
                             
-                            new_score = confluence.raw_score
+                            # Scale raw_score to 0-100 to match original_score (v7_score)
+                            new_score = confluence.raw_score * 10.0
                             original_score = item['score']
                             
                             # Enriched Cancellations Check (APEX v10.4)
