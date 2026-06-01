@@ -128,14 +128,18 @@ class ShadowTradeMonitor:
             else:
                 if direction == 'LONG':
                     if live_price <= sl:
-                        status = 'LOST'
+                        pnl_pct = (sl - entry) / entry * 100
+                        status = 'LOST' if pnl_pct <= -1.0 else 'BREAKEVEN'
                     elif live_price >= tp1:
-                        status = 'WON'
+                        pnl_pct = (tp1 - entry) / entry * 100
+                        status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
                 elif direction == 'SHORT':
                     if live_price >= sl:
-                        status = 'LOST'
+                        pnl_pct = (entry - sl) / entry * 100
+                        status = 'LOST' if pnl_pct <= -1.0 else 'BREAKEVEN'
                     elif live_price <= tp1:
-                        status = 'WON'
+                        pnl_pct = (entry - tp1) / entry * 100
+                        status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
             
             if status != 'TRACKING':
                 # Calculate true MFE/MAE using OHLCV since creation
