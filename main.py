@@ -1709,12 +1709,25 @@ class ApexSystem:
                             smc_analysis = self.smc_core.analyze(df_1h, symbol)
                             
                             # Confluence V7 score re-calculation
-                            confluence = self.confluence_engine.calculate_confluence_score(
+                            from shared.models import Direction, MarketRegime
+                            from services.intelligence.ofi_engine import OFIResult
+                            
+                            dir_enum = Direction.LONG if item.get('direction', 'LONG') == 'LONG' else Direction.SHORT
+                            current_regime = MarketRegime(item.get('regime', 'BULL'))
+                            ofi_mock = OFIResult(0.0, 0.0, 0.0)
+                            
+                            confluence = await self.confluence_engine.calculate_score(
                                 symbol=symbol,
-                                mtf_score=mtf_val,
-                                rsi=rsi_val,
-                                regime=item['regime'],
-                                smc=smc_analysis
+                                direction=dir_enum,
+                                current_price=df_1h['close'].iloc[-1],
+                                df_1h=df_1h,
+                                rsi_series=100 - (100 / (1 + rs)),
+                                smc=smc_analysis,
+                                mtf_score=mtf_score,
+                                ofi=ofi_mock,
+                                regime=current_regime,
+                                macro_bias=self.macro_state.macro_bias.value,
+                                rotation_signal=self.rotation_state
                             )
                             
                             new_score = confluence.raw_score
