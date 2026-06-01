@@ -140,30 +140,30 @@ class TradingConfig(BaseSettings):
         "TON/USDT", "DOT/USDT", "LTC/USDT", "BCH/USDT", "ETC/USDT",
         "ATOM/USDT", "FIL/USDT", "ICP/USDT", "NEAR/USDT", "APT/USDT",
 
-        "SUI/USDT", "SEI/USDT", "INJ/USDT", "TIA/USDT", "KAS/USDT",
+        "SUI/USDT", "SEI/USDT", "INJ/USDT", "TIA/USDT",
         "ALGO/USDT", "HBAR/USDT", "VET/USDT", "EGLD/USDT", "XTZ/USDT",
 
         "ARB/USDT", "OP/USDT", "STRK/USDT", "POL/USDT", "MANTA/USDT",
         "METIS/USDT", "ZK/USDT", "ZRO/USDT",
 
         "RENDER/USDT", "FET/USDT", "WLD/USDT", "TAO/USDT", "ARKM/USDT",
-        "GRT/USDT", "IO/USDT", "AIOZ/USDT", "AKT/USDT", "ATH/USDT",
+        "GRT/USDT", "IO/USDT", "ATH/USDT",
 
         "AAVE/USDT", "UNI/USDT", "LDO/USDT", "PENDLE/USDT", "GMX/USDT",
-        "RUNE/USDT", "MKR/USDT", "SNX/USDT", "COMP/USDT", "CRV/USDT",
+        "RUNE/USDT", "SNX/USDT", "COMP/USDT", "CRV/USDT",
         "DYDX/USDT", "1INCH/USDT", "CAKE/USDT", "ENA/USDT", "ETHFI/USDT",
 
         "ONDO/USDT", "PYTH/USDT", "JUP/USDT", "JTO/USDT", "W/USDT",
-        "AEVO/USDT", "ALT/USDT", "DYM/USDT", "OM/USDT", "QNT/USDT",
+        "AEVO/USDT", "DYM/USDT", "QNT/USDT",
 
         "PEPE/USDT", "WIF/USDT", "BONK/USDT", "SHIB/USDT", "FLOKI/USDT",
-        "BRETT/USDT", "MEW/USDT", "TURBO/USDT", "BOME/USDT", "NOT/USDT",
+        "MEW/USDT", "TURBO/USDT", "BOME/USDT", "NOT/USDT",
 
         "SAND/USDT", "MANA/USDT", "GALA/USDT", "IMX/USDT", "AXS/USDT",
         "APE/USDT", "PIXEL/USDT", "PORTAL/USDT", "BIGTIME/USDT", "GMT/USDT",
 
         "STX/USDT", "BLUR/USDT", "IOTX/USDT", "XLM/USDT", "XMR/USDT",
-        "THETA/USDT", "KAVA/USDT", "FLOW/USDT", "CHZ/USDT", "ZIL/USDT"
+        "KAVA/USDT", "FLOW/USDT", "CHZ/USDT", "ZIL/USDT"
     ]
 
     sector_leaders: dict[str, str] = {
@@ -182,19 +182,19 @@ class TradingConfig(BaseSettings):
         "ARB/USDT": "L2", "OP/USDT": "L2", "STRK/USDT": "L2", "POL/USDT": "L2", "MANTA/USDT": "L2", "METIS/USDT": "L2", "ZK/USDT": "L2", "ZRO/USDT": "L2",
         # DEFI
         "AAVE/USDT": "DEFI", "UNI/USDT": "DEFI", "LDO/USDT": "DEFI", "GMX/USDT": "DEFI", "RUNE/USDT": "DEFI", "PENDLE/USDT": "DEFI", 
-        "MKR/USDT": "DEFI", "SNX/USDT": "DEFI", "COMP/USDT": "DEFI", "CRV/USDT": "DEFI", "DYDX/USDT": "DEFI", "1INCH/USDT": "DEFI", "CAKE/USDT": "DEFI", "ENA/USDT": "DEFI", "ETHFI/USDT": "DEFI", "JUP/USDT": "DEFI", "JTO/USDT": "DEFI",
+        "SNX/USDT": "DEFI", "COMP/USDT": "DEFI", "CRV/USDT": "DEFI", "DYDX/USDT": "DEFI", "1INCH/USDT": "DEFI", "CAKE/USDT": "DEFI", "ENA/USDT": "DEFI", "ETHFI/USDT": "DEFI", "JUP/USDT": "DEFI", "JTO/USDT": "DEFI",
         # AI
-        "RENDER/USDT": "AI", "FET/USDT": "AI", "WLD/USDT": "AI", "TAO/USDT": "AI", "ARKM/USDT": "AI", "GRT/USDT": "AI", "IO/USDT": "AI", "AIOZ/USDT": "AI", "AKT/USDT": "AI", "ATH/USDT": "AI",
+        "RENDER/USDT": "AI", "FET/USDT": "AI", "WLD/USDT": "AI", "TAO/USDT": "AI", "ARKM/USDT": "AI", "GRT/USDT": "AI", "IO/USDT": "AI", "ATH/USDT": "AI",
         # MEME
-        "PEPE/USDT": "MEME", "WIF/USDT": "MEME", "BONK/USDT": "MEME", "SHIB/USDT": "MEME", "FLOKI/USDT": "MEME", "DOGE/USDT": "MEME", "BRETT/USDT": "MEME", "MEW/USDT": "MEME", "TURBO/USDT": "MEME", "BOME/USDT": "MEME", "NOT/USDT": "MEME",
+        "PEPE/USDT": "MEME", "WIF/USDT": "MEME", "BONK/USDT": "MEME", "SHIB/USDT": "MEME", "FLOKI/USDT": "MEME", "DOGE/USDT": "MEME", "MEW/USDT": "MEME", "TURBO/USDT": "MEME", "BOME/USDT": "MEME", "NOT/USDT": "MEME",
         # L1
-        "SOL/USDT": "L1", "SUI/USDT": "L1", "APT/USDT": "L1", "NEAR/USDT": "L1", "SEI/USDT": "L1", "INJ/USDT": "L1", "AVAX/USDT": "L1", "ADA/USDT": "L1", "TON/USDT": "L1", "TIA/USDT": "L1", "KAS/USDT": "L1", "ALGO/USDT": "L1", "HBAR/USDT": "L1", "VET/USDT": "L1", "EGLD/USDT": "L1", "XTZ/USDT": "L1", "ATOM/USDT": "L1", "FIL/USDT": "L1", "ICP/USDT": "L1",
+        "SOL/USDT": "L1", "SUI/USDT": "L1", "APT/USDT": "L1", "NEAR/USDT": "L1", "SEI/USDT": "L1", "INJ/USDT": "L1", "AVAX/USDT": "L1", "ADA/USDT": "L1", "TON/USDT": "L1", "TIA/USDT": "L1", "ALGO/USDT": "L1", "HBAR/USDT": "L1", "VET/USDT": "L1", "EGLD/USDT": "L1", "XTZ/USDT": "L1", "ATOM/USDT": "L1", "FIL/USDT": "L1", "ICP/USDT": "L1",
         # RWA / Oracles / Restaking
-        "ONDO/USDT": "RWA", "PYTH/USDT": "RWA", "W/USDT": "RWA", "AEVO/USDT": "RWA", "ALT/USDT": "RWA", "DYM/USDT": "RWA", "OM/USDT": "RWA", "QNT/USDT": "RWA",
+        "ONDO/USDT": "RWA", "PYTH/USDT": "RWA", "W/USDT": "RWA", "AEVO/USDT": "RWA", "DYM/USDT": "RWA", "QNT/USDT": "RWA",
         # GAMING
         "SAND/USDT": "GAMING", "MANA/USDT": "GAMING", "GALA/USDT": "GAMING", "IMX/USDT": "GAMING", "AXS/USDT": "GAMING", "APE/USDT": "GAMING", "PIXEL/USDT": "GAMING", "PORTAL/USDT": "GAMING", "BIGTIME/USDT": "GAMING", "GMT/USDT": "GAMING",
         # Others
-        "STX/USDT": "L2", "BLUR/USDT": "GAMING", "IOTX/USDT": "L1", "XLM/USDT": "L1", "XMR/USDT": "L1", "THETA/USDT": "L1", "KAVA/USDT": "DEFI", "FLOW/USDT": "L1", "CHZ/USDT": "GAMING", "ZIL/USDT": "L1"
+        "STX/USDT": "L2", "BLUR/USDT": "GAMING", "IOTX/USDT": "L1", "XLM/USDT": "L1", "XMR/USDT": "L1", "KAVA/USDT": "DEFI", "FLOW/USDT": "L1", "CHZ/USDT": "GAMING", "ZIL/USDT": "L1"
     }
 
     # Extended list cleared out since we consolidated to 100 in the main list
