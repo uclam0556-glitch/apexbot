@@ -1709,7 +1709,7 @@ class ApexSystem:
                             smc_analysis = self.smc_core.analyze(df_1h, symbol)
                             
                             # Confluence V7 score re-calculation
-                            confluence = rs_matrix_engine.confluence_v4.calculate_confluence_score(
+                            confluence = self.confluence_engine.calculate_confluence_score(
                                 symbol=symbol,
                                 mtf_score=mtf_val,
                                 rsi=rsi_val,
