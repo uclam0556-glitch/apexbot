@@ -1504,7 +1504,7 @@ async function openShadowModal() {
     } else {
       trades.forEach(t => {
         let dirClass = t.direction === 'LONG' ? 'badge-won' : 'badge-lost';
-        let statusColor = t.status === 'TRACKING' ? 'text-cyan' : (t.status === 'WON' ? 'text-green' : (t.status === 'LOST' ? 'text-red' : ''));
+        let statusColor = t.status === 'TRACKING' ? 'text-cyan' : (t.status === 'WON' ? 'text-green' : (t.status === 'LOST' ? 'text-red' : (t.status === 'BREAKEVEN' ? 'text-gold' : 'text-gray')));
         
         let mfeText = t.mfe_pct ? `<span class="text-green">+${t.mfe_pct.toFixed(2)}%</span>` : '—';
         let maeText = t.mae_pct ? `<span class="text-red">${t.mae_pct.toFixed(2)}%</span>` : '—';
