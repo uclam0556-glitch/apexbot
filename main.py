@@ -531,14 +531,14 @@ class ApexSystem:
                 breadth_pct = self.market_breadth
                 logger.info(f"Using cached Market Breadth: {breadth_pct:.1f}% (valid for {int((3600 - (current_time - self.breadth_last_updated)) / 60)} more mins)")
             
-            # Dynamic config based on breadth
-            dynamic_min_score = 65
+            # Dynamic config based on breadth (Calibrated for Isotonic Win Probabilities)
+            dynamic_min_score = 50.0  # 50% historic win probability
             if breadth_pct < 40.0:
-                dynamic_min_score = 70
-                logger.warning(f"RISK-OFF: Breadth < 40% ({breadth_pct:.1f}%). Raising min score to 70.")
+                dynamic_min_score = 52.0
+                logger.warning(f"RISK-OFF: Breadth < 40% ({breadth_pct:.1f}%). Raising min probability gate to 52.0%.")
             elif breadth_pct > 70.0:
-                dynamic_min_score = 60
-                logger.info(f"RISK-ON: Breadth > 70% ({breadth_pct:.1f}%). Lowering min score to 60.")
+                dynamic_min_score = 48.0
+                logger.info(f"RISK-ON: Breadth > 70% ({breadth_pct:.1f}%). Lowering min probability gate to 48.0%.")
 
             for symbol in scan_symbols:
                 if not self.running:
@@ -1046,9 +1046,17 @@ class ApexSystem:
                             v7_score += 35.0  # Massive bonus, but must still pass the gate
                             logger.info(f"🌟 {symbol} A+ SETUP BONUS! (RSI={rsi_now:.1f}, CVD+, OFI+, VOL+). Applying +35 points.")
                             
-                    # ─── FINAL V7 GATE ─────────────────────────────────────────────────────────
+                    # ─── FINAL V7 CALIBRATION & GATE ───────────────────────────────────────────
+                    from shared.lite_db import get_isotonic_calibration
+                    iso_result = await get_isotonic_calibration(v7_score)
+                    
+                    if iso_result['is_calibrated']:
+                        calibrated_score = iso_result['calibrated_score']
+                        logger.info(f"{symbol} - Isotonic Regression: Raw {v7_score:.1f} -> Calibrated Win Prob {calibrated_score:.1f}% (N={iso_result['sample_size']})")
+                        v7_score = calibrated_score
+                        
                     if v7_score < dynamic_min_score:
-                        if 45 <= v7_score < 65:
+                        if (dynamic_min_score - 10.0) <= v7_score < dynamic_min_score:
                             from shared.lite_db import save_missed_signal
                             asyncio.create_task(save_missed_signal(symbol, trade_direction, v7_score, current_price))
                         logger.info(f"{symbol} - [BLOCKED] V7 Score: {v7_score:.1f}/100. Insufficient edge. Skipping.")

@@ -811,3 +811,72 @@ async def update_shadow_trade_status(trade_id: int, new_status: str, mfe: float 
             WHERE id = ?
         ''', (new_status, mfe, mae, trade_id))
         await db.commit()
+
+# --- ISOTONIC REGRESSION CALIBRATION ---
+_isotonic_model = None
+_isotonic_last_trained = 0.0
+
+async def get_isotonic_calibration(raw_score: float) -> dict:
+    """
+    Fits an Isotonic Regression model on historical feature_store outcomes
+    to map raw v7_score -> Actual Win Probability (scaled 0-100).
+    Uses a 5-minute memory cache to prevent constant re-fitting.
+    """
+    global _isotonic_model, _isotonic_last_trained
+    import time
+    
+    current_time = time.time()
+    # Cache for 5 minutes (300 seconds)
+    if _isotonic_model is None or (current_time - _isotonic_last_trained > 300):
+        async with aiosqlite.connect(DB_PATH, timeout=20.0) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute('''
+                SELECT ultra_score, outcome
+                FROM feature_store
+                WHERE outcome IN ('WON', 'WON_BREAKEVEN', 'LOST', 'TIMEOUT', 'TIMEOUT_BREAKEVEN', 'BREAKEVEN', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_SMALL_LOSS')
+            ''') as cursor:
+                rows = await cursor.fetchall()
+                
+        # Require at least 20 historical trades to train
+        if len(rows) < 20:
+            return {"calibrated_score": raw_score, "is_calibrated": False, "sample_size": len(rows)}
+            
+        try:
+            import numpy as np
+            from sklearn.isotonic import IsotonicRegression
+            
+            X = np.array([float(r['ultra_score']) for r in rows])
+            
+            def get_label(outcome):
+                if outcome in ('WON', 'WON_BREAKEVEN', 'TIMEOUT_SMALL_WIN'): return 1.0
+                if outcome in ('LOST', 'TIMEOUT_SMALL_LOSS'): return 0.0
+                return 0.5  # Neutral
+                
+            y = np.array([get_label(r['outcome']) for r in rows])
+            
+            # Sort X and y before fitting (required for IsotonicRegression)
+            sort_idx = np.argsort(X)
+            X_sorted = X[sort_idx]
+            y_sorted = y[sort_idx]
+            
+            iso = IsotonicRegression(out_of_bounds='clip')
+            iso.fit(X_sorted, y_sorted)
+            
+            _isotonic_model = iso
+            _isotonic_last_trained = current_time
+            sample_size = len(rows)
+        except Exception as e:
+            logger.error(f"Failed to fit IsotonicRegression: {e}")
+            return {"calibrated_score": raw_score, "is_calibrated": False, "sample_size": len(rows)}
+    else:
+        sample_size = -1  # Means it used cache
+        
+    if _isotonic_model is not None:
+        try:
+            win_prob = _isotonic_model.predict([float(raw_score)])[0]
+            calibrated_score = float(win_prob * 100.0)
+            return {"calibrated_score": calibrated_score, "is_calibrated": True, "sample_size": sample_size}
+        except Exception as e:
+            logger.error(f"Failed to predict IsotonicRegression: {e}")
+            
+    return {"calibrated_score": raw_score, "is_calibrated": False, "sample_size": 0}
