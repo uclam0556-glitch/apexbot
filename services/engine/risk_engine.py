@@ -902,7 +902,7 @@ class RiskEngine:
                         if is_capitulation:
                             ttl_minutes = 30
                         else:
-                            ttl_minutes = 90 if regime == "BULL" else 45
+                            ttl_minutes = 120 if regime == "BULL" else 45
                             
                         # Reduced position size for CAPITULATION (50%)
                         position_usd = 15.0 if is_capitulation else 30.0
