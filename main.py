@@ -749,15 +749,6 @@ class ApexSystem:
                     
                     atr_1h_pct = (atr_1h / current_price) * 100 if current_price > 0 else 0.0
                     
-                    if trade_direction == "LONG" and trade_strategy == "TREND":
-                        if price_change_4h_pct > (2 * atr_1h_pct) or price_change_4h_pct > 8.0:
-                            logger.info(f"{symbol} - [BLOCKED] Momentum Exhaustion. Up {price_change_4h_pct:.2f}% (>{2*atr_1h_pct:.2f}% ATR threshold or >8%). Late impulse trap. Skipping.")
-                            await save_filter_block(symbol, trade_direction, "Momentum Exhaustion", current_price)
-                            proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
-                            proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
-                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Momentum Exhaustion", [f"Up {price_change_4h_pct:.2f}%"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
-                            continue
-
                     # ─── ADVANCED INSTITUTIONAL FILTER 2: GRADIENT PREMIUM ZONE ────────────────
                     in_premium_zone = False
                     if len(df_1h) >= 48:
@@ -775,6 +766,33 @@ class ApexSystem:
                         if current_price >= premium_threshold and trade_strategy == "TREND" and trade_direction == "LONG":
                             in_premium_zone = True
                             logger.info(f"{symbol} - Price in Premium Zone (Top 30% of 48h). Flagged for Overextension Index.")
+
+                    # ─── ADVANCED INSTITUTIONAL FILTER 1: MOMENTUM EXHAUSTION ──────────────────
+                    momentum_penalty = 0.0
+                    if trade_direction == "LONG" and trade_strategy == "TREND":
+                        is_bearish_cvd = cvd_score_val < 0
+                        is_rsi_overbought = rsi_now > 78
+                        is_premium_bearish = in_premium_zone and is_bearish_cvd
+                        
+                        # Extreme hard block conditions
+                        if price_change_4h_pct > (4 * atr_1h_pct) or price_change_4h_pct > 8.0 or \
+                           (price_change_4h_pct > (2 * atr_1h_pct) and is_bearish_cvd) or \
+                           (price_change_4h_pct > (2 * atr_1h_pct) and is_rsi_overbought) or \
+                           (price_change_4h_pct > (2 * atr_1h_pct) and is_premium_bearish):
+                            logger.info(f"{symbol} - [BLOCKED] Momentum Exhaustion (Hard Block). Up {price_change_4h_pct:.2f}%. Late impulse trap. Skipping.")
+                            await save_filter_block(symbol, trade_direction, "Momentum Exhaustion", current_price)
+                            proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
+                            proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
+                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Momentum Exhaustion", [f"Up {price_change_4h_pct:.2f}%"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
+                            continue
+                        
+                        # Penalty conditions instead of hard block
+                        elif price_change_4h_pct > (3 * atr_1h_pct):
+                            momentum_penalty = 15.0
+                            logger.info(f"{symbol} - Momentum Growth > 3x ATR. Applying penalty -15 to final score.")
+                        elif price_change_4h_pct > (2 * atr_1h_pct):
+                            momentum_penalty = 10.0
+                            logger.info(f"{symbol} - Momentum Growth > 2x ATR. Applying penalty -10 to final score.")
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 3: ABSORPTION TRAP (FUNDING + RSI + CVD) ────
                     from services.indicators.market_data import get_funding_rate
@@ -896,6 +914,10 @@ class ApexSystem:
                     elif 60 <= health_score < 75:
                         v7_score -= 20
                         logger.info(f"{symbol} - Data Health penalty: -20 (Score: {health_score:.1f}). Only LIMIT/Shadow.")
+                        
+                    if momentum_penalty > 0:
+                        v7_score -= momentum_penalty
+                        logger.info(f"{symbol} - Momentum Exhaustion penalty: -{momentum_penalty} applied to V7 Score.")
                     
                     # ─── V9 QUANT INDICES (MULTICOLLINEARITY FIX) ─────────────────────────
                     # 1. OVEREXTENSION INDEX
