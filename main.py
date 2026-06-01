@@ -1730,9 +1730,7 @@ class ApexSystem:
                                 rotation_signal=self.rotation_state
                             )
                             
-                            # Scale raw_score to 0-100 to match original_score (v7_score)
-                            new_score = confluence.raw_score * 10.0
-                            original_score = item['score']
+                            # Score decay is now handled by explicit CVD and MTF checks below
                             
                             # Enriched Cancellations Check (APEX v10.4)
                             current_price = df_1h['close'].iloc[-1]
@@ -1763,10 +1761,7 @@ class ApexSystem:
                             
                             cancel_reason = None
                             event_name = None
-                            if new_score < 65.0 or new_score < (original_score - 20.0):
-                                cancel_reason = f"Confluence score degraded (Original: {original_score:.1f}, Current: {new_score:.1f})."
-                                event_name = "CANCELLED_SCORE_DECAY"
-                            elif is_stop_hit:
+                            if is_stop_hit:
                                 cancel_reason = f"Current price ${current_price:.4f} is at or below Stop Loss ${stop_loss:.4f}."
                                 event_name = "CANCELLED"
                             elif is_breadth_weak:
