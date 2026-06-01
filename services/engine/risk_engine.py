@@ -872,6 +872,15 @@ class RiskEngine:
                             current_cvd=0.0,
                             reason="Watchlist item initialized in structural observing mode."
                         )
+                        return SLTPResult(
+                            stop_loss=stop_loss,
+                            take_profit_1=0.0,
+                            rr_ratio_tp1=0.0,
+                            sl_buffer_pct=0.0,
+                            sl_near_round_number=False,
+                            is_pullback=True,
+                            pullback_status="WAITING_STRUCTURE"
+                        )
                     else:
                         # Bracket 1 is the shallower support (closest to entry, highest price)
                         best_limit = max(safe_candidates)
@@ -967,6 +976,18 @@ class RiskEngine:
                             original_cvd=0.0,
                             current_cvd=0.0,
                             reason="Limit order pullback grid created."
+                        )
+                        return SLTPResult(
+                            stop_loss=stop_loss,
+                            take_profit_1=tp1_pb,
+                            rr_ratio_tp1=new_tp_pct / new_sl_dist_pct if new_sl_dist_pct > 0 else 0.0,
+                            sl_buffer_pct=new_sl_dist_pct,
+                            sl_near_round_number=False,
+                            is_pullback=True,
+                            pullback_status="WAITING",
+                            pullback_limit_1=best_limit,
+                            pullback_limit_2=deeper_limit if len(limit_entries) > 1 else 0.0,
+                            pullback_tp_3=tp3_pb
                         )
 
             self._log.info(

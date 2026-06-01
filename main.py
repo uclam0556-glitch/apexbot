@@ -1163,6 +1163,51 @@ class ApexSystem:
                         logger.info(f"{symbol} - Setup rejected by Risk Engine: did not meet min R:R ratio (> 1.5) or structural SL exceeded 2.5%.")
                         continue
 
+                    if getattr(sltp, 'is_pullback', False):
+                        logger.info(f"{symbol} - Pullback Watchlist item created ({sltp.pullback_status}). Sending Telegram alert...")
+                        try:
+                            token = self.config.alerts.telegram_bot_token.get_secret_value()
+                            chat_id = self.config.alerts.telegram_chat_id
+                            if token and chat_id:
+                                from aiogram import Bot
+                                bot = Bot(token=token)
+                                
+                                sl_pct = sltp.sl_buffer_pct
+                                
+                                if sltp.pullback_status == "WAITING_STRUCTURE":
+                                    msg = (
+                                        f"⏳ <b>WAITING STRUCTURE | {symbol}</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                        f"<b>Strategy:</b> PULLBACK / LIMIT (Observing)\n"
+                                        f"<b>Ultra Score:</b> {v7_score:.1f}/100\n"
+                                        f"🛑 <b>Stop Loss Target:</b> ${sltp.stop_loss:.4f}\n\n"
+                                        f"<i>Структура идеальна, но лимитные слоты заняты либо нет глубокой зоны. "
+                                        f"Система перевела монету в режим ожидания (Waiting Structure).</i>"
+                                    )
+                                else:
+                                    msg = (
+                                        f"📥 <b>LIMIT GRID CREATED | {symbol}</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                        f"<b>Strategy:</b> PULLBACK / LIMIT\n"
+                                        f"<b>Ultra Score:</b> {v7_score:.1f}/100\n\n"
+                                        f"📥 <b>Limit Entry 1:</b> ${sltp.pullback_limit_1:.4f} (40%)\n"
+                                    )
+                                    if sltp.pullback_limit_2 > 0:
+                                        msg += f"📥 <b>Limit Entry 2:</b> ${sltp.pullback_limit_2:.4f} (60%)\n"
+                                        
+                                    msg += (
+                                        f"🛑 <b>Stop Loss:</b> ${sltp.stop_loss:.4f} <i>(-{sl_pct:.2f}%)</i>\n"
+                                        f"🏁 <b>TP Target (TP3):</b> ${sltp.pullback_tp_3:.4f} <i>(+{sltp.rr_ratio_tp1 * sl_pct:.2f}%)</i>\n\n"
+                                        f"<i>Сформирована лимитная сетка на основе Market Breadth. Ожидаем заполнения.</i>"
+                                    )
+                                    
+                                await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+                                await bot.session.close()
+                        except Exception as tg_err:
+                            logger.error(f"Failed to send pullback TG alert: {tg_err}")
+                            
+                        continue
+
                     # ATR Stop Cap
                     sl_pct_check = abs(current_price - sltp.stop_loss) / current_price
                     if sl_pct_check > 0.030:

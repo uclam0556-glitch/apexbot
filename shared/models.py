@@ -452,6 +452,11 @@ class SLTPResult(BaseModel):
     raw_tp_pct: Optional[float] = 0.0
     risk_pct: Optional[float] = 0.0
     swing_low: Optional[float] = 0.0
+    is_pullback: bool = False
+    pullback_status: str = ""
+    pullback_limit_1: float = 0.0
+    pullback_limit_2: float = 0.0
+    pullback_tp_3: float = 0.0
 
 
 class CorrelationResult(BaseModel):

@@ -55,14 +55,17 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🟢 Live Portfolio", callback_data="live_pnl"),
+            InlineKeyboardButton(text="📥 Активные Лимиты", callback_data="limits"),
+        ],
+        [
             InlineKeyboardButton(text="📡 Статус системы", callback_data="status"),
-        ],
-        [
             InlineKeyboardButton(text="🌡 Рынок", callback_data="market"),
-            InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
         ],
         [
+            InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
             InlineKeyboardButton(text="📜 История", callback_data="history"),
+        ],
+        [
             InlineKeyboardButton(text="🔥 Hot Coins", callback_data="hot"),
         ],
         [
@@ -257,6 +260,68 @@ async def process_live_portfolio(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in Live Portfolio: {e}")
         await callback.message.edit_text("Ошибка загрузки Live PnL.", reply_markup=get_back_keyboard(), parse_mode="HTML")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ACTIVE LIMITS (PULLBACKS)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "limits")
+async def process_active_limits(callback: CallbackQuery):
+    await callback.answer("⏳ Загружаю лимитные ордера...")
+    try:
+        from shared.lite_db import get_active_pullback_items, get_pullback_items_by_status
+        waiting = await get_active_pullback_items()
+        waiting_structure = await get_pullback_items_by_status('WAITING_STRUCTURE')
+        
+        all_limits = waiting + waiting_structure
+        
+        if not all_limits:
+            text = (
+                "📥 <b>Активные Лимиты (Pullbacks)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "Сейчас нет выставленных лимитных сеток.\n"
+                "Ожидайте коррекций на рынке 🚀"
+            )
+            await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+            return
+
+        text = f"📥 <b>Активные Лимиты: {len(all_limits)}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        for idx, item in enumerate(all_limits):
+            symbol = item['symbol']
+            status = item['status']
+            score = item['score']
+            dir_emoji = "🟢 L" if item['direction'] == "LONG" else "🔴 S"
+            
+            if status == "WAITING_STRUCTURE":
+                status_emoji = "⏳"
+                status_str = "Ожидание (Структура)"
+                limit_info = "Ожидает прохода Risk Engine..."
+            else:
+                status_emoji = "📥"
+                status_str = "В стакане (WAITING)"
+                import json
+                try:
+                    entries = json.loads(item['limit_entries'])
+                    prices = [f"${float(e['price']):.4f}" for e in entries]
+                    limit_info = "Сетка: " + " / ".join(prices)
+                except:
+                    limit_info = f"Стоп: ${item['stop_loss']:.4f}"
+            
+            # Use format_price logic roughly
+            text += (
+                f"{status_emoji} <b>{symbol}</b> {dir_emoji} | <i>{status_str}</i>\n"
+                f"   Score: <b>{score:.1f}</b>/100\n"
+                f"   {limit_info}\n"
+            )
+            if idx < len(all_limits) - 1:
+                text += "   —\n"
+
+        text += "\n<i>Бот автоматически отменит сетки при сломе структуры.</i>"
+        await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error in Active Limits: {e}")
+        await callback.message.edit_text("Ошибка загрузки лимитных ордеров.", reply_markup=get_back_keyboard(), parse_mode="HTML")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STATS
