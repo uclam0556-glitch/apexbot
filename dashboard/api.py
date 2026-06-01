@@ -252,9 +252,9 @@ def create_app() -> FastAPI:
                         COUNT(*) as total,
                         SUM(CASE WHEN status = 'WON' THEN 1 ELSE 0 END) as won,
                         SUM(CASE WHEN status = 'LOST' THEN 1 ELSE 0 END) as lost,
-                        SUM(CASE WHEN status = 'TIMEOUT' THEN 1 ELSE 0 END) as timeout
+                        SUM(CASE WHEN status = 'TIMEOUT' THEN 1 ELSE 0 END) as timeout,
+                        SUM(CASE WHEN status = 'TRACKING' THEN 1 ELSE 0 END) as tracking
                     FROM shadow_trades 
-                    WHERE status != 'TRACKING'
                     GROUP BY primary_block_reason
                     ORDER BY total DESC
                 ''') as cur:

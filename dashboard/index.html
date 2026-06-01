@@ -1454,13 +1454,14 @@ async function openShadowModal() {
               <th><span class="text-green">TP (Упущен профит)</span></th>
               <th><span class="text-red">SL (Спасен убыток)</span></th>
               <th>Таймаут (Флэт)</th>
+              <th>В процессе (Tracking)</th>
             </tr>
           </thead>
           <tbody>
     `;
 
     if (stats.length === 0) {
-      html += `<tr><td colspan="5" style="text-align: center; color: var(--text3);">Нет данных для анализа</td></tr>`;
+      html += `<tr><td colspan="6" style="text-align: center; color: var(--text3);">Нет данных для анализа</td></tr>`;
     } else {
       stats.forEach(s => {
         html += `
@@ -1470,6 +1471,7 @@ async function openShadowModal() {
             <td class="text-green"><strong>${s.won}</strong></td>
             <td class="text-red"><strong>${s.lost}</strong></td>
             <td style="color: var(--text3);">${s.timeout}</td>
+            <td style="color: var(--cyan);">${s.tracking}</td>
           </tr>
         `;
       });
