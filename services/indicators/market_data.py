@@ -134,11 +134,11 @@ _funding_cache: dict = {}
 
 async def get_funding_rate(symbol: str) -> dict:
     """
-    Get current funding rate. Tries Coinglass API first, falls back to Binance Futures.
+    Get current funding rate. Tries CryptoQuant API first, then Coinglass, falls back to Bybit.
     Cached per symbol for 30 minutes.
     """
     now = datetime.utcnow()
-    symbol_base = symbol.split('/')[0]
+    symbol_base = symbol.split('/')[0].lower()
     binance_symbol = symbol.replace("/", "")
 
     cached = _funding_cache.get(binance_symbol)
@@ -147,49 +147,47 @@ async def get_funding_rate(symbol: str) -> dict:
 
     from shared.config import get_config
     config = get_config()
+    cq_key = config.data_sources.cryptoquant_api_key.get_secret_value() if config.data_sources.cryptoquant_api_key else ""
     cg_key = config.data_sources.coinglass_api_key.get_secret_value() if config.data_sources.coinglass_api_key else ""
 
     rate_pct = 0.0
     success = False
 
-    # 1. Try Binance (Fastest, most reliable, no API key required)
-    try:
-        url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={binance_symbol}"
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if isinstance(data, dict) and "lastFundingRate" in data:
-                        rate_str = data["lastFundingRate"]
-                        if rate_str is not None:
-                            rate_pct = float(rate_str) * 100
+    # 1. Try CryptoQuant API
+    if cq_key:
+        try:
+            url = f"https://api.cryptoquant.com/v1/{symbol_base}/market-data/funding-rates?exchange=binance&limit=1"
+            headers = {"Authorization": f"Bearer {cq_key}"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and "result" in data and "data" in data["result"] and len(data["result"]["data"]) > 0:
+                            rate_pct = float(data["result"]["data"][0]["funding_rate"]) * 100
                             success = True
-                            logger.debug(f"Binance Funding fetch successful for {symbol}: {rate_pct}%")
-    except Exception as e:
-        logger.debug(f"Binance Funding fetch failed for {symbol}: {e}")
+                            logger.debug(f"CryptoQuant Funding fetch successful for {symbol}: {rate_pct}%")
+        except Exception as e:
+            logger.debug(f"CryptoQuant Funding fetch failed for {symbol}: {e}")
 
     # 2. Try Coinglass
     if not success and cg_key:
         try:
-            url = f"https://open-api.coinglass.com/public/v2/funding?exName=Binance&symbol={symbol_base}"
+            url = f"https://open-api.coinglass.com/public/v2/funding?exName=Binance&symbol={symbol_base.upper()}"
             headers = {"accept": "application/json", "coinglassSecret": cg_key}
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if data and data.get("success") and "data" in data and len(data["data"]) > 0:
-                            # Usually data is a list of funding rates
                             item = data["data"][0] if isinstance(data["data"], list) else data["data"]
-                            # Depending on Coinglass version, field is uMarginFundingRate or fundingRate
                             val = item.get("uMarginFundingRate", item.get("fundingRate", 0.0))
                             rate_pct = float(val)
-                            # If the API returns it as decimal (e.g. 0.0001), convert to %
                             if abs(rate_pct) < 0.1: rate_pct *= 100 
                             success = True
         except Exception as e:
             logger.debug(f"Coinglass Funding fetch failed for {symbol}: {e}")
 
-    # 3. Fallback to Bybit
+    # 3. Fallback to Bybit (No Geo-block 451 like Binance)
     if not success:
         try:
             url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={binance_symbol}"
@@ -202,8 +200,7 @@ async def get_funding_rate(symbol: str) -> dict:
                                 and isinstance(data["result"]["list"], list) and len(data["result"]["list"]) > 0):
                             rate_str = data["result"]["list"][0].get("fundingRate")
                             if rate_str is not None:
-                                rate = float(rate_str) * 100  # Convert to %
-                                rate_pct = rate
+                                rate_pct = float(rate_str) * 100
                                 success = True
         except Exception as e:
             logger.debug(f"Bybit Funding fetch failed for {symbol}: {e}")
@@ -242,10 +239,10 @@ _oi_cache: dict = {}
 
 async def get_open_interest_change(symbol: str) -> dict:
     """
-    Get OI change over last 4 hours. Tries Coinglass, falls back to Binance.
+    Get OI change over last 4 hours. Tries CryptoQuant, Coinglass, falls back to Bybit.
     """
     now = datetime.utcnow()
-    symbol_base = symbol.split('/')[0]
+    symbol_base = symbol.split('/')[0].lower()
     binance_symbol = symbol.replace("/", "")
 
     cached = _oi_cache.get(binance_symbol)
@@ -254,16 +251,37 @@ async def get_open_interest_change(symbol: str) -> dict:
 
     from shared.config import get_config
     config = get_config()
+    cq_key = config.data_sources.cryptoquant_api_key.get_secret_value() if config.data_sources.cryptoquant_api_key else ""
     cg_key = config.data_sources.coinglass_api_key.get_secret_value() if config.data_sources.coinglass_api_key else ""
 
     change_pct = 0.0
     oi_now = 0.0
     success = False
 
-    # 1. Try Coinglass
-    if cg_key:
+    # 1. Try CryptoQuant API
+    if cq_key:
         try:
-            url = f"https://open-api.coinglass.com/public/v2/open_interest?symbol={symbol_base}"
+            url = f"https://api.cryptoquant.com/v1/{symbol_base}/market-data/open-interest?exchange=binance&limit=5&window=hour"
+            headers = {"Authorization": f"Bearer {cq_key}"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and "result" in data and "data" in data["result"] and len(data["result"]["data"]) >= 4:
+                            lst = data["result"]["data"]
+                            oi_now_val = float(lst[0]["open_interest"])
+                            oi_prev_val = float(lst[-1]["open_interest"])
+                            change_pct = (oi_now_val - oi_prev_val) / oi_prev_val * 100 if oi_prev_val > 0 else 0.0
+                            oi_now = oi_now_val
+                            success = True
+                            logger.debug(f"CryptoQuant OI fetch successful for {symbol}")
+        except Exception as e:
+            logger.debug(f"CryptoQuant OI fetch failed for {symbol}: {e}")
+
+    # 2. Try Coinglass
+    if not success and cg_key:
+        try:
+            url = f"https://open-api.coinglass.com/public/v2/open_interest?symbol={symbol_base.upper()}"
             headers = {"accept": "application/json", "coinglassSecret": cg_key}
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
                 async with session.get(url, headers=headers) as resp:
@@ -271,14 +289,13 @@ async def get_open_interest_change(symbol: str) -> dict:
                         data = await resp.json()
                         if data and data.get("success") and "data" in data and len(data["data"]) > 0:
                             item = data["data"][0] if isinstance(data["data"], list) else data["data"]
-                            # Use h1OIChangePercent or h4OIChangePercent if available
                             change_pct = float(item.get("h4OIChangePercent", item.get("h1OIChangePercent", 0.0)))
                             oi_now = float(item.get("openInterestAmount", 0.0))
                             success = True
         except Exception as e:
             logger.debug(f"Coinglass OI fetch failed for {symbol}: {e}")
 
-    # 2. Fallback to Bybit
+    # 3. Fallback to Bybit
     if not success:
         try:
             url = f"https://api.bybit.com/v5/market/open-interest?category=linear&symbol={binance_symbol}&intervalTime=1h&limit=5"
@@ -289,7 +306,6 @@ async def get_open_interest_change(symbol: str) -> dict:
                         if data.get("retCode") == 0 and "result" in data and "list" in data["result"]:
                             lst = data["result"]["list"]
                             if len(lst) >= 2:
-                                # Bybit list is sorted descending (latest first)
                                 oi_now_val = float(lst[0]["openInterest"])
                                 oi_prev_val = float(lst[-1]["openInterest"])
                                 change_pct = (oi_now_val - oi_prev_val) / oi_prev_val * 100 if oi_prev_val > 0 else 0.0
