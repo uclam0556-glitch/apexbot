@@ -115,26 +115,18 @@ def check_mtf_gate(symbol: str, mtf_score: float, direction: str, regime: str, s
 
     # ─── TREND STRATEGY LOGIC ─────────────────────────────────────────────
     if direction == "LONG":
-        if mtf_score >= 6.0:
-            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} >= 6.0. Trend Exhaustion (Buying the top).")
+        if regime == "BULL" and mtf_score < 0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < 0 for LONG in BULL. Trend is against us.")
             return False
-            
-        if regime == "BULL" and mtf_score < -2.0:
-            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < -2.0 for LONG in BULL. Trend is against us.")
-            return False
-        if regime in ("SIDEWAYS", "BEAR", "CRISIS") and mtf_score < -1.0:
-            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < -1.0 for LONG in {regime}. Need confirmation.")
+        if regime in ("SIDEWAYS", "BEAR", "CRISIS") and mtf_score < 2.0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < 2.0 for LONG in {regime}. Need strong confirmation.")
             return False
     if direction == "SHORT":
-        if mtf_score <= -6.0:
-            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} <= -6.0. Trend Exhaustion (Selling the bottom).")
+        if regime == "BEAR" and mtf_score > 0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} > 0 for SHORT in BEAR. Trend is against us.")
             return False
-            
-        if regime == "BEAR" and mtf_score > 2.0:
-            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} > 2.0 for SHORT in BEAR. Trend is against us.")
-            return False
-        if regime in ("SIDEWAYS", "BULL", "CRISIS") and mtf_score > 1.0:
-            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} > 1.0 for SHORT in {regime}. Need confirmation.")
+        if regime in ("SIDEWAYS", "BULL", "CRISIS") and mtf_score > -2.0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} > -2.0 for SHORT in {regime}. Need strong confirmation.")
             return False
     return True
 
@@ -540,14 +532,13 @@ class ApexSystem:
                 logger.info(f"Using cached Market Breadth: {breadth_pct:.1f}% (valid for {int((3600 - (current_time - self.breadth_last_updated)) / 60)} more mins)")
             
             # Dynamic config based on breadth (Calibrated for Isotonic Win Probabilities)
-            # Inverted logic: Low breadth = retail panic = liquidity for MMs to pump.
             dynamic_min_score = 50.0  # 50% historic win probability
-            if breadth_pct < 30.0:
-                dynamic_min_score = 47.0
-                logger.warning(f"RISK-ON (Reversal): Breadth extremely low ({breadth_pct:.1f}%). Lowering min probability gate to 47.0%.")
-            elif breadth_pct > 80.0:
-                dynamic_min_score = 53.0
-                logger.info(f"RISK-OFF (Exhaustion): Breadth > 80% ({breadth_pct:.1f}%). Raising min probability gate to 53.0%.")
+            if breadth_pct < 40.0:
+                dynamic_min_score = 52.0
+                logger.warning(f"RISK-OFF: Breadth < 40% ({breadth_pct:.1f}%). Raising min probability gate to 52.0%.")
+            elif breadth_pct > 70.0:
+                dynamic_min_score = 48.0
+                logger.info(f"RISK-ON: Breadth > 70% ({breadth_pct:.1f}%). Lowering min probability gate to 48.0%.")
 
             for symbol in scan_symbols:
                 if not self.running:
@@ -779,8 +770,7 @@ class ApexSystem:
                     # ─── ADVANCED INSTITUTIONAL FILTER 1: MOMENTUM EXHAUSTION ──────────────────
                     momentum_penalty = 0.0
                     if trade_direction == "LONG" and trade_strategy == "TREND":
-                        # Inverted CVD logic: Retail buying (+CVD) is BEARISH, retail selling (-CVD) is BULLISH
-                        is_bearish_cvd = cvd_score_val > 0
+                        is_bearish_cvd = cvd_score_val < 0
                         is_rsi_overbought = rsi_now > 78
                         is_premium_bearish = in_premium_zone and is_bearish_cvd
                         
@@ -810,8 +800,8 @@ class ApexSystem:
                     funding_pct = funding_data.get("rate_pct", 0.0)
                     funding_is_valid = funding_data.get("is_valid", False)
                     if funding_is_valid:
-                        if funding_pct > 0.04 and rsi_now > 65 and cvd_score_val > 0 and trade_direction == "LONG":
-                            logger.info(f"{symbol} - [BLOCKED] Retail FOMO Trap! High Funding (+{funding_pct:.3f}%), RSI: {rsi_now:.1f}, and positive CVD (>0). MM will dump this. Skipping.")
+                        if funding_pct > 0.04 and rsi_now > 65 and cvd_score_val < 0 and trade_direction == "LONG":
+                            logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
                             await save_filter_block(symbol, trade_direction, "Absorption Trap", current_price)
                             # Create shadow trade
                             await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, current_price * 0.98, current_price * 1.06, "Absorption Trap", ["Retail FOMO against MM CVD"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
@@ -897,10 +887,9 @@ class ApexSystem:
                         if not is_reversal:
                             ctx_bonus = min(ctx_bonus, 0.3)
 
-                    # Inverted CVD bonus: Negative CVD is BULLISH, Positive CVD is BEARISH
-                    cvd_bonus  = max(-1.5, min(1.5, -cvd_score_val * 0.5))
+                    cvd_bonus  = max(-1.0, min(1.0, cvd_score_val * 0.5))
                     if trade_direction == "SHORT":
-                        cvd_bonus = -cvd_bonus  # Double inversion for shorts
+                        cvd_bonus = -cvd_bonus  # negative CVD is GOOD for shorts
 
                     # Mean Reversion gets a bonus for deep oversold
                     mr_bonus = 0.5 if trade_strategy == "MEAN_REVERSION" and rsi_now < 30 else 0.0
@@ -957,8 +946,7 @@ class ApexSystem:
                     chop_points = 0
                     
                     if cvd_result.get("divergence"): chop_points += 2
-                    # Inverted CVD: High positive CVD is choppy/bearish for longs
-                    if trade_direction == "LONG" and cvd_score_val >= 2: chop_points += 1
+                    if cvd_signal == "BEARISH" and cvd_score_val <= -2: chop_points += 1
                     
                     sweep_count = len(smc_analysis.liquidity_sweeps)
                     if sweep_count > 65: chop_points += 3
@@ -983,9 +971,6 @@ class ApexSystem:
                     elif chop_points >= 3: chop_penalty = 15
                     elif chop_points == 2: chop_penalty = 10
                     
-                    if regime_val == "SIDEWAYS" and chop_penalty > 0:
-                        chop_penalty = int(chop_penalty * 0.4) # Cut SIDEWAYS penalty by 60%
-
                     if chop_penalty > 0:
                         v7_score -= chop_penalty
                         logger.info(f"{symbol} - Structural Chop Index: {chop_points} pts. Applied penalty: -{chop_penalty}")
@@ -1623,9 +1608,8 @@ class ApexSystem:
                 cvd_res = calculate_cvd(df_5m, lookback=20)
                 cvd_score = cvd_res.get("score", 0)
                 cvd_signal = cvd_res.get("cvd_signal", "NEUTRAL")
-                # Inverted logic: Retail FOMO is dangerous for longs
-                if cvd_score >= 2:
-                    logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] CVD is strongly positive (Score={cvd_score}). Retail FOMO detected. MM active dumping.")
+                if cvd_signal == "BEARISH" and cvd_score <= -2:
+                    logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] CVD is strongly bearish (Score={cvd_score}). MM active selling.")
                     return False
 
             # Check MTF trend breakdown
