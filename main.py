@@ -2149,6 +2149,21 @@ async def start_dashboard_server():
 
 async def main():
     await init_lite_db()
+    
+    # --- AUTO RUN DIAGNOSTICS ON STARTUP ---
+    try:
+        import subprocess
+        logger.info("Running Shadow Analysis Script...")
+        res1 = subprocess.run(["python3", "scripts/shadow_analysis.py"], capture_output=True, text=True)
+        logger.info(f"SHADOW ANALYSIS OUTPUT:\n{res1.stdout}")
+        
+        logger.info("Running V7 Diagnostic Script...")
+        res2 = subprocess.run(["python3", "scripts/v7_diagnostic.py"], capture_output=True, text=True)
+        logger.info(f"V7 DIAGNOSTIC OUTPUT:\n{res2.stdout}")
+    except Exception as e:
+        logger.error(f"Failed to auto-run diagnostic scripts: {e}")
+    # ---------------------------------------
+    
     apex = ApexSystem()
     
     # Register graceful shutdown signals
