@@ -619,6 +619,28 @@ async def process_confirm_factory_reset_text(message: Message):
         parse_mode="HTML"
     )
 
+@router.message(Command("diag"))
+async def cmd_diag(message: Message):
+    await message.answer("⏳ <b>Запускаю скрипты аналитики Shadow Trades и V7 Score...</b>", parse_mode="HTML")
+    import subprocess
+    import os
+    env = os.environ.copy()
+    try:
+        res1 = subprocess.run(["python3", "scripts/shadow_analysis.py"], capture_output=True, text=True, env=env)
+        out1 = res1.stdout if res1.stdout else res1.stderr
+        
+        res2 = subprocess.run(["python3", "scripts/v7_diagnostic.py"], capture_output=True, text=True, env=env)
+        out2 = res2.stdout if res2.stdout else res2.stderr
+        
+        # Split outputs if they are too long for one message
+        if len(out1) > 4000: out1 = out1[:4000] + "\n[TRUNCATED]"
+        if len(out2) > 4000: out2 = out2[:4000] + "\n[TRUNCATED]"
+        
+        await message.answer(f"<b>SHADOW ANALYSIS:</b>\n<pre>{out1}</pre>", parse_mode="HTML")
+        await message.answer(f"<b>V7 DIAGNOSTIC:</b>\n<pre>{out2}</pre>", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ <b>Ошибка запуска:</b>\n<pre>{str(e)}</pre>", parse_mode="HTML")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SIGNAL CARD — called from main.py when signal is found
 # ─────────────────────────────────────────────────────────────────────────────
