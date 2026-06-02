@@ -8,7 +8,7 @@ import os
 st.set_page_config(page_title="APEX v5.0 Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 # Path to the db
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "apex_trading.db")
+DB_PATH = os.getenv("SQLITE_DB_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "apex_lite.db"))
 
 def load_data():
     if not os.path.exists(DB_PATH):

@@ -608,9 +608,9 @@ class RiskEngine:
 
         swing_low = max(candidates) if candidates else (entry - 2.0 * atr)
 
-        # SL maximum check: 2.5% cap
-        # If the required structural stop loss exceeds 2.5%, we skip the trade to maintain good P&L math
-        max_sl_allowed = entry * 0.025
+        # SL maximum check: 4.5% cap
+        # If the required structural stop loss exceeds 4.5%, we skip the trade to maintain good P&L math
+        max_sl_allowed = entry * 0.045
         sl_distance_pct = sl_distance / entry * 100
         atr_pct = atr / entry * 100
         min_tp_pct = sl_distance_pct * 1.5
@@ -713,7 +713,7 @@ class RiskEngine:
             raw_tp_est = min(atr_target_pct, max_tp_pct)
             
             # If the score is high and we are in BULL/SIDEWAYS/CAPITULATION, we evaluate for Pullback Watchlist
-            if v7_score >= 80.0 and regime in ["BULL", "SIDEWAYS", "CAPITULATION"]:
+            if v7_score >= 70.0 and regime in ["BULL", "SIDEWAYS", "CAPITULATION"]:
                 is_capitulation = regime == "CAPITULATION"
                 is_major = symbol.split('/')[0] in ["BTC", "ETH", "SOL", "BNB"]
                 is_aplus = v7_score >= 90.0
@@ -1016,7 +1016,50 @@ class RiskEngine:
         # 4. Smart Target Selection & Early Friction Path Checking
         if targets_list:
             if closest_target < min_tp_pct:
-                rejected_type = target_types.get(closest_target, "UNKNOWN")
+                if v7_score >= 75.0:
+                    self._log.warning(
+                        "friction_ignored_due_to_high_score",
+                        symbol=symbol,
+                        score=v7_score,
+                        closest_target=round(closest_target, 4),
+                        min_tp_pct=round(min_tp_pct, 4)
+                    )
+                else:
+                    rejected_type = target_types.get(closest_target, "UNKNOWN")
+                    self._log.info(
+                        "sl_tp_rejected",
+                        entry=round(entry, 8),
+                        swing_low=round(swing_low, 8),
+                        stop_loss=round(stop_loss, 8),
+                        sl_distance_pct=round(sl_distance_pct, 4),
+                        atr_pct=round(atr_pct, 4),
+                        atr_target_pct=round(atr_target_pct, 4),
+                        max_tp_pct=round(max_tp_pct, 4),
+                        raw_tp_pct=round(min(atr_target_pct, closest_target, max_tp_pct), 4),
+                        risk_pct=round(sl_distance_pct, 4),
+                        min_required_tp_pct=round(min_tp_pct, 4),
+                        structure_target_type=rejected_type,
+                        structure_target_pct=round(closest_target, 4),
+                        first_barrier_pct=round(closest_target, 4),
+                        tp_rejected_reason="path_blocked_early",
+                    )
+                    return None
+
+        # Final calculated TP target in percent
+        raw_tp_pct = min(atr_target_pct, structure_target, max_tp_pct)
+
+        # Enforce Minimum Risk-to-Reward Ratio (Min R:R = 1.5)
+        if raw_tp_pct < min_tp_pct:
+            if v7_score >= 75.0:
+                self._log.warning(
+                    "insufficient_rr_ignored",
+                    symbol=symbol,
+                    score=v7_score,
+                    raw_tp_pct=round(raw_tp_pct, 4),
+                    min_tp_pct=round(min_tp_pct, 4)
+                )
+            else:
+                rejected_type = target_types.get(structure_target, "ATR")
                 self._log.info(
                     "sl_tp_rejected",
                     entry=round(entry, 8),
@@ -1026,40 +1069,15 @@ class RiskEngine:
                     atr_pct=round(atr_pct, 4),
                     atr_target_pct=round(atr_target_pct, 4),
                     max_tp_pct=round(max_tp_pct, 4),
-                    raw_tp_pct=round(min(atr_target_pct, closest_target, max_tp_pct), 4),
+                    raw_tp_pct=round(raw_tp_pct, 4),
                     risk_pct=round(sl_distance_pct, 4),
                     min_required_tp_pct=round(min_tp_pct, 4),
                     structure_target_type=rejected_type,
-                    structure_target_pct=round(closest_target, 4),
+                    structure_target_pct=round(structure_target, 4),
                     first_barrier_pct=round(closest_target, 4),
-                    tp_rejected_reason="path_blocked_early",
+                    tp_rejected_reason="insufficient_rr",
                 )
                 return None
-
-        # Final calculated TP target in percent
-        raw_tp_pct = min(atr_target_pct, structure_target, max_tp_pct)
-
-        # Enforce Minimum Risk-to-Reward Ratio (Min R:R = 1.5)
-        if raw_tp_pct < min_tp_pct:
-            rejected_type = target_types.get(structure_target, "ATR")
-            self._log.info(
-                "sl_tp_rejected",
-                entry=round(entry, 8),
-                swing_low=round(swing_low, 8),
-                stop_loss=round(stop_loss, 8),
-                sl_distance_pct=round(sl_distance_pct, 4),
-                atr_pct=round(atr_pct, 4),
-                atr_target_pct=round(atr_target_pct, 4),
-                max_tp_pct=round(max_tp_pct, 4),
-                raw_tp_pct=round(raw_tp_pct, 4),
-                risk_pct=round(sl_distance_pct, 4),
-                min_required_tp_pct=round(min_tp_pct, 4),
-                structure_target_type=rejected_type,
-                structure_target_pct=round(structure_target, 4),
-                first_barrier_pct=round(closest_target, 4),
-                tp_rejected_reason="insufficient_rr",
-            )
-            return None
 
         # Map TP percent back to absolute price
         tp1 = entry * (1 + raw_tp_pct / 100)
