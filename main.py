@@ -2153,13 +2153,15 @@ async def main():
     # --- AUTO RUN DIAGNOSTICS ON STARTUP ---
     try:
         import subprocess
+        import os
         logger.info("Running Shadow Analysis Script...")
-        res1 = subprocess.run(["python3", "scripts/shadow_analysis.py"], capture_output=True, text=True)
-        logger.info(f"SHADOW ANALYSIS OUTPUT:\n{res1.stdout}")
+        env = os.environ.copy()
+        res1 = subprocess.run(["python3", "scripts/shadow_analysis.py"], capture_output=True, text=True, env=env)
+        logger.info(f"SHADOW ANALYSIS STDOUT:\n{res1.stdout}\nSTDERR:\n{res1.stderr}")
         
         logger.info("Running V7 Diagnostic Script...")
-        res2 = subprocess.run(["python3", "scripts/v7_diagnostic.py"], capture_output=True, text=True)
-        logger.info(f"V7 DIAGNOSTIC OUTPUT:\n{res2.stdout}")
+        res2 = subprocess.run(["python3", "scripts/v7_diagnostic.py"], capture_output=True, text=True, env=env)
+        logger.info(f"V7 DIAGNOSTIC STDOUT:\n{res2.stdout}\nSTDERR:\n{res2.stderr}")
     except Exception as e:
         logger.error(f"Failed to auto-run diagnostic scripts: {e}")
     # ---------------------------------------

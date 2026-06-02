@@ -7,8 +7,9 @@ and identify which factors contribute to 'TP Missed' vs 'SL Saved'.
 import sqlite3
 import pandas as pd
 import json
+import os
 
-DB_PATH = 'apex_lite.db'
+DB_PATH = os.getenv('SQLITE_DB_PATH', 'apex_lite.db')
 
 def main():
     try:

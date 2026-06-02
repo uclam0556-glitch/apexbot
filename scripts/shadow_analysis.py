@@ -6,8 +6,9 @@ from the historical shadow trades database.
 
 import sqlite3
 import pandas as pd
+import os
 
-DB_PATH = 'apex_lite.db'
+DB_PATH = os.getenv('SQLITE_DB_PATH', 'apex_lite.db')
 
 def main():
     try:
