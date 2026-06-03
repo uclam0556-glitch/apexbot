@@ -373,6 +373,17 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"error": str(e)}
 
+    @app.post("/api/reset-shadow-stats")
+    async def api_reset_shadow_stats():
+        """Clears all shadow trades from the database for a clean audit slate."""
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("DELETE FROM shadow_trades")
+                await db.commit()
+            return {"status": "success", "message": "Shadow trades statistics cleared."}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
     @app.post("/api/factory-reset")
     async def api_factory_reset():
         from shared.lite_db import factory_reset_db, get_open_trades
