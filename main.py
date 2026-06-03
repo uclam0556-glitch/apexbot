@@ -705,12 +705,6 @@ class ApexSystem:
                         continue
 
                     if regime_val == "BEAR":
-                        # Capitulation Catcher
-                        # Only top assets
-                        if symbol not in ["BTC/USDT", "ETH/USDT", "SOL/USDT"]:
-                            logger.info(f"{symbol} - [BLOCKED] BEAR regime: non-major asset. Skipping.")
-                            continue
-
                         # 1. Base Panic: RSI < 25 AND Volume spike > 1.5x
                         is_panic = rsi_now < 25 and vol_ratio_15m > 1.5
                         
@@ -720,9 +714,17 @@ class ApexSystem:
                         if is_panic and is_bought:
                             trade_strategy = "CAPITULATION"
                             logger.info(f"{symbol} - [CAPITULATION CATCHER] RSI={rsi_now:.1f} Vol={vol_ratio_15m:.1f}x Wick={lower_wick_ratio:.2f} OFI={ofi_real.ofi_score:.2f}")
+                        elif rsi_now < 35:
+                            # Mean Reversion fallback
+                            cvd_reversing = cvd_score_val >= -3
+                            if cvd_reversing:
+                                trade_strategy = "MEAN_REVERSION"
+                                logger.info(f"{symbol} - [MEAN REVERSION LONG] BEAR + RSI={rsi_now:.1f} (oversold) | CVD={cvd_score_val}")
+                            else:
+                                logger.info(f"{symbol} - [BLOCKED] Mean reversion blocked: CVD still strongly bearish ({cvd_score_val}). Skipping.")
+                                continue
                         else:
-                            logger.info(f"{symbol} - [BLOCKED] BEAR regime: No capitulation (Panic={is_panic}, Bought={is_bought}).")
-                            continue
+                            trade_strategy = "TREND"
 
                     elif regime_val == "SIDEWAYS" and rsi_now < 35:
                         cvd_reversing = cvd_score_val >= -1
