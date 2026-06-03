@@ -118,8 +118,13 @@ def check_mtf_gate(symbol: str, mtf_score: float, direction: str, regime: str, s
         if regime == "BULL" and mtf_score < 0:
             logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < 0 for LONG in BULL. Trend is against us.")
             return False
-        if regime in ("SIDEWAYS", "BEAR", "CRISIS") and mtf_score < 2.0:
+        # BEAR LONGs: Allow oversold bounces with weaker MTF (mean reversion/capitulation context)
+        # Only block if MTF is extremely bearish (< -2.0) to stop fighting full waterfall
+        if regime in ("SIDEWAYS", "CRISIS") and mtf_score < 2.0:
             logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < 2.0 for LONG in {regime}. Need strong confirmation.")
+            return False
+        if regime == "BEAR" and mtf_score < -2.0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < -2.0 for LONG in BEAR. Trend too toxic for bounce.")
             return False
     if direction == "SHORT":
         if regime == "BEAR" and mtf_score > 0:
@@ -817,7 +822,7 @@ class ApexSystem:
                         ws_data = global_state.live_prices.get(normalize_symbol(symbol), {})
                         
                     last_ws_ts = ws_data.get("timestamp", 0)
-                    health_data = compute_data_health(symbol, last_ws_ts, avg_vol_3, baseline_hourly_vol, funding_pct)
+                    health_data = compute_data_health(symbol, last_ws_ts, avg_vol_3, baseline_hourly_vol, funding_pct, market_type="SPOT")
                     health_score = health_data["score"]
                     
                     if health_data["status"] == "BAD":
@@ -1190,7 +1195,7 @@ class ApexSystem:
                     )
 
                     if sltp is None:
-                        logger.info(f"{symbol} - Setup rejected by Risk Engine: did not meet min R:R ratio (> 1.5) or structural SL exceeded 2.5%.")
+                        logger.info(f"{symbol} - Setup rejected by Risk Engine: did not meet min R:R ratio (> 1.5) or structural SL exceeded 4.5%.")
                         continue
 
                     if getattr(sltp, 'is_pullback', False):
@@ -1381,15 +1386,14 @@ class ApexSystem:
                     # ─── DUAL SIGNAL PATH (MARKET vs LIMIT) ──────────────────────────────────
                     structural_sl_pct = abs(current_price - sltp.stop_loss) / current_price * 100
                     
+                    # NOTE: funding.is_valid and oi.is_valid are always False on MEXC/Binance Spot.
+                    # Removed them from gate — they were physically blocking ALL market orders.
+                    # Funding/OI context is still used as scoring bonus/penalty via confluence engine.
                     is_market_entry = (
-                        ultra_score >= 80.0 and
-                        structural_sl_pct <= 2.0 and
-                        premium_discount < 0.70 and
-                        mtf_score.score >= 4.0 and
-                        cvd_signal != "BEARISH" and
-                        breadth_pct >= 30.0 and
-                        market_ctx.get("funding", {}).get("is_valid", False) and
-                        market_ctx.get("open_interest", {}).get("is_valid", False) and
+                        ultra_score >= 72.0 and
+                        structural_sl_pct <= 3.0 and
+                        premium_discount < 0.75 and
+                        breadth_pct >= 20.0 and
                         health_data["market_allowed"]
                     )
 
@@ -1587,39 +1591,35 @@ class ApexSystem:
                 logger.warning(f"[PRE-ROUTE GATE] {symbol} - Empty/low historical data. Skipping execution.")
                 return False
 
-            # Check MTF Trend Score
             from services.indicators.market_data import get_market_context
             from services.intelligence.cvd_engine import calculate_cvd
             
             price_change = (df_1h['close'].iloc[-1] - df_1h['close'].iloc[-5]) / df_1h['close'].iloc[-5] * 100
             market_ctx = await get_market_context(symbol, price_change)
             
-            # Check BTC returns
+            # Check BTC returns — only block extreme dumps (> -2.5% in 5m = cascade)
             btc_df = await self.fetch_market_data("BTC/USDT", "1m", limit=6)
             if not btc_df.empty and len(btc_df) >= 6:
                 btc_change_5m = (btc_df['close'].iloc[-1] - btc_df['close'].iloc[-6]) / btc_df['close'].iloc[-6] * 100
-                if btc_change_5m < -1.5:
-                    logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] BTC is dumping heavily ({btc_change_5m:+.2f}% in last 5m).")
+                if btc_change_5m < -2.5:
+                    logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] BTC cascading dump ({btc_change_5m:+.2f}% in 5m).")
                     return False
 
-            # Check CVD Sentiment
+            # Check CVD — only block extreme institutional selling (score <= -4)
+            # NOTE: In BEAR market, CVD is typically -2 to -3 by default. Threshold raised to -4.
             df_5m = await self.fetch_market_data(symbol, '5m', limit=30)
             if not df_5m.empty:
                 cvd_res = calculate_cvd(df_5m, lookback=20)
                 cvd_score = cvd_res.get("score", 0)
                 cvd_signal = cvd_res.get("cvd_signal", "NEUTRAL")
-                if cvd_signal == "BEARISH" and cvd_score <= -2:
-                    logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] CVD is strongly bearish (Score={cvd_score}). MM active selling.")
+                if cvd_signal == "BEARISH" and cvd_score <= -4:
+                    logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] CVD extreme sell (Score={cvd_score}).")
                     return False
 
-            # Check MTF trend breakdown
-            ema20_1h = df_1h['close'].ewm(span=20, adjust=False).mean().iloc[-1]
-            if df_1h['close'].iloc[-1] < ema20_1h:
-                # Price broke below 1h EMA20, dynamic trend is failing
-                logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] Price broke below dynamic 1h EMA20 support.")
-                return False
+            # NOTE: EMA20 check removed. Limit orders are placed BELOW market by design.
+            # Price will always be below EMA20 at fill point — checking this was blocking all limits.
 
-            logger.info(f"[PRE-ROUTE GATE] {symbol} - [PASSED] Pre-execution metrics are healthy. Executing pullback entry!")
+            logger.info(f"[PRE-ROUTE GATE] {symbol} - [PASSED] Pre-execution checks OK. Executing pullback entry!")
             return True
         except Exception as e:
             logger.error(f"Error in Pre-Route Gate for {symbol}: {e}")

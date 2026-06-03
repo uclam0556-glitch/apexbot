@@ -712,8 +712,8 @@ class RiskEngine:
         if sl_distance > max_sl_allowed:
             raw_tp_est = min(atr_target_pct, max_tp_pct)
             
-            # If the score is high and we are in BULL/SIDEWAYS/CAPITULATION, we evaluate for Pullback Watchlist
-            if v7_score >= 70.0 and regime in ["BULL", "SIDEWAYS", "CAPITULATION"]:
+            # If the score is high and we are in BULL/SIDEWAYS/CAPITULATION/BEAR, we evaluate for Pullback Watchlist
+            if v7_score >= 70.0 and regime in ["BULL", "SIDEWAYS", "CAPITULATION", "BEAR"]:
                 is_capitulation = regime == "CAPITULATION"
                 is_major = symbol.split('/')[0] in ["BTC", "ETH", "SOL", "BNB"]
                 is_aplus = v7_score >= 90.0

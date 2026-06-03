@@ -10,7 +10,8 @@ def compute_data_health(
     last_ws_update: float, 
     avg_vol_3: float, 
     baseline_hourly_vol: float,
-    funding_rate: float
+    funding_rate: float,
+    market_type: str = "SPOT"
 ) -> dict:
     """
     Computes a Data Health Score (0.0 to 100.0) based on input quality.
@@ -49,7 +50,7 @@ def compute_data_health(
         score -= 20.0
         
     # 3. Funding Rate Validity
-    if funding_rate is None or funding_rate == 0.0:
+    if (funding_rate is None or funding_rate == 0.0) and market_type != "SPOT":
         reasons.append("Funding rate invalid")
         logger.warning(f"[DATA HEALTH] {symbol} Funding Rate missing or exact 0.0. Penalty -20.")
         score -= 20.0
