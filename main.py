@@ -65,7 +65,7 @@ from core.circuit_breaker import CircuitBreaker
 from core.correlation_filter import CorrelationFilter
 from core.transaction_costs import TransactionCostModel
 from core.position_sizing import KellyPositionSizer
-from core.session_tagger import get_session_tag
+from core.session_tagger import SessionTagger
 from models.signal_record import SignalRecord
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
@@ -1136,7 +1136,7 @@ class ApexSystem:
                             "v7_score_raw": v7_score,
                             "mtf_score": mtf_score.score if mtf_score else 0.0,
                             "regime": regime_val,
-                            "session": get_session_tag(datetime.utcnow()),
+                            "session": SessionTagger.get_session(datetime.utcnow()),
                             "logic_version": "10.5.0"
                         }
                         sig_id = await insert_signal_record(blocked_signal)
@@ -1540,7 +1540,7 @@ class ApexSystem:
                             "v7_score_raw": ultra_score,
                             "mtf_score": mtf_result.score,
                             "regime": regime_val,
-                            "session": get_session_tag(datetime.utcnow()),
+                            "session": SessionTagger.get_session(datetime.utcnow()),
                             "logic_version": "10.5.0"
                         }
                         signal_id = await insert_signal_record(signal_dict)
