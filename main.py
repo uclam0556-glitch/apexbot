@@ -98,6 +98,11 @@ def check_mtf_gate(symbol: str, mtf_score: float, direction: str, regime: str, s
     """
     MTF Hard Gate: blocks trading against the trend.
     Adjusted: Mean Reversion and Capitulation are exempt from strict trend requirements.
+    
+    Thresholds per regime (LONG direction):
+      BULL:     mtf_score >= 0    (price must be trending up, even weakly)
+      SIDEWAYS: mtf_score >= -1   (allow neutral; block only strong downtrends)
+      BEAR:     mtf_score >= -2   (only block full waterfall scenarios)
     """
     # ─── STRATEGY EXEMPTIONS ──────────────────────────────────────────────
     if strategy == "CAPITULATION":
@@ -115,14 +120,15 @@ def check_mtf_gate(symbol: str, mtf_score: float, direction: str, regime: str, s
 
     # ─── TREND STRATEGY LOGIC ─────────────────────────────────────────────
     if direction == "LONG":
+        # BULL: require at least neutral MTF (score >= 0)
         if regime == "BULL" and mtf_score < 0:
             logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < 0 for LONG in BULL. Trend is against us.")
             return False
-        # BEAR LONGs: Allow oversold bounces with weaker MTF (mean reversion/capitulation context)
-        # Only block if MTF is extremely bearish (< -2.0) to stop fighting full waterfall
-        if regime in ("SIDEWAYS", "CRISIS") and mtf_score < 2.0:
-            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < 2.0 for LONG in {regime}. Need strong confirmation.")
+        # SIDEWAYS: allow weak/neutral signal (score >= -1), block only clear downtrends
+        if regime in ("SIDEWAYS", "CRISIS") and mtf_score < -1.0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < -1.0 for LONG in {regime}. Trend too negative.")
             return False
+        # BEAR: only block full waterfall (score < -2)
         if regime == "BEAR" and mtf_score < -2.0:
             logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < -2.0 for LONG in BEAR. Trend too toxic for bounce.")
             return False
@@ -735,19 +741,23 @@ class ApexSystem:
                         if is_panic and is_bought:
                             trade_strategy = "CAPITULATION"
                             logger.info(f"{symbol} - [CAPITULATION CATCHER] RSI={rsi_now:.1f} Vol={vol_ratio_15m:.1f}x Wick={lower_wick_ratio:.2f} OFI={ofi_real.ofi_score:.2f}")
-                        elif rsi_now < 35:
-                            # Mean Reversion fallback
-                            cvd_reversing = cvd_score_val >= -3
+                        elif rsi_now < 38:
+                            # Mean Reversion: expanded threshold for better coverage in bear markets
+                            # CVD gate: allow if CVD is not in extreme bear (-2 or above means selling is decelerating)
+                            cvd_reversing = cvd_score_val >= -2
                             if cvd_reversing:
                                 trade_strategy = "MEAN_REVERSION"
                                 logger.info(f"{symbol} - [MEAN REVERSION LONG] BEAR + RSI={rsi_now:.1f} (oversold) | CVD={cvd_score_val}")
                             else:
-                                logger.info(f"{symbol} - [BLOCKED] Mean reversion blocked: CVD still strongly bearish ({cvd_score_val}). Skipping.")
+                                logger.info(f"{symbol} - [BLOCKED] Mean reversion blocked: CVD extreme bear ({cvd_score_val}). Skipping.")
                                 continue
                         else:
                             trade_strategy = "TREND"
 
-                    elif regime_val == "SIDEWAYS" and rsi_now < 35:
+                    elif regime_val == "SIDEWAYS" and rsi_now < 38:
+                        # SIDEWAYS MEAN REVERSION: RSI < 38 (expanded from 35 to catch more valid setups)
+                        # RSI 35-38 range: borderline oversold — valid for mean reversion in ranging market
+                        # CVD gate: allow if CVD is not strongly bearish (>= -1 = neutral or better)
                         cvd_reversing = cvd_score_val >= -1
                         if cvd_reversing:
                             trade_strategy = "MEAN_REVERSION"
@@ -764,8 +774,8 @@ class ApexSystem:
                     mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
 
                     if not check_mtf_gate(symbol, mtf_score.score, trade_direction, regime_val, trade_strategy):
-                        proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
-                        proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
+                        proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
+                        proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
                         await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "MTF Gate", [f"MTF={mtf_score.score:.1f}"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                         continue
 
@@ -809,8 +819,8 @@ class ApexSystem:
                            (price_change_4h_pct > (2 * atr_1h_pct) and is_premium_bearish):
                             logger.info(f"{symbol} - [BLOCKED] Momentum Exhaustion (Hard Block). Up {price_change_4h_pct:.2f}%. Late impulse trap. Skipping.")
                             await save_filter_block(symbol, trade_direction, "Momentum Exhaustion", current_price)
-                            proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
-                            proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
+                            proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
+                            proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
                             await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Momentum Exhaustion", [f"Up {price_change_4h_pct:.2f}%"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                             continue
                         
@@ -832,7 +842,9 @@ class ApexSystem:
                             logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
                             await save_filter_block(symbol, trade_direction, "Absorption Trap", current_price)
                             # Create shadow trade
-                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, current_price * 0.98, current_price * 1.06, "Absorption Trap", ["Retail FOMO against MM CVD"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
+                            proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
+                            proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
+                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Absorption Trap", ["Retail FOMO against MM CVD"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                             continue
                     else:
                         logger.warning(f"{symbol} - Absorption Trap filter skipped due to funding rate data source failure.")
@@ -851,8 +863,8 @@ class ApexSystem:
                     if health_data["status"] == "BAD":
                         logger.warning(f"{symbol} - [BLOCKED] Data Health Score {health_score:.1f} < 60. Data is too corrupt/stale.")
                         await save_filter_block(symbol, trade_direction, "Data Health < 60", current_price)
-                        proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
-                        proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
+                        proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
+                        proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
                         await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Data Health", health_data["reasons"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                         continue
 
@@ -1090,8 +1102,8 @@ class ApexSystem:
                         logger.info(f"{symbol} - [BLOCKED] V7 Score: {v7_score:.1f}/100. Insufficient edge. Skipping.")
                         
                         # Create Shadow Trade
-                        proxy_sl = current_price - (2 * atr_1h) if trade_direction == "LONG" else current_price + (2 * atr_1h)
-                        proxy_tp = current_price + (4 * atr_1h) if trade_direction == "LONG" else current_price - (4 * atr_1h)
+                        proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
+                        proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
                         await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "V7 Score", [f"Score={v7_score:.1f}"], v7_score, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
                         
                         continue
