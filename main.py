@@ -1941,6 +1941,16 @@ class ApexSystem:
                                     best_limit = max(safe_candidates)
                                     deeper_limit = min(safe_candidates)
                                     
+                                    # ─── PROXIMITY GATE (promotion check) ──────────────────────
+                                    # Even during promotion, don't place limit if zone is too far
+                                    regime_str = item.get('regime', 'SIDEWAYS')
+                                    max_promo_dist_pct = 5.0 if regime_str == "BULL" else 4.0
+                                    promo_dist_pct = (entry - best_limit) / entry * 100
+                                    if promo_dist_pct > max_promo_dist_pct:
+                                        logger.info(f"[PULLBACK TRACKER] {symbol} WAITING_STRUCTURE promotion blocked by Proximity Gate: zone is {promo_dist_pct:.1f}% away (max {max_promo_dist_pct}%). Keeping as WAITING_STRUCTURE.")
+                                        continue
+                                    # ───────────────────────────────────────────────────────────
+                                    
                                     if abs(best_limit - deeper_limit) / best_limit * 100 < 0.1:
                                         limit_entries = [
                                             {"price": round(best_limit, 8), "size_pct": 100.0, "label": "Structural Support Grid"}

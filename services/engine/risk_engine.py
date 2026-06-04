@@ -887,6 +887,66 @@ class RiskEngine:
                         # Bracket 2 is the deeper support (closest to SL, lowest price)
                         deeper_limit = min(safe_candidates)
                         
+                        # ─── PROXIMITY GATE (APEX v10.4) ─────────────────────────────────────
+                        # Reject limit entries that are physically unreachable within the TTL window.
+                        # A pullback order placed >6% below current price (BULL) or >5% (other regimes)
+                        # has near-zero fill probability within 1-2 hours. These orders waste a
+                        # pullback slot and should instead be saved as WAITING_STRUCTURE for
+                        # re-evaluation when price is closer to the zone.
+                        max_limit_dist_pct = 5.0 if regime == "BULL" else 4.0
+                        actual_dist_pct = (entry - best_limit) / entry * 100
+                        
+                        if actual_dist_pct > max_limit_dist_pct:
+                            self._log.info(
+                                "pullback_proximity_gate_blocked",
+                                symbol=symbol,
+                                current_price=round(entry, 8),
+                                best_limit=round(best_limit, 8),
+                                dist_pct=round(actual_dist_pct, 2),
+                                max_allowed_pct=max_limit_dist_pct,
+                                reason=f"Limit zone is {actual_dist_pct:.1f}% below current price — exceeds {max_limit_dist_pct}% proximity threshold. Downgrading to WAITING_STRUCTURE."
+                            )
+                            # Downgrade to WAITING_STRUCTURE — system re-evaluates every 2 min
+                            # and will promote to WAITING once price gets close enough to the zone.
+                            ttl_minutes = 240 if regime == "BULL" else 120
+                            position_usd = 15.0 if is_capitulation else 30.0
+                            import asyncio
+                            try:
+                                from shared.lite_db import save_pullback_item
+                                loop = asyncio.get_event_loop()
+                                if loop.is_running():
+                                    loop.create_task(save_pullback_item(
+                                        symbol=symbol,
+                                        direction=direction,
+                                        score=v7_score,
+                                        original_entry=entry,
+                                        swing_low=swing_low,
+                                        limit_entries=[],
+                                        stop_loss=stop_loss,
+                                        take_profit_1=0.0,
+                                        take_profit_2=0.0,
+                                        take_profit_3=0.0,
+                                        position_usd=position_usd,
+                                        ttl_minutes=ttl_minutes,
+                                        regime=regime,
+                                        status='WAITING_STRUCTURE',
+                                        original_breadth=market_breadth,
+                                        original_mtf=mtf_score,
+                                        original_cvd=0.0
+                                    ))
+                            except Exception as db_ex:
+                                self._log.error("pullback_proximity_save_failed", error=str(db_ex))
+                            return SLTPResult(
+                                stop_loss=stop_loss,
+                                take_profit_1=0.0,
+                                rr_ratio_tp1=0.0,
+                                sl_buffer_pct=0.0,
+                                sl_near_round_number=False,
+                                is_pullback=True,
+                                pullback_status="WAITING_STRUCTURE"
+                            )
+                        # ─────────────────────────────────────────────────────────────────────
+                        
                         # Bracket grid creation
                         if abs(best_limit - deeper_limit) / best_limit * 100 < 0.1:
                             limit_entries = [
