@@ -45,9 +45,12 @@ async def init_timescaledb():
     async with pool.acquire() as conn:
         logger.info("Initializing TimescaleDB schema...")
         
-        # Enable TimescaleDB extension
-        await conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
-        
+        # Try to enable TimescaleDB extension, gracefully fallback to vanilla Postgres
+        try:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
+        except Exception as e:
+            logger.warning(f"TimescaleDB extension not available on this server. Falling back to vanilla PostgreSQL. Reason: {e}")
+            
         # TABLE 1: OHLCV
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS ohlcv (
@@ -65,11 +68,16 @@ async def init_timescaledb():
                 UNIQUE (symbol, timeframe, time)
             );
         """)
-        # Create hypertable if it doesn't exist
+        # Create hypertable if it doesn't exist (only if extension is active)
         try:
             await conn.execute("SELECT create_hypertable('ohlcv', 'time');")
         except asyncpg.exceptions.ObjectInUseError:
+            pass
+        except Exception as e:
+            logger.debug(f"Skipped hypertable creation: {e}")
             pass # already a hypertable
+        except Exception as e:
+            logger.debug(f"Skipped hypertable creation for ohlcv: {e}")
             
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ohlcv_sym_tf_time ON ohlcv (symbol, timeframe, time DESC);")
 
@@ -123,6 +131,11 @@ async def init_timescaledb():
             await conn.execute("SELECT create_hypertable('signals', 'created_at');")
         except asyncpg.exceptions.ObjectInUseError:
             pass
+        except Exception as e:
+            logger.debug(f"Skipped hypertable creation: {e}")
+            pass # already a hypertable
+        except Exception as e:
+            logger.debug(f"Skipped hypertable creation for signals: {e}")
             
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_sym_time ON signals (symbol, created_at DESC);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_status_time ON signals (status, created_at DESC);")
@@ -151,6 +164,11 @@ async def init_timescaledb():
             await conn.execute("SELECT create_hypertable('shadow_trades', 'created_at');")
         except asyncpg.exceptions.ObjectInUseError:
             pass
+        except Exception as e:
+            logger.debug(f"Skipped hypertable creation: {e}")
+            pass # already a hypertable
+        except Exception as e:
+            logger.debug(f"Skipped hypertable creation for shadow_trades: {e}")
             
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_st_signal ON shadow_trades (signal_id);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_st_outcome_time ON shadow_trades (outcome, created_at DESC);")
@@ -173,6 +191,9 @@ async def init_timescaledb():
         try:
             await conn.execute("SELECT create_hypertable('system_health', 'time');")
         except asyncpg.exceptions.ObjectInUseError:
+            pass
+        except Exception as e:
+            logger.debug(f"Skipped hypertable creation: {e}")
             pass
 
         # TABLE 6: Logic Versions
