@@ -4,12 +4,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Railway injects DATABASE_URL automatically for connected Postgres services
+DATABASE_URL = os.getenv('DATABASE_URL')
+
 DATABASE_CONFIG = {
-    'host': os.getenv('TIMESCALE_HOST', 'localhost'),
-    'port': int(os.getenv('TIMESCALE_PORT', 5432)),
-    'database': os.getenv('TIMESCALE_DB', 'apex_v10'),
-    'user': os.getenv('TIMESCALE_USER', 'apex'),
-    'password': os.getenv('TIMESCALE_PASSWORD', 'apexpass'),
+    'host': os.getenv('TIMESCALE_HOST', os.getenv('PGHOST', 'localhost')),
+    'port': int(os.getenv('TIMESCALE_PORT', os.getenv('PGPORT', 5432))),
+    'database': os.getenv('TIMESCALE_DB', os.getenv('PGDATABASE', 'apex_v10')),
+    'user': os.getenv('TIMESCALE_USER', os.getenv('PGUSER', 'apex')),
+    'password': os.getenv('TIMESCALE_PASSWORD', os.getenv('PGPASSWORD', 'apexpass')),
     'min_size': 5,
     'max_size': 20,  # pool для 95 symbols + analytics
     'command_timeout': 30.0,
@@ -21,7 +24,15 @@ async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
         try:
-            _pool = await asyncpg.create_pool(**DATABASE_CONFIG)
+            if DATABASE_URL:
+                _pool = await asyncpg.create_pool(
+                    dsn=DATABASE_URL,
+                    min_size=DATABASE_CONFIG['min_size'],
+                    max_size=DATABASE_CONFIG['max_size'],
+                    command_timeout=DATABASE_CONFIG['command_timeout']
+                )
+            else:
+                _pool = await asyncpg.create_pool(**DATABASE_CONFIG)
             logger.info("TimescaleDB pool created successfully.")
         except Exception as e:
             logger.error(f"Failed to create TimescaleDB pool: {e}")
