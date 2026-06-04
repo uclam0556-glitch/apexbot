@@ -63,7 +63,7 @@ from services.engine.risk_engine import RiskEngine
 from database.timescaledb import init_timescaledb, insert_signal_record, insert_shadow_trade, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record
 from core.circuit_breaker import CircuitBreaker
 from core.correlation_filter import CorrelationFilter
-from core.transaction_costs import TransactionCostModel, LiquidityTier
+from core.transaction_costs import TransactionCostModel
 from core.position_sizing import KellyPositionSizer
 from core.session_tagger import get_session_tag
 from models.signal_record import SignalRecord
