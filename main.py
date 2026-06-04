@@ -202,15 +202,25 @@ class ApexSystem:
         while self.running:
             try:
                 logger.info("Updating Macro & Rotation State...")
-                self.macro_state = await self.macro_engine.get_full_macro_result()
-                try:
-                    self.rotation_state = self.rotation_engine.get_rotation_multipliers(
-                        self.macro_state.dominance,
-                        self.macro_state.macro_bias
-                    )
-                    logger.info(f"Macro Bias: {self.macro_state.macro_bias.value}")
-                except Exception as rot_err:
-                    logger.warning(f"Rotation engine error (non-fatal): {rot_err}")
+                if hasattr(self, 'macro_engine'):
+                    self.macro_state = await self.macro_engine.get_full_macro_result()
+                    try:
+                        if hasattr(self, 'rotation_engine'):
+                            self.rotation_state = self.rotation_engine.get_rotation_multipliers(
+                                self.macro_state.dominance,
+                                self.macro_state.macro_bias
+                            )
+                        logger.info(f"Macro Bias: {self.macro_state.macro_bias.value}")
+                    except Exception as rot_err:
+                        logger.warning(f"Rotation engine error (non-fatal): {rot_err}")
+                        self.rotation_state = None
+                else:
+                    # Mock macro state if engine is not connected
+                    class MockBias: value = "NEUTRAL"
+                    class MockState:
+                        macro_bias = MockBias()
+                        dominance = "BTC"
+                    self.macro_state = MockState()
                     self.rotation_state = None
                     
                 # Update RS Matrix
@@ -482,14 +492,11 @@ class ApexSystem:
             pnl_sum = current_stats.get('pnl_sum', 0.0)
             win_rate = current_stats.get('win_rate', 0.0)
             
-            breaker_health = self.circuit_breaker.check_system_health(
-                daily_pnl_pct=pnl_sum, 
-                weekly_pnl_pct=pnl_sum, 
-                portfolio_beta=1.5 # Mocking beta for now
-            )
+            self.circuit_breaker.update_pnl(pnl_sum, 0.0)
+            breaker_status = self.circuit_breaker.check()
             
-            if not breaker_health.is_healthy:
-                logger.warning(f"🚨 CIRCUIT BREAKER TRIPPED: {breaker_health.reason}. Pausing operations.")
+            if not breaker_status.get('allowed', True):
+                logger.warning(f"🚨 CIRCUIT BREAKER TRIPPED: {breaker_status.get('reason')}. Pausing operations.")
                 await asyncio.sleep(300)
                 continue
             
