@@ -396,3 +396,40 @@ async def is_pullback_on_structure_cooldown(symbol: str) -> bool:
         return count > 0
     except Exception:
         return False
+
+async def create_shadow_trade(
+    symbol: str,
+    direction: str,
+    strategy: str,
+    entry_price: float,
+    stop_loss: float,
+    take_profit_1: float,
+    primary_block_reason: str,
+    all_block_reasons: list,
+    v7_score: float,
+    regime: str = "UNKNOWN",
+    breadth: float = 0.0,
+    cvd_score: float = 0.0,
+    mtf_score: float = 0.0
+):
+    """Wrapper to maintain backwards compatibility with main.py shadow trades"""
+    try:
+        signal_dict = {
+            'symbol': symbol,
+            'strategy': strategy,
+            'direction': direction,
+            'status': 'BLOCKED',
+            'block_reason': primary_block_reason,
+            'entry_price': entry_price,
+            'sl_price': stop_loss,
+            'tp1_price': take_profit_1,
+            'v7_score_raw': v7_score,
+            'mtf_score': mtf_score,
+            'regime': regime,
+            'is_shadow': True
+        }
+        signal_id = await insert_signal_record(signal_dict)
+        if signal_id:
+            await insert_shadow_trade(signal_id, symbol, "UNKNOWN", regime, "v10.5")
+    except Exception as e:
+        logger.error(f"Failed to create shadow trade wrapper: {e}")
