@@ -1,6 +1,7 @@
 import asyncio
 import aiohttp
 import structlog
+import time
 from datetime import datetime
 from typing import List, Dict
 
@@ -138,10 +139,12 @@ class RSMatrix:
                                 logger.error(f"Fast poller received HTTP {resp.status} from Bybit ({url})")
                                 
                     # Now update global state with collected prices
+                    current_time = time.time()
                     for sym, price in all_prices.items():
                         if sym not in global_state.live_prices:
                             global_state.live_prices[sym] = {}
                         global_state.live_prices[sym]["price"] = price
+                        global_state.live_prices[sym]["timestamp"] = current_time
                         
                     loop_count += 1
                     if loop_count % 10 == 0:
