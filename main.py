@@ -163,7 +163,7 @@ class ApexSystem:
         self.circuit_breaker = CircuitBreaker()
         self.correlation_filter = CorrelationFilter()
         self.cost_model = TransactionCostModel()
-        self.kelly_sizer = KellyPositionSizer(base_capital_usd=self.config.trading.initial_deposit_usd)
+        self.kelly_sizer = KellyPositionSizer()
         
         from services.engine.order_fill_monitor import OrderFillMonitor
         self.fill_monitor = OrderFillMonitor(self.exchange, self.config)
