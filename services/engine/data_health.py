@@ -11,6 +11,7 @@ def compute_data_health(
     avg_vol_3: float, 
     baseline_hourly_vol: float,
     funding_rate: float,
+    daily_volume_usd: float = 0.0,
     market_type: str = "SPOT"
 ) -> dict:
     """
@@ -54,6 +55,12 @@ def compute_data_health(
         reasons.append("Funding rate invalid")
         logger.warning(f"[DATA HEALTH] {symbol} Funding Rate missing or exact 0.0. Penalty -20.")
         score -= 20.0
+        
+    # 4. APEX v10.5 Absolute Minimum Volume Filter
+    if daily_volume_usd < 500_000:
+        reasons.append("Daily volume < $500k")
+        logger.warning(f"[DATA HEALTH] {symbol} Daily volume critically low (${daily_volume_usd:,.0f}). Blocked.")
+        score -= 100.0
         
     score = max(0.0, score)
     

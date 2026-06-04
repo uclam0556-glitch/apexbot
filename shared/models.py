@@ -234,6 +234,8 @@ class SwingPoint(BaseModel):
     timeframe: str
     type: str  # "HIGH" | "LOW"
     strength: int = Field(..., description="Number of confirming candles")
+    bar_index_locked: int = 0
+    candle_close_ts: Optional[datetime] = None
 
 
 class ImbalanceZone(BaseModel):
@@ -244,6 +246,8 @@ class ImbalanceZone(BaseModel):
     created_at: datetime
     filled: bool = False
     fill_pct: float = 0.0  # 0.0 = unfilled, 1.0 = fully filled
+    bar_index_locked: int = 0
+    candle_close_ts: Optional[datetime] = None
 
 
 class VolumeNode(BaseModel):
@@ -260,6 +264,8 @@ class StructureEvent(BaseModel):
     timestamp: datetime
     timeframe: str
     confirmed: bool
+    bar_index_locked: int = 0
+    candle_close_ts: Optional[datetime] = None
 
 
 class LiquiditySweep(BaseModel):
@@ -269,6 +275,8 @@ class LiquiditySweep(BaseModel):
     direction: str          # "LONG_SWEEP" (swept highs) | "SHORT_SWEEP" (swept lows)
     timestamp: datetime
     timeframe: str
+    bar_index_locked: int = 0
+    candle_close_ts: Optional[datetime] = None
 
 
 class SMCAnalysis(BaseModel):

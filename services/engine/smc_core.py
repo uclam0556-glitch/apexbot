@@ -112,6 +112,7 @@ class FormalizedSMCCore:
         self,
         df: pd.DataFrame,
         symbol: str,
+        current_bar_index: Optional[int] = None,
         lookback: int = 5,
         volume_bins: int = 20,
     ) -> SMCAnalysis:
@@ -141,6 +142,10 @@ class FormalizedSMCCore:
             ValueError: If the DataFrame is too small or missing required columns.
         """
         self._validate_df(df)
+        
+        if current_bar_index is not None:
+            df = df.iloc[:current_bar_index].copy()
+            
         self._log.info("smc_analysis_start", symbol=symbol, rows=len(df))
 
         swing_highs, swing_lows = self.find_swing_points(df, lookback=lookback)
@@ -175,6 +180,14 @@ class FormalizedSMCCore:
             premium_discount_ratio=premium_discount,
             analyzed_at=datetime.now(tz=timezone.utc),
         )
+
+        if current_bar_index is not None and not df.empty:
+            last_ts = self._get_timestamp(df, len(df) - 1)
+            # Ensure no look-ahead: all locked candles must be <= the last closed candle
+            all_events = swing_highs + swing_lows + imbalance_zones + structure_events + liquidity_sweeps
+            for e in all_events:
+                if e.candle_close_ts is not None:
+                    assert e.candle_close_ts <= last_ts, f"Look-ahead bias detected in {e}"
 
         self._log.info(
             "smc_analysis_complete",
@@ -238,6 +251,7 @@ class FormalizedSMCCore:
             # Swing HIGH: candle[i].high strictly greater than all neighbours
             if highs[i] > left_highs.max() and highs[i] > right_highs.max():
                 ts = self._get_timestamp(df, i)
+                locked_idx = min(i + lookback, n - 1)
                 swing_highs.append(
                     SwingPoint(
                         price=float(highs[i]),
@@ -245,6 +259,8 @@ class FormalizedSMCCore:
                         timeframe=self.timeframe,
                         type="HIGH",
                         strength=lookback,
+                        bar_index_locked=locked_idx,
+                        candle_close_ts=self._get_timestamp(df, locked_idx),
                     )
                 )
 
@@ -254,6 +270,7 @@ class FormalizedSMCCore:
             # Swing LOW: candle[i].low strictly less than all neighbours
             if lows[i] < left_lows.min() and lows[i] < right_lows.min():
                 ts = self._get_timestamp(df, i)
+                locked_idx = min(i + lookback, n - 1)
                 swing_lows.append(
                     SwingPoint(
                         price=float(lows[i]),
@@ -261,6 +278,8 @@ class FormalizedSMCCore:
                         timeframe=self.timeframe,
                         type="LOW",
                         strength=lookback,
+                        bar_index_locked=locked_idx,
+                        candle_close_ts=self._get_timestamp(df, locked_idx),
                     )
                 )
 
@@ -345,6 +364,8 @@ class FormalizedSMCCore:
                         created_at=ts,
                         filled=filled,
                         fill_pct=round(fill_pct, 4),
+                        bar_index_locked=i,
+                        candle_close_ts=self._get_timestamp(df, i),
                     )
                 )
 
@@ -370,6 +391,8 @@ class FormalizedSMCCore:
                         created_at=ts,
                         filled=filled,
                         fill_pct=round(fill_pct, 4),
+                        bar_index_locked=i,
+                        candle_close_ts=self._get_timestamp(df, i),
                     )
                 )
 
@@ -600,6 +623,8 @@ class FormalizedSMCCore:
                         timestamp=timestamps[i],
                         timeframe=self.timeframe,
                         confirmed=True,
+                        bar_index_locked=i,
+                        candle_close_ts=self._get_timestamp(df, i),
                     )
                 )
                 prior_structure = 1
@@ -616,6 +641,8 @@ class FormalizedSMCCore:
                         timestamp=timestamps[i],
                         timeframe=self.timeframe,
                         confirmed=True,
+                        bar_index_locked=i,
+                        candle_close_ts=self._get_timestamp(df, i),
                     )
                 )
                 prior_structure = -1
@@ -687,6 +714,8 @@ class FormalizedSMCCore:
                             direction="LONG_SWEEP",
                             timestamp=ts,
                             timeframe=self.timeframe,
+                            bar_index_locked=i,
+                            candle_close_ts=self._get_timestamp(df, i),
                         )
                     )
                     break  # one sweep event per candle per direction
@@ -702,6 +731,8 @@ class FormalizedSMCCore:
                             direction="SHORT_SWEEP",
                             timestamp=ts,
                             timeframe=self.timeframe,
+                            bar_index_locked=i,
+                            candle_close_ts=self._get_timestamp(df, i),
                         )
                     )
                     break

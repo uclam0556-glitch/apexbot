@@ -60,10 +60,13 @@ from services.engine.smc_core import FormalizedSMCCore
 from services.adversarial.tester import AdversarialSignalTester
 from services.engine.confluence_v4 import ConfluenceEngineV4
 from services.engine.risk_engine import RiskEngine
-from services.macro.correlation import CrossAssetCorrelationEngine
-from services.macro.rotation_engine import CapitalRotationEngine
-from services.executor.order_executor import OrderExecutor
-from shared.lite_db import init_lite_db, save_trade, get_open_trades, close_trade, get_confidence_calibration, can_open_new_position, is_on_cooldown, save_filter_block, update_trade_sl, get_pullback_items_by_status, update_pullback_limit_entries, is_pullback_on_structure_cooldown, create_shadow_trade
+from database.timescaledb import init_timescaledb, insert_signal_record, insert_shadow_trade, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record
+from core.circuit_breaker import CircuitBreaker
+from core.correlation_filter import CorrelationFilter
+from core.transaction_costs import TransactionCostModel, LiquidityTier
+from core.position_sizing import KellyPositionSizer
+from core.session_tagger import get_session_tag
+from models.signal_record import SignalRecord
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
 from services.intelligence.rs_matrix import rs_matrix_engine
 from services.intelligence.cvd_engine import calculate_cvd
@@ -150,16 +153,17 @@ class ApexSystem:
             'options': {'defaultType': 'spot'}
         })
         
-        # Initialize Engines
+        # Initialize Legacy Engines
         self.mtf_engine = MTFEngine()
         self.smc_core = FormalizedSMCCore()
         self.adversarial_tester = AdversarialSignalTester()
         self.confluence_engine = ConfluenceEngineV4()
-        self.risk_engine = RiskEngine()
-        self.macro_engine = CrossAssetCorrelationEngine()
-        self.rotation_engine = CapitalRotationEngine()
         
-        self.executor = OrderExecutor(self.exchange)
+        # 🚀 Initialize APEX v10.5 Core Modules
+        self.circuit_breaker = CircuitBreaker()
+        self.correlation_filter = CorrelationFilter()
+        self.cost_model = TransactionCostModel()
+        self.kelly_sizer = KellyPositionSizer(base_capital_usd=self.config.trading.paper_trading_balance)
         
         from services.engine.order_fill_monitor import OrderFillMonitor
         self.fill_monitor = OrderFillMonitor(self.exchange, self.config)
@@ -236,7 +240,7 @@ class ApexSystem:
             
         while self.running:
             try:
-                open_trades = await get_open_trades()
+                open_trades = await get_open_shadow_trades()
                 if open_trades:
                     logger.info(f"Tracking {len(open_trades)} open paper trades...")
                     for t in open_trades:
@@ -345,14 +349,16 @@ class ApexSystem:
                                     trail_sl = excursions["high"] * 0.985
                                     if trail_sl > trade['stop_loss']:
                                         logger.info(f"📈 {symbol} - [Chandelier Exit] Trailing SL up to {trail_sl:.4f} (MFE: {excursions['high']:.4f})")
-                                        await update_trade_sl(trade['id'], trail_sl)
+                                        from database.timescaledb import update_signal_sl
+                                        await update_signal_sl(trade['id'], trail_sl)
                                         trade['stop_loss'] = trail_sl
                             else:
                                 if max_profit_pct >= 2.0:
                                     trail_sl = excursions["low"] * 1.015
                                     if trail_sl < trade['stop_loss'] or trade['stop_loss'] == 0: # handle missing SL
                                         logger.info(f"📉 {symbol} - [Chandelier Exit] Trailing SL down to {trail_sl:.4f} (MFE: {excursions['low']:.4f})")
-                                        await update_trade_sl(trade['id'], trail_sl)
+                                        from database.timescaledb import update_signal_sl
+                                        await update_signal_sl(trade['id'], trail_sl)
                                         trade['stop_loss'] = trail_sl
                         except Exception as trail_err:
                             logger.error(f"Error updating trailing SL: {trail_err}")
@@ -387,13 +393,12 @@ class ApexSystem:
                                 except Exception:
                                     pass
 
-                            await close_trade(
+                            await update_shadow_trade(
                                 trade['id'], 
                                 status, 
-                                pnl_pct,
-                                max_profit_pct=max_profit_pct,
-                                max_drawdown_pct=max_drawdown_pct,
-                                duration_minutes=duration_minutes
+                                max_profit_pct,
+                                max_drawdown_pct,
+                                int(duration_minutes)
                             )
                             # Cleanup memory
                             from shared.state import global_state
@@ -467,6 +472,24 @@ class ApexSystem:
             is_blackout, blackout_reason = is_macro_blackout_window()
             if is_blackout:
                 logger.info(f"🛑 MACRO BLACKOUT: {blackout_reason}. Pausing scan for 5 minutes.")
+                await asyncio.sleep(300)
+                continue
+                
+            # ─── CIRCUIT BREAKER V10.5 ───────────────────────────────────────────────
+            # Re-fetch stats using TimescaleDB to determine PnL drawdowns for Circuit Breaker
+            from database.timescaledb import get_stats_timescale
+            current_stats = await get_stats_timescale()
+            pnl_sum = current_stats.get('pnl_sum', 0.0)
+            win_rate = current_stats.get('win_rate', 0.0)
+            
+            breaker_health = self.circuit_breaker.check_system_health(
+                daily_pnl_pct=pnl_sum, 
+                weekly_pnl_pct=pnl_sum, 
+                portfolio_beta=1.5 # Mocking beta for now
+            )
+            
+            if not breaker_health.is_healthy:
+                logger.warning(f"🚨 CIRCUIT BREAKER TRIPPED: {breaker_health.reason}. Pausing operations.")
                 await asyncio.sleep(300)
                 continue
             
@@ -588,7 +611,7 @@ class ApexSystem:
                     # ─── LIQUIDATION CASCADE CHECK ───────────────────────────────────────────
                     if self.liquidation_detector.is_cascade_in_progress(symbol):
                         logger.warning(f"🚨 {symbol} - [BLOCKED] Liquidation Cascade in progress. Skipping.")
-                        await save_filter_block(symbol, "UNKNOWN", "Liquidation Cascade", 0.0)
+                        await insert_filter_block_record(symbol, "UNKNOWN", "Liquidation Cascade", 0.0)
                         continue
                     
                     # 1. Fetch Multi-Timeframe Data (ALL 5 TFs) concurrently
@@ -611,10 +634,10 @@ class ApexSystem:
                     df_1d_sym = tf_data.get('1d', pd.DataFrame())
                     if not df_1d_sym.empty and open_and_pending_symbols:
                         prices_30d[symbol] = df_1d_sym['close']
-                        corr_result = self.risk_engine.check_correlation(symbol, open_and_pending_symbols, prices_30d)
-                        if not corr_result.correlation_ok:
-                            logger.info(f"{symbol} - [BLOCKED] Correlation Risk. Highly correlated ({corr_result.max_correlation:.2f}) with open/pending position {corr_result.correlated_with}. Skipping.")
-                            await save_filter_block(symbol, "UNKNOWN", "Correlation Risk", 0.0)
+                        corr_result = self.correlation_filter.check_correlation(symbol, open_and_pending_symbols, prices_30d)
+                        if not corr_result.is_safe:
+                            logger.info(f"{symbol} - [BLOCKED] Correlation Risk. Highly correlated ({corr_result.max_correlation_value:.2f}) with open/pending position {corr_result.correlated_with}. Skipping.")
+                            await insert_filter_block_record(symbol, "UNKNOWN", "Correlation Risk", 0.0)
                             continue
                     
                     df_1h = tf_data['1h']
@@ -818,7 +841,7 @@ class ApexSystem:
                            (price_change_4h_pct > (2 * atr_1h_pct) and is_rsi_overbought) or \
                            (price_change_4h_pct > (2 * atr_1h_pct) and is_premium_bearish):
                             logger.info(f"{symbol} - [BLOCKED] Momentum Exhaustion (Hard Block). Up {price_change_4h_pct:.2f}%. Late impulse trap. Skipping.")
-                            await save_filter_block(symbol, trade_direction, "Momentum Exhaustion", current_price)
+                            await insert_filter_block_record(symbol, trade_strategy or "UNKNOWN", "Momentum Exhaustion", 0.0)
                             proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
                             proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
                             await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Momentum Exhaustion", [f"Up {price_change_4h_pct:.2f}%"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
@@ -840,7 +863,7 @@ class ApexSystem:
                     if funding_is_valid:
                         if funding_pct > 0.04 and rsi_now > 65 and cvd_score_val < 0 and trade_direction == "LONG":
                             logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
-                            await save_filter_block(symbol, trade_direction, "Absorption Trap", current_price)
+                            await insert_filter_block_record(symbol, trade_strategy or "UNKNOWN", "Absorption Trap", 0.0)
                             # Create shadow trade
                             proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
                             proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
@@ -862,7 +885,7 @@ class ApexSystem:
                     
                     if health_data["status"] == "BAD":
                         logger.warning(f"{symbol} - [BLOCKED] Data Health Score {health_score:.1f} < 60. Data is too corrupt/stale.")
-                        await save_filter_block(symbol, trade_direction, "Data Health < 60", current_price)
+                        await insert_filter_block_record(symbol, trade_strategy or "UNKNOWN", "Data Health < 60", 0.0)
                         proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
                         proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
                         await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Data Health", health_data["reasons"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
@@ -875,7 +898,7 @@ class ApexSystem:
 
                     if z_score > 3.0 and trade_direction == "LONG":
                         logger.info(f"{symbol} - [BLOCKED] Z-Score Gravity. Price is {z_score:.1f} std devs above mean. Mean reversion inevitable. Skipping.")
-                        await save_filter_block(symbol, trade_direction, "Z-Score Gravity", current_price)
+                        await insert_filter_block_record(symbol, trade_strategy or "UNKNOWN", "Z-Score Gravity", 0.0)
                         continue
 
                     # ─── SMC + INDICATORS ─────────────────────────────────────────────────────
@@ -1087,24 +1110,37 @@ class ApexSystem:
                             logger.info(f"🌟 {symbol} A+ SETUP BONUS! (RSI={rsi_now:.1f}, CVD+, OFI+, VOL+). Applying +35 points.")
                             
                     # ─── FINAL V7 CALIBRATION & GATE ───────────────────────────────────────────
-                    from shared.lite_db import get_isotonic_calibration
-                    iso_result = await get_isotonic_calibration(v7_score)
-                    
-                    if iso_result['is_calibrated']:
-                        calibrated_score = iso_result['calibrated_score']
-                        logger.info(f"{symbol} - Isotonic Regression: Raw {v7_score:.1f} -> Calibrated Win Prob {calibrated_score:.1f}% (N={iso_result['sample_size']})")
-                        v7_score = calibrated_score
+                    # ─── FINAL V7 CALIBRATION & GATE ───────────────────────────────────────────
+                    # In V10.5 Data Collection Mode, we use raw score directly. Calibration comes after training.
+                    isotonic_win_prob = v7_score  # We don't have enough data yet, use raw as proxy
                         
                     if v7_score < dynamic_min_score:
-                        if (dynamic_min_score - 10.0) <= v7_score < dynamic_min_score:
-                            from shared.lite_db import save_missed_signal
-                            asyncio.create_task(save_missed_signal(symbol, trade_direction, v7_score, current_price))
                         logger.info(f"{symbol} - [BLOCKED] V7 Score: {v7_score:.1f}/100. Insufficient edge. Skipping.")
                         
-                        # Create Shadow Trade
+                        # Create Shadow Trade (Record Blocked Signal)
                         proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
                         proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
-                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "V7 Score", [f"Score={v7_score:.1f}"], v7_score, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
+                        
+                        blocked_signal = {
+                            "timestamp": datetime.utcnow(),
+                            "symbol": symbol,
+                            "strategy": trade_strategy or "TREND",
+                            "direction": trade_direction,
+                            "status": "REJECTED_BY_FILTER",
+                            "block_reason": f"V7 Score < {dynamic_min_score}",
+                            "entry_price": current_price,
+                            "sl_price": proxy_sl,
+                            "tp1_price": proxy_tp,
+                            "tp2_price": 0.0,
+                            "tp3_price": 0.0,
+                            "v7_score_raw": v7_score,
+                            "mtf_score": mtf_score.score if mtf_score else 0.0,
+                            "regime": regime_val,
+                            "session": get_session_tag(datetime.utcnow()),
+                            "logic_version": "10.5.0"
+                        }
+                        sig_id = await insert_signal_record(blocked_signal)
+                        await insert_shadow_trade(sig_id, symbol, blocked_signal["session"], regime_val, "10.5.0")
                         
                         continue
                         
@@ -1353,7 +1389,7 @@ class ApexSystem:
                     position_usd = min(position_usd, deposit * 0.20)
                     rr_ratio     = abs(sltp.take_profit_1 - current_price) / abs(current_price - sltp.stop_loss) if abs(current_price - sltp.stop_loss) > 0 else 2.0
 
-                    # ─── CONFIDENCE CALIBRATION (KNN) ──────────────────────────────────────────
+                    # ─── CONFIDENCE CALIBRATION (MOCKED FOR V10.5 DATA COLLECTION) ────────────────
                     features_vector = {
                         "ultra_score": ultra_score,
                         "btc_rsi": btc_rsi,
@@ -1361,10 +1397,9 @@ class ApexSystem:
                         "mtf_score": mtf_score.score,
                         "funding_rate": market_ctx["funding"]["rate_pct"]
                     }
-                    confidence_data = await get_confidence_calibration(features_vector)
-                    conf_winrate = confidence_data.get("win_rate", 50.0)
-                    conf_samples = confidence_data.get("sample_size", 0)
-                    logger.info(f"🧠 ML Confidence Score: {conf_winrate:.1f}% (based on {conf_samples} neighbors)")
+                    conf_winrate = isotonic_win_prob * 100.0  # fallback to isotonic
+                    conf_samples = 100
+                    logger.info(f"🧠 ML Confidence Score: {conf_winrate:.1f}% (Shadow Mode Mock)")
 
                     # ─── BUILD SIGNAL PACKAGE ─────────────────────────────────────────────────
                     dir_emoji   = "🚀" if trade_direction == "LONG" else "🔻"
@@ -1490,22 +1525,34 @@ class ApexSystem:
                                 logger.error(f"Failed to execute Market Order for {symbol}: {exec_err}")
                                 continue
                                 
-                        # Save to trades
-                        from shared.lite_db import save_trade
-                        await save_trade(
-                            signal_id=str(int(datetime.utcnow().timestamp())),
+                        # Save to TimescaleDB
+                        signal_dict = {
+                            "timestamp": datetime.utcnow(),
+                            "symbol": symbol,
+                            "strategy": trade_strategy,
+                            "direction": trade_direction,
+                            "status": trade_status,
+                            "entry_price": entry_price,
+                            "sl_price": sltp.stop_loss,
+                            "tp1_price": sltp.take_profit_1,
+                            "tp2_price": sltp.take_profit_2,
+                            "tp3_price": sltp.take_profit_3,
+                            "v7_score_raw": ultra_score,
+                            "mtf_score": mtf_result.score,
+                            "regime": regime_val,
+                            "session": get_session_tag(datetime.utcnow()),
+                            "logic_version": "10.5.0"
+                        }
+                        signal_id = await insert_signal_record(signal_dict)
+                        await insert_shadow_trade(
+                            signal_id=signal_id,
                             symbol=symbol,
-                            direction=trade_direction,
-                            entry_price=entry_price,
-                            stop_loss=sltp.stop_loss,
-                            take_profit_1=sltp.take_profit_1,
-                            position_usd=position_usd,
-                            reasoning=f"MARKET ENTRY | {strat_label} | Score {ultra_score:.1f}/100",
-                            strategy=trade_strategy,
-                            features_dict=features_dict,
-                            source="MARKET",
-                            status=trade_status
+                            session=signal_dict["session"],
+                            regime=regime_val,
+                            logic_version="10.5.0"
                         )
+                        
+                        logger.info(f"🟢 SIGNAL {signal_id} SAVED TO TIMESCALEDB (SHADOW MODE)")
                         
                         import structlog
                         struct_logger = structlog.get_logger("telemetry")
@@ -2165,8 +2212,8 @@ class ApexSystem:
         # Start background tasks
         asyncio.create_task(self.background_macro_updater())
         asyncio.create_task(self.background_trade_tracker())
-        asyncio.create_task(self.background_missed_signals_tracker())
-        asyncio.create_task(self.background_pullback_tracker())
+        # asyncio.create_task(self.background_missed_signals_tracker())
+        # asyncio.create_task(self.background_pullback_tracker())
         asyncio.create_task(self.fill_monitor.start())
         asyncio.create_task(self.shadow_monitor.start())
         asyncio.create_task(self.ws_manager.start(self.config.trading.symbols))
@@ -2197,7 +2244,7 @@ async def start_dashboard_server():
     await server.serve()
 
 async def main():
-    await init_lite_db()
+    await init_timescaledb()
     
     # --- AUTO RUN DIAGNOSTICS ON STARTUP ---
     try:

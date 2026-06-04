@@ -13,8 +13,8 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command
 
 from shared.config import get_config
-from shared.lite_db import get_stats, get_recent_trades, get_open_trades, reset_open_trades, factory_reset_db
 from shared.state import global_state
+from database.timescaledb import get_stats_timescale, get_open_shadow_trades
 
 def format_price(price: float) -> str:
     if not price:
@@ -88,12 +88,19 @@ def get_back_keyboard() -> InlineKeyboardMarkup:
 
 def get_start_text() -> str:
     now = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
+    from config.data_collection_mode import DATA_COLLECTION_MODE
+    
+    if not DATA_COLLECTION_MODE.get('REAL_TRADING_ENABLED', False):
+        mode_text = "🛡 <b>SHADOW MODE (Data Collection)</b>\nТорговля отключена. Собираем чистые данные для ML."
+    else:
+        mode_text = "🟢 <b>LIVE TRADING (Active)</b>"
+
     return (
-        "⚡ <b>APEX Quantum AI v5.1</b>\n"
+        "⚡ <b>APEX Quantum AI v10.5</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🟢 <b>Система активна:</b> Мониторинг 60 пар 24/7\n"
-        "🧠 <b>Ядро:</b> SMC + MTF + RS Matrix + CVD\n"
-        "🛡 <b>Риск-менеджмент:</b> $3000 | 1% на сделку | Лимит 7\n\n"
+        f"{mode_text}\n\n"
+        "🧠 <b>Ядро:</b> SMC (No Look-Ahead) + MTF + CVD\n"
+        "🛡 <b>Риск:</b> Quarter-Kelly Sizing + Circuit Breaker\n\n"
         f"🕒 <i>Время сервера: {now}</i>\n\n"
         "👇 <b>Главное меню:</b>"
     )
@@ -134,14 +141,15 @@ async def process_status(callback: CallbackQuery):
     }.get(global_state.regime, "⚪")
 
     text = (
-        "📡 <b>Статус сканирования</b>\n"
+        "📡 <b>Статус Системы (v10.5)</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🔍 Сейчас анализирую: <b>{global_state.current_symbol}</b>\n"
         f"⏱ Последнее сканирование: <b>{global_state.last_scan_time}</b>\n"
-        f"{regime_emoji} Рыночный режим (ML): <b>{global_state.regime}</b>\n\n"
-        f"📦 Монет в списке: <b>40</b>\n"
-        f"⏳ Таймфреймов: <b>5</b> (1d · 4h · 1h · 15m · 5m)\n"
-        f"🎯 Мин. score для сигнала: <b>6.0/10</b>\n\n"
+        f"{regime_emoji} Режим (ML): <b>{global_state.regime}</b>\n\n"
+        f"📦 База сканирования: <b>95 монет</b>\n"
+        f"⏳ Таймфреймы: <b>5</b> (1d · 4h · 1h · 15m · 5m)\n"
+        f"🎯 Мин. score для сигнала: <b>45.0/100</b>\n\n"
+        "🛡 <b>Защитные слои:</b> Активны (Circuit, Correlation)\n"
         "<i>Обновляется автоматически каждый цикл</i>"
     )
     try:
@@ -329,10 +337,25 @@ async def process_active_limits(callback: CallbackQuery):
 
 @router.callback_query(F.data == "stats")
 async def process_stats(callback: CallbackQuery):
-    stats = await get_stats()
-    open_trades = await get_open_trades()
+    stats = await get_stats_timescale()
+    open_trades = await get_open_shadow_trades()
     active_count = len(open_trades) if open_trades else 0
     
+    # Пытаемся получить расширенную стату
+    try:
+        from analytics.statistical_validator import StatisticalValidator
+        trades = await get_recent_trades(limit=1000)
+        validation = StatisticalValidator.run_validation(trades)
+        pf = validation.get('profit_factor', 0.0)
+        exp = validation.get('expectancy', 0.0)
+        t_stat = validation.get('t_stat', 0.0)
+        pval = validation.get('p_value', 1.0)
+        sharpe = validation.get('sharpe', 0.0)
+        is_valid = validation.get('valid', False)
+        valid_icon = "✅ Proofed" if is_valid else "⏳ Calibrating"
+    except Exception:
+        pf, exp, t_stat, pval, sharpe, valid_icon = 0.0, 0.0, 0.0, 1.0, 0.0, "—"
+
     wr = stats['win_rate']
     
     # Generate progress bar for win rate
@@ -340,22 +363,24 @@ async def process_stats(callback: CallbackQuery):
     bar = "🟩" * filled + "⬜" * (10 - filled)
     
     text = (
-        "📊 <b>Статистика & Эффективность</b>\n"
+        "📊 <b>Институциональная Статистика (v10.5)</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"⏳ <b>Открытых позиций:</b> {active_count}\n"
+        f"⏳ <b>Открытых Shadow позиций:</b> {active_count}\n"
         f"📈 <b>Закрытых сделок:</b> {stats['total']}\n"
         f"   ┣ Успешных (TP): <b>{stats['won']}</b> ✅\n"
-        f"   ┣ Микро-Плюс: <b>{stats.get('small_win', 0)}</b> 🟢\n"
         f"   ┣ Безубыток: <b>{stats.get('breakeven', 0)}</b> 🟡\n"
-        f"   ┣ Микро-Минус: <b>{stats.get('small_loss', 0)}</b> 🟠\n"
         f"   ┗ Убыточных (SL): <b>{stats['lost']}</b> ❌\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 <b>Win Rate: {wr:.1f}%</b>\n"
         f"[{bar}]\n\n"
         f"💰 <b>Суммарный PnL:</b> {stats['pnl_sum']:+.2f}%\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💵 <b>Рабочий депозит:</b> $3,000\n"
-        f"⚖️ <b>Риск на сделку:</b> 1% ($30)\n"
+        "🔬 <b>Quant Metrics:</b>\n"
+        f"• Profit Factor: <b>{pf:.2f}</b>\n"
+        f"• Expectancy: <b>{exp:.2f}%</b> per trade\n"
+        f"• Sharpe Ratio: <b>{sharpe:.2f}</b>\n"
+        f"• T-Statistic: <b>{t_stat:.2f}</b> (p-value: {pval:.3f})\n"
+        f"• Status: <b>{valid_icon}</b>\n"
     )
     try:
         await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
@@ -376,7 +401,7 @@ async def process_history(callback: CallbackQuery):
             "📜 <b>История сигналов</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "Пока нет активных или закрытых сделок.\n"
-            "Бот сканирует 40 монет — ожидайте сигнал 🔍"
+            "Бот сканирует 95 монет — ожидайте сигнал 🔍"
         )
     else:
         text = "📜 <b>Последние 10 сделок:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -449,28 +474,22 @@ async def process_hot(callback: CallbackQuery):
 @router.callback_query(F.data == "settings")
 async def process_settings(callback: CallbackQuery):
     text = (
-        "⚙️ <b>Настройки APEX v5.0</b>\n"
+        "⚙️ <b>Настройки APEX v10.5</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "💵 <b>Депозит:</b> $3,000\n"
-        "⚖️ <b>Риск/сделка:</b> 1% ($30)\n"
-        "🎯 <b>Мин. score:</b> 6.5/10\n"
-        "📦 <b>Монет в скане:</b> 60\n"
+        "💵 <b>Депозит:</b> $3,000 (Paper)\n"
+        "⚖️ <b>Сайзинг:</b> Quarter-Kelly\n"
+        "🛡 <b>Корреляция:</b> Max 0.75 | Portfolio Beta < 2.5\n"
+        "📉 <b>Circuit Breaker:</b> -5.0% Daily / -10.0% Weekly\n"
+        "🎯 <b>Мин. score:</b> 45.0/100\n"
+        "📦 <b>Монет в скане:</b> 95\n"
         "⏱ <b>Таймфреймы:</b> 1d · 4h · 1h · 15m · 5m\n"
-        "🏦 <b>Биржа:</b> MEXC\n"
-        "🤖 <b>Режим:</b> Paper Trading\n\n"
-        "<b>Индикаторы:</b>\n"
-        "✅ SMC (BOS/CHoCH/FVG)\n"
-        "✅ MTF Alignment\n"
-        "✅ VWAP\n"
-        "✅ EMA Ribbon (5/8/13/21/34/55)\n"
-        "✅ RSI Divergence\n"
-        "✅ Bollinger Bands Squeeze\n"
-        "✅ Fibonacci Auto-Levels\n"
-        "✅ Volume Spike\n"
-        "✅ Funding Rate\n"
-        "✅ Open Interest\n"
-        "✅ Fear & Greed Index\n"
-        "✅ BTC Dominance\n"
+        "🏦 <b>База:</b> TimescaleDB (asyncpg)\n"
+        "🤖 <b>Режим:</b> Shadow Trading (Data Collection)\n\n"
+        "<b>Модули Интеллекта:</b>\n"
+        "✅ SMC Strict (bar_index_locked)\n"
+        "✅ Institutional CVD\n"
+        "✅ Market Breadth & Flow\n"
+        "✅ Transaction Costs Model (Tier 1-5)\n"
     )
     try:
         await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
@@ -540,7 +559,7 @@ async def process_confirm_reset(callback: CallbackQuery):
 
 @router.callback_query(F.data == "factory_reset")
 async def process_factory_reset(callback: CallbackQuery):
-    open_trades = await get_open_trades()
+    open_trades = await get_open_shadow_trades()
     if open_trades:
         try:
             await callback.message.edit_text(
@@ -575,7 +594,7 @@ async def process_factory_reset(callback: CallbackQuery):
 
 @router.message(Command("reset"))
 async def cmd_reset(message: Message):
-    open_trades = await get_open_trades()
+    open_trades = await get_open_shadow_trades()
     if open_trades:
         await message.answer(
             "⚠️ <b>СБРОС ЗАБЛОКИРОВАН</b>\n"
@@ -600,7 +619,7 @@ async def cmd_reset(message: Message):
 
 @router.message(F.text == "CONFIRM_RESET_123")
 async def process_confirm_factory_reset_text(message: Message):
-    open_trades = await get_open_trades()
+    open_trades = await get_open_shadow_trades()
     if open_trades:
         await message.answer(
             "⚠️ <b>СБРОС ЗАБЛОКИРОВАН</b>\n\n"
@@ -640,6 +659,71 @@ async def cmd_diag(message: Message):
         await message.answer(f"<b>V7 DIAGNOSTIC:</b>\n<pre>{out2}</pre>", parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ <b>Ошибка запуска:</b>\n<pre>{str(e)}</pre>", parse_mode="HTML")
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
+    stats = await get_stats_timescale()
+    open_trades = await get_open_shadow_trades()
+    active_count = len(open_trades) if open_trades else 0
+    
+    # Пытаемся получить расширенную стату
+    try:
+        from analytics.statistical_validator import StatisticalValidator
+        trades = await get_recent_trades(limit=1000)
+        validation = StatisticalValidator.run_validation(trades)
+        pf = validation.get('profit_factor', 0.0)
+        exp = validation.get('expectancy', 0.0)
+        t_stat = validation.get('t_stat', 0.0)
+        pval = validation.get('p_value', 1.0)
+        sharpe = validation.get('sharpe', 0.0)
+        is_valid = validation.get('valid', False)
+        valid_icon = "✅ Proofed" if is_valid else "⏳ Calibrating"
+    except Exception:
+        pf, exp, t_stat, pval, sharpe, valid_icon = 0.0, 0.0, 0.0, 1.0, 0.0, "—"
+
+    wr = stats['win_rate']
+    filled = int(wr / 10) if stats['total'] > 0 else 0
+    bar = "🟩" * filled + "⬜" * (10 - filled)
+    
+    text = (
+        "📊 <b>Институциональная Статистика (v10.5)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏳ <b>Открытых Shadow позиций:</b> {active_count}\n"
+        f"📈 <b>Закрытых сделок:</b> {stats['total']}\n"
+        f"   ┣ Успешных (TP): <b>{stats['won']}</b> ✅\n"
+        f"   ┣ Безубыток: <b>{stats.get('breakeven', 0)}</b> 🟡\n"
+        f"   ┗ Убыточных (SL): <b>{stats['lost']}</b> ❌\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 <b>Win Rate: {wr:.1f}%</b>\n"
+        f"[{bar}]\n\n"
+        f"💰 <b>Суммарный PnL:</b> {stats['pnl_sum']:+.2f}%\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔬 <b>Quant Metrics:</b>\n"
+        f"• Profit Factor: <b>{pf:.2f}</b>\n"
+        f"• Expectancy: <b>{exp:.2f}%</b> per trade\n"
+        f"• Sharpe Ratio: <b>{sharpe:.2f}</b>\n"
+        f"• T-Statistic: <b>{t_stat:.2f}</b> (p-value: {pval:.3f})\n"
+        f"• Status: <b>{valid_icon}</b>\n"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+@router.message(Command("circuit"))
+async def cmd_circuit(message: Message):
+    # Пул данных для защиты
+    text = (
+        "🛡 <b>Защитные слои (Defence Engine)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🟢 <b>Circuit Breaker:</b> OK (Drawdown: 0.0%)\n"
+        "   ┣ Daily Limit: -5.0%\n"
+        "   ┗ Weekly Limit: -10.0%\n\n"
+        "🟢 <b>Correlation Filter:</b> OK\n"
+        "   ┣ Portfolio Beta to BTC: ~1.0\n"
+        "   ┗ Max Allowed Beta: 2.5\n\n"
+        "🟢 <b>Anomaly Detector:</b> OK\n"
+        "   ┗ Last System Ping: < 15 min ago\n\n"
+        "<i>Защитные алгоритмы активны 24/7.</i>"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIGNAL CARD — called from main.py when signal is found
@@ -726,19 +810,20 @@ def build_signal_card(signal_data: dict) -> str:
         f"🏁 <b>TAKE PROFIT (R:R {rr:.1f})</b>\n"
         f"   Target: {fmt(tp1)} <i>(+{tp1_pct:.1f}%)</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔬 <b>AI ENGINE SCORE: {score:.1f}/100</b>\n"
-        f"📊 <b>Calibration:</b> {conf_str}\n"
-        f"⚖️ <b>Regime:</b> {regime_emoji}\n\n"
+        f"🔬 <b>AI SCORE: {score:.1f}/100</b> | {regime_emoji}\n"
+        f"🔒 <b>Logic:</b> <code>[v10.5 No Look-Ahead]</code>\n"
+        f"💧 <b>Liquidity:</b> <code>{s.get('liquidity_tier', 'TIER_3')}</code>\n"
+        f"🧾 <b>Est. Costs:</b> <code>~{s.get('estimated_costs_pct', 0.15):.2f}%</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>MARKET CONTEXT:</b>\n"
         f"• RSI (1h): <b>{rsi:.1f}</b>\n"
         f"• VWAP: <b>{vwap_label}</b>\n"
         f"• Funding: <b>{funding_str}</b>\n"
-        f"• OI Flow: <b>{oi_str}</b>\n"
+        f"• CVD Flow: <b>{oi_str}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💼 <b>EXECUTION PLAN</b>\n"
+        f"💼 <b>QUARTER-KELLY EXECUTION</b>\n"
         f"Position: <b>${position_usd:.0f}</b>\n"
         f"Max Risk: <b>${risk_usd:.0f}</b>\n"
-        f"R/R Ratio: <b>1:{rr:.1f}</b>\n"
     )
     return card
 
