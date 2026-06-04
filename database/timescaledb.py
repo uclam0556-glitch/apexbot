@@ -366,3 +366,33 @@ async def insert_filter_block_record(symbol: str, strategy: str, block_reason: s
             "10.5.0",
             True
         )
+
+async def is_on_cooldown(symbol: str, cooldown_hours: int = 4) -> bool:
+    try:
+        pool = await get_pool()
+        query = """
+            SELECT COUNT(*) FROM signals 
+            WHERE symbol = $1 
+            AND created_at >= NOW() - INTERVAL '1 hour' * $2
+            AND status IN ('ACCEPTED', 'ENTERED')
+        """
+        async with pool.acquire() as conn:
+            count = await conn.fetchval(query, symbol, cooldown_hours)
+        return count > 0
+    except Exception:
+        return False
+
+async def is_pullback_on_structure_cooldown(symbol: str) -> bool:
+    try:
+        pool = await get_pool()
+        query = """
+            SELECT COUNT(*) FROM smc_events 
+            WHERE symbol = $1 
+            AND detected_at >= NOW() - INTERVAL '2 hours'
+            AND event_type = 'EXPIRED_STRUCTURE'
+        """
+        async with pool.acquire() as conn:
+            count = await conn.fetchval(query, symbol)
+        return count > 0
+    except Exception:
+        return False

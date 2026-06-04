@@ -60,7 +60,7 @@ from services.engine.smc_core import FormalizedSMCCore
 from services.adversarial.tester import AdversarialSignalTester
 from services.engine.confluence_v4 import ConfluenceEngineV4
 from services.engine.risk_engine import RiskEngine
-from database.timescaledb import init_timescaledb, insert_signal_record, insert_shadow_trade, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record
+from database.timescaledb import init_timescaledb, insert_signal_record, insert_shadow_trade, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record, is_on_cooldown, is_pullback_on_structure_cooldown
 from core.circuit_breaker import CircuitBreaker
 from core.correlation_filter import CorrelationFilter
 from core.transaction_costs import TransactionCostModel
