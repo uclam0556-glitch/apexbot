@@ -129,33 +129,38 @@ class ShadowTradeMonitor:
                 if ohlcv:
                     for candle in ohlcv:
                         c_high = candle[2]
-                        c_low = candle[3]
+                        c_low  = candle[3]
                         
-                        # Update MFE / MAE dynamically during the trade's lifetime
+                        # MFE: maximum favourable excursion — always POSITIVE (upside reached)
+                        # MAE: maximum adverse excursion — always NEGATIVE (downside hit)
+                        # Convention matches analytics queries: mae_pct < -1.0 = SL candidate
                         if direction == 'LONG':
-                            cur_mfe = (c_high - entry) / entry * 100
-                            cur_mae = (entry - c_low) / entry * 100
+                            cur_mfe = (c_high - entry) / entry * 100       # positive
+                            cur_mae = (c_low  - entry) / entry * 100       # negative
                         else:
-                            cur_mfe = (entry - c_low) / entry * 100
-                            cur_mae = (c_high - entry) / entry * 100
+                            cur_mfe = (entry - c_low)  / entry * 100       # positive
+                            cur_mae = (entry - c_high) / entry * 100       # negative (inverted)
                             
-                        if cur_mfe > mfe: mfe = cur_mfe
-                        if cur_mae > mae: mae = cur_mae
+                        if cur_mfe > mfe: mfe = cur_mfe          # track peak MFE
+                        if cur_mae < mae: mae = cur_mae          # track worst MAE (most negative)
                         
-                        # Evaluate Path-Dependent SL/TP Hit
+                        # Path-Dependent SL / TP resolution (sequential — order matters)
                         if direction == 'LONG':
                             if c_low <= sl:
-                                pnl_pct = (sl - entry) / entry * 100
-                                status = 'LOST' if pnl_pct <= -1.0 else 'BREAKEVEN'
+                                # SL hit first
+                                status = 'LOST'
+                                # Ensure MAE captures the SL level at minimum
+                                mae = min(mae, (sl - entry) / entry * 100)
                                 break
                             elif c_high >= tp1:
+                                # TP hit (SL not hit before it)
                                 pnl_pct = (tp1 - entry) / entry * 100
                                 status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
                                 break
                         elif direction == 'SHORT':
                             if c_high >= sl:
-                                pnl_pct = (entry - sl) / entry * 100
-                                status = 'LOST' if pnl_pct <= -1.0 else 'BREAKEVEN'
+                                status = 'LOST'
+                                mae = min(mae, (entry - sl) / entry * 100)
                                 break
                             elif c_low <= tp1:
                                 pnl_pct = (entry - tp1) / entry * 100
@@ -170,4 +175,5 @@ class ShadowTradeMonitor:
             
             if status != 'TRACKING':
                 await update_shadow_trade_status(t['id'], status, mfe, mae)
-                logger.info(f"[SHADOW TRADE] {sym} {direction} [{strategy}] resolved as {status}. MFE: {mfe:.2f}%, MAE: {mae:.2f}%")
+                logger.info(f"[SHADOW TRADE] {sym} {direction} [{strategy}] resolved as {status}. MFE: +{mfe:.2f}%, MAE: {mae:.2f}%")
+

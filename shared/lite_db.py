@@ -225,8 +225,22 @@ async def init_lite_db():
             
         except Exception as e:
             logger.error(f"Migration error: {e}")
+
+        # Fix shadow_trades MAE sign convention (v10.4 patch)
+        # Old code stored MAE as positive (e.g. +2.89%) — analytics expect negative (e.g. -2.89%)
+        # This one-time migration inverts mae_pct for all resolved trades that have positive MAE
+        try:
+            await db.execute("""
+                UPDATE shadow_trades
+                SET mae_pct = -ABS(mae_pct)
+                WHERE status IN ('LOST', 'BREAKEVEN', 'TIMEOUT')
+                  AND mae_pct > 0
+            """)
+        except Exception as e:
+            logger.error(f"Shadow MAE sign migration error: {e}")
             
         await db.commit()
+
     logger.info("Lite DB (SQLite) initialized with Feature Store.")
 
 async def save_trade(
