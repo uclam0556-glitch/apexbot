@@ -250,10 +250,31 @@ class ApexSystem:
                         from shared.state import global_state
                         trade_id = trade['id']
                         if trade_id not in global_state.trade_excursions:
+                            # Rebuild excursions from opening time to now to prevent amnesia
+                            historical_high = recent_high
+                            historical_low = recent_low
+                            if 'opened_at' in trade and trade['opened_at']:
+                                try:
+                                    from datetime import datetime
+                                    dt_str = trade['opened_at'].replace(' ', 'T')
+                                    if '.' in dt_str: dt_str = dt_str.split('.')[0]
+                                    if not dt_str.endswith('Z') and '+' not in dt_str:
+                                        dt_str += 'Z'
+                                    opened_dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                                    since_ms = int(opened_dt.timestamp() * 1000)
+                                    # Fetch history since open to reconstruct peak high/low
+                                    hist_ohlcv = await self.exchange.fetch_ohlcv(symbol, '15m', since=since_ms, limit=1000)
+                                    if hist_ohlcv:
+                                        historical_high = max([c[2] for c in hist_ohlcv] + [recent_high])
+                                        historical_low = min([c[3] for c in hist_ohlcv] + [recent_low])
+                                except Exception as e:
+                                    logger.warning(f"Failed to rebuild excursions for {trade_id}: {e}")
+                                    
                             global_state.trade_excursions[trade_id] = {
-                                "high": recent_high,
-                                "low": recent_low
+                                "high": historical_high,
+                                "low": historical_low
                             }
+                            logger.info(f"Rebuilt trade excursions for {trade_id}: High={historical_high}, Low={historical_low}")
                         
                         excursions = global_state.trade_excursions[trade_id]
                         if recent_high > excursions["high"]:
@@ -2012,6 +2033,7 @@ class ApexSystem:
                         ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=2)
                         if not ohlcv:
                             continue
+                        recent_high = max([c[2] for c in ohlcv])
                         recent_low = min([c[3] for c in ohlcv])
                         current_price = ohlcv[-1][4]
                         
@@ -2025,8 +2047,11 @@ class ApexSystem:
                                 continue
                             bracket_price = float(bracket['price'])
                             
-                            # For LONG entry: if recent_low is below or equal to the limit price
-                            if recent_low <= bracket_price:
+                            # Check if price hit limit during the last 2 minutes
+                            hit_long = (direction == "LONG" and recent_low <= bracket_price)
+                            hit_short = (direction == "SHORT" and recent_high >= bracket_price)
+                            
+                            if hit_long or hit_short:
                                 # Candidate for fill! Run the Pre-Route Trigger check
                                 logger.info(f"[PULLBACK TRACKER] {symbol} touched pullback limit price {bracket_price}. Running Pre-Route Gate...")
                                 passed = await self.pre_route_gate_check(symbol, direction)

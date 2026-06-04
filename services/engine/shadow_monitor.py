@@ -118,49 +118,56 @@ class ShadowTradeMonitor:
             sl = t['stop_loss']
             tp1 = t['take_profit_1']
             
-            # We will approximate MFE/MAE using current price if we don't fetch full OHLCV.
-            # A full implementation would fetch OHLCV since created_at upon resolution.
-            # Here we just flag WIN/LOSS/TIMEOUT.
-            
             status = 'TRACKING'
-            if now - created_at > timeout_delta:
+            mfe = 0.0
+            mae = 0.0
+            
+            try:
+                since_ms = int(created_at.timestamp() * 1000)
+                # Fetch 1m candles since creation to reconstruct exact price path
+                ohlcv = await self.exchange.fetch_ohlcv(sym, '1m', since=since_ms, limit=1000)
+                if ohlcv:
+                    for candle in ohlcv:
+                        c_high = candle[2]
+                        c_low = candle[3]
+                        
+                        # Update MFE / MAE dynamically during the trade's lifetime
+                        if direction == 'LONG':
+                            cur_mfe = (c_high - entry) / entry * 100
+                            cur_mae = (entry - c_low) / entry * 100
+                        else:
+                            cur_mfe = (entry - c_low) / entry * 100
+                            cur_mae = (c_high - entry) / entry * 100
+                            
+                        if cur_mfe > mfe: mfe = cur_mfe
+                        if cur_mae > mae: mae = cur_mae
+                        
+                        # Evaluate Path-Dependent SL/TP Hit
+                        if direction == 'LONG':
+                            if c_low <= sl:
+                                pnl_pct = (sl - entry) / entry * 100
+                                status = 'LOST' if pnl_pct <= -1.0 else 'BREAKEVEN'
+                                break
+                            elif c_high >= tp1:
+                                pnl_pct = (tp1 - entry) / entry * 100
+                                status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
+                                break
+                        elif direction == 'SHORT':
+                            if c_high >= sl:
+                                pnl_pct = (entry - sl) / entry * 100
+                                status = 'LOST' if pnl_pct <= -1.0 else 'BREAKEVEN'
+                                break
+                            elif c_low <= tp1:
+                                pnl_pct = (entry - tp1) / entry * 100
+                                status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
+                                break
+                                
+            except Exception as e:
+                logger.debug(f"Could not fetch OHLCV for path-dependency check on {sym}: {e}")
+                
+            if status == 'TRACKING' and now - created_at > timeout_delta:
                 status = 'TIMEOUT'
-            else:
-                if direction == 'LONG':
-                    if live_price <= sl:
-                        pnl_pct = (sl - entry) / entry * 100
-                        status = 'LOST' if pnl_pct <= -1.0 else 'BREAKEVEN'
-                    elif live_price >= tp1:
-                        pnl_pct = (tp1 - entry) / entry * 100
-                        status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
-                elif direction == 'SHORT':
-                    if live_price >= sl:
-                        pnl_pct = (entry - sl) / entry * 100
-                        status = 'LOST' if pnl_pct <= -1.0 else 'BREAKEVEN'
-                    elif live_price <= tp1:
-                        pnl_pct = (entry - tp1) / entry * 100
-                        status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
             
             if status != 'TRACKING':
-                # Calculate true MFE/MAE using OHLCV since creation
-                mfe = 0.0
-                mae = 0.0
-                try:
-                    since_ms = int(created_at.timestamp() * 1000)
-                    ohlcv = await self.exchange.fetch_ohlcv(sym, '5m', since=since_ms, limit=200)
-                    if ohlcv:
-                        highs = [candle[2] for candle in ohlcv]
-                        lows = [candle[3] for candle in ohlcv]
-                        max_high = max(highs)
-                        min_low = min(lows)
-                        if direction == 'LONG':
-                            mfe = (max_high - entry) / entry * 100
-                            mae = (entry - min_low) / entry * 100
-                        else:
-                            mfe = (entry - min_low) / entry * 100
-                            mae = (max_high - entry) / entry * 100
-                except Exception as e:
-                    logger.debug(f"Could not fetch OHLCV for MFE/MAE calc on {sym}: {e}")
-                    
                 await update_shadow_trade_status(t['id'], status, mfe, mae)
                 logger.info(f"[SHADOW TRADE] {sym} {direction} [{strategy}] resolved as {status}. MFE: {mfe:.2f}%, MAE: {mae:.2f}%")
