@@ -431,7 +431,7 @@ async def create_shadow_trade(
         }
         signal_id = await insert_signal_record(signal_dict)
         if signal_id:
-            await insert_shadow_trade(signal_id, symbol, "UNKNOWN", regime, "v10.5")
+            await insert_shadow_trade(signal_id, symbol, "UNKNOWN", regime, "10.5.0")
     except Exception as e:
         logger.error(f"Failed to create shadow trade wrapper: {e}")
 
