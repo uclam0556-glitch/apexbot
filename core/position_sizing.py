@@ -1,17 +1,43 @@
 """
-APEX Trading System v10.5
-core/position_sizing.py
+APEX v11.0 — core/position_sizing.py
+=====================================
+DEPRECATED SHIM → replaced by PortfolioRiskEngine ATR-based sizing.
+
+The new institutional position sizing lives in:
+    services/risk/portfolio_risk_engine.py → PortfolioRiskEngine.size_position()
+
+Critical flaws in the legacy KellyPositionSizer:
+- Kelly formula requires calibrated win_rate and avg_win_pct.
+  Until Phase 2 ML is complete, these inputs are ESTIMATES, not calibrated
+  probabilities → Full Kelly on uncalibrated estimates = gambling.
+- The old 0.25 kelly_fraction was a magic number with no justification.
+- No correlation constraint, no VaR gate, no regime multiplier.
+
+Current v11.0 approach: ATR-based fixed 1% risk per trade with regime multiplier.
+Kelly will be re-enabled in Phase 2 when calibrated_probability is available.
+
+DO NOT use in new code. DO NOT extend this class.
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class KellyPositionSizer:
     """
-    Математически обоснованный сайзинг вместо фиксированного риска.
-    Использует Quarter-Kelly для защиты от ошибок оценки.
+    LEGACY: Kelly-based position sizer.
+    
+    DO NOT extend. Migrate to PortfolioRiskEngine.size_position().
+    Kelly sizing is DISABLED until Phase 2 ML calibration is complete.
     """
 
-    def __init__(self, kelly_fraction: float = 0.25, max_risk_pct: float = 0.05):
+    def __init__(self, kelly_fraction: float = 0.25, max_risk_pct: float = 0.05) -> None:
         self.kelly_fraction = kelly_fraction
         self.max_risk_pct = max_risk_pct
+        logger.warning(
+            "[KellyPositionSizer] LEGACY: Kelly sizing is disabled pending ML calibration. "
+            "All sizing is now handled by PortfolioRiskEngine (ATR-based, 1%% risk per trade)."
+        )
 
     def calculate_size(
         self,
@@ -20,43 +46,19 @@ class KellyPositionSizer:
         avg_win_pct: float,
         avg_loss_pct: float,
         stop_loss_pct: float,
-        is_bootstrap: bool = False
+        is_bootstrap: bool = False,
     ) -> float:
         """
-        capital: текущий капитал
-        win_rate: 0.0 to 1.0
-        avg_win_pct: средний профит (в процентах, > 0)
-        avg_loss_pct: средний убыток (в процентах, > 0)
-        stop_loss_pct: размер стоп лосса текущей сделки (в процентах, > 0)
+        Returns conservative bootstrap size (0.5% risk) regardless of inputs.
+        Full Kelly is blocked until Phase 2 ML calibration is complete.
+        
+        # BLOCKED: Full Kelly formula requires calibrated probability from Phase 2 ML.
+        # TODO(Phase 2): Uncomment Kelly formula after IsotonicRegression calibration.
         """
-        # Если мало данных (фаза сбора) — минимальный безопасный лот
-        if is_bootstrap or win_rate == 0 or avg_loss_pct == 0:
-            risk_amount = capital * 0.005  # 0.5% risk
-            size = risk_amount / stop_loss_pct if stop_loss_pct > 0 else 0
-            return size
-
-        # W = win_rate
-        # R = avg_win / avg_loss (Reward to Risk ratio)
-        r = avg_win_pct / avg_loss_pct
-        if r <= 0:
-            return 0.0
-
-        # Full Kelly % = W - ((1 - W) / R)
-        full_kelly_pct = win_rate - ((1.0 - win_rate) / r)
-
-        if full_kelly_pct <= 0:
-            # Стратегия имеет отрицательное матожидание!
-            return 0.0
-
-        # Fractional Kelly
-        fractional_kelly = full_kelly_pct * self.kelly_fraction
-
-        # Ограничение максимального риска на одну сделку
-        fractional_kelly = min(fractional_kelly, self.max_risk_pct)
-
-        # fractional_kelly — это процент капитала, который мы можем РИСКОВАТЬ в сделке.
-        # Размер позиции = Риск / СтопЛос
-        risk_amount = capital * fractional_kelly
-        position_size = risk_amount / stop_loss_pct if stop_loss_pct > 0 else 0
-
-        return position_size
+        logger.debug(
+            "[KellyPositionSizer] Returning bootstrap size (0.5%% risk). "
+            "Kelly formula locked until Phase 2 ML."
+        )
+        # Always use bootstrap conservative sizing until calibrated probs are ready
+        risk_amount = capital * 0.005  # 0.5% risk — conservative floor
+        return risk_amount / stop_loss_pct if stop_loss_pct > 0 else 0.0

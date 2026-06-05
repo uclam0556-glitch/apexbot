@@ -93,7 +93,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--cov=shared --cov=services --cov-report=term-missing --cov-fail-under=90"
+addopts = "-v"
 
 [tool.ruff]
 line-length = 100

@@ -61,10 +61,10 @@ from services.adversarial.tester import AdversarialSignalTester
 from services.engine.confluence_v4 import ConfluenceEngineV4
 from services.engine.risk_engine import RiskEngine
 from database.timescaledb import init_timescaledb, insert_signal_record, create_shadow_trade, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record, is_on_cooldown, is_pullback_on_structure_cooldown, insert_shadow_trade
-from core.circuit_breaker import CircuitBreaker
-from core.correlation_filter import CorrelationFilter
-from core.transaction_costs import TransactionCostModel
-from core.position_sizing import KellyPositionSizer
+from core.circuit_breaker import CircuitBreaker          # LEGACY → migrate to PortfolioRiskEngine v11.1
+from core.correlation_filter import CorrelationFilter    # LEGACY → migrate to PortfolioRiskEngine v11.1
+from core.transaction_costs import TransactionCostModel  # SHIM → delegates to services/execution/transaction_cost_model.py
+from core.position_sizing import KellyPositionSizer      # LEGACY → locked until Phase 2 ML calibration
 from core.session_tagger import SessionTagger
 from models.signal_record import SignalRecord
 from services.notifications.telegram_ui import start_telegram_bot, send_signal, build_signal_card, send_trade_result_notification, send_tp1_notification
@@ -81,9 +81,23 @@ from shared.state import global_state
 
 # V6.0 Shadow & Health
 from services.engine.shadow_monitor import ShadowTradeMonitor
+# DATA HEALTH: now routes through DataValidator (institutional v11.0)
+# Legacy shim at services/engine/data_health.py re-exports from services/data/validator.py
 from services.engine.data_health import compute_data_health
 
-# 🌟 NEW: Ultra indicators
+# v11.0 Institutional Modules
+from services.data.validator import DataValidator, DataHealthStatus  # Direct institutional use
+from services.risk.portfolio_risk_engine import (
+    PortfolioRiskEngine,
+    PortfolioRiskState,
+    CircuitBreakerLevel,
+)
+from services.execution.transaction_cost_model import (
+    TransactionCostModel as InstitutionalTCM,  # Full institutional model
+    OrderUrgency,
+)
+
+# Ultra indicators
 from services.indicators.technical import run_all_indicators
 from services.indicators.market_data import get_market_context
 from services.intelligence.ofi_engine import calculate_orderbook_imbalance
@@ -159,11 +173,17 @@ class ApexSystem:
         self.adversarial_tester = AdversarialSignalTester()
         self.confluence_engine = ConfluenceEngineV4()
         
-        # 🚀 Initialize APEX v10.5 Core Modules
-        self.circuit_breaker = CircuitBreaker()
-        self.correlation_filter = CorrelationFilter()
-        self.cost_model = TransactionCostModel()
-        self.kelly_sizer = KellyPositionSizer()
+        # LEGACY v10.5 Core Modules (preserved, will migrate to v11.0 in phases)
+        self.circuit_breaker = CircuitBreaker()        # LEGACY → migrate to portfolio_risk_engine v11.1
+        self.correlation_filter = CorrelationFilter()  # LEGACY → migrate to portfolio_risk_engine v11.1
+        self.cost_model = TransactionCostModel()       # SHIM → delegates to InstitutionalTCM
+        self.kelly_sizer = KellyPositionSizer()        # LOCKED → Kelly blocked until Phase 2 ML
+        
+        # v11.0 Institutional Risk Engine (ACTIVE — hard gate on all new positions)
+        self.portfolio_risk_engine = PortfolioRiskEngine()
+        self.data_validator = DataValidator()
+        self.institutional_tcm = InstitutionalTCM(exchange="BINANCE", order_type="maker")
+
         
         from services.engine.order_fill_monitor import OrderFillMonitor
         self.fill_monitor = OrderFillMonitor(self.exchange, self.config)
