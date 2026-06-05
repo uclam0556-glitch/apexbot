@@ -51,13 +51,9 @@ class DynamicWeightsOptimizer:
         
     def optimize_weights(self, recent_trades: pd.DataFrame):
         """Runs the optimization process and updates the current weights."""
-        if len(recent_trades) < 20:
-            logger.info("Not enough trades to optimize weights. Skipping.")
-            return
-            
-        logger.info("Starting Optuna weight optimization...")
-        
-        # Suppress Optuna logging to avoid spam
+        # V10.5 INSTITUTIONAL LOCK: Dynamic calibration is strictly disabled in production
+        logger.info("[V10.5 LOCK] Optimizer is HARD-LOCKED in production to prevent parameter drift. Skipping calibration.")
+        return
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         
         study = optuna.create_study(direction='minimize')
