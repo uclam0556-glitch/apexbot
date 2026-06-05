@@ -141,24 +141,31 @@ class ShadowTradeMonitor:
                             cur_mfe = (entry - c_low)  / entry * 100       # positive
                             cur_mae = (entry - c_high) / entry * 100       # negative (inverted)
                             
+                        prev_mfe = mfe
                         if cur_mfe > mfe: mfe = cur_mfe          # track peak MFE
                         if cur_mae < mae: mae = cur_mae          # track worst MAE (most negative)
                         
                         # Path-Dependent SL / TP resolution (sequential — order matters)
                         if direction == 'LONG':
-                            if c_low <= sl:
-                                # SL hit first
+                            if prev_mfe >= 1.0 and c_low <= entry:
+                                # Trailing SL at breakeven hit
+                                status = 'WON_BREAKEVEN'
+                                break
+                            elif c_low <= sl:
+                                # Original SL hit
                                 status = 'LOST'
-                                # Ensure MAE captures the SL level at minimum
                                 mae = min(mae, (sl - entry) / entry * 100)
                                 break
                             elif c_high >= tp1:
-                                # TP hit (SL not hit before it)
+                                # TP hit
                                 pnl_pct = (tp1 - entry) / entry * 100
                                 status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
                                 break
                         elif direction == 'SHORT':
-                            if c_high >= sl:
+                            if prev_mfe >= 1.0 and c_high >= entry:
+                                status = 'WON_BREAKEVEN'
+                                break
+                            elif c_high >= sl:
                                 status = 'LOST'
                                 mae = min(mae, (entry - sl) / entry * 100)
                                 break
