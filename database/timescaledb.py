@@ -634,3 +634,15 @@ async def save_trade(
         regime="UNKNOWN",
         logic_version="10.5.0"
     )
+
+async def get_recent_trades(limit: int = 1000):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        records = await conn.fetch("SELECT * FROM signals WHERE status NOT IN ('WAITING', 'WAITING_STRUCTURE') ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in records]
+
+async def reset_open_trades():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE signals SET status = 'CANCELLED' WHERE status IN ('OPEN', 'BREAKEVEN')")
+        await conn.execute("UPDATE shadow_trades SET outcome = 'CANCELLED' WHERE outcome = 'OPEN'")

@@ -14,7 +14,14 @@ from aiogram.filters import Command
 
 from shared.config import get_config
 from shared.state import global_state
-from database.timescaledb import get_stats_timescale, get_open_shadow_trades
+from database.timescaledb import (
+    get_stats_timescale, 
+    get_open_shadow_trades,
+    get_open_trades,
+    get_recent_trades,
+    reset_open_trades,
+    factory_reset_db
+)
 
 def format_price(price: float) -> str:
     if not price:

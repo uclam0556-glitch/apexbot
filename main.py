@@ -60,7 +60,7 @@ from services.engine.smc_core import FormalizedSMCCore
 from services.adversarial.tester import AdversarialSignalTester
 from services.engine.confluence_v4 import ConfluenceEngineV4
 from services.engine.risk_engine import RiskEngine
-from database.timescaledb import init_timescaledb, insert_signal_record, create_shadow_trade, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record, is_on_cooldown, is_pullback_on_structure_cooldown, insert_shadow_trade
+from database.timescaledb import init_timescaledb, insert_signal_record, create_shadow_trade, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record, is_on_cooldown, is_pullback_on_structure_cooldown, insert_shadow_trade, get_pullback_items_by_status, get_open_trades
 from core.circuit_breaker import CircuitBreaker          # LEGACY → migrate to PortfolioRiskEngine v11.1
 from core.correlation_filter import CorrelationFilter    # LEGACY → migrate to PortfolioRiskEngine v11.1
 from core.transaction_costs import TransactionCostModel  # SHIM → delegates to services/execution/transaction_cost_model.py
@@ -1435,6 +1435,11 @@ class ApexSystem:
                     }
                     conf_winrate = isotonic_win_prob * 100.0  # fallback to isotonic
                     conf_samples = 100
+                    confidence_data = {
+                        "bucket": "HIGH_CONFIDENCE" if conf_winrate > 55 else "MEDIUM_CONFIDENCE",
+                        "win_rate": conf_winrate,
+                        "sample_size": conf_samples
+                    }
                     logger.info(f"🧠 ML Confidence Score: {conf_winrate:.1f}% (Shadow Mode Mock)")
 
                     # ─── BUILD SIGNAL PACKAGE ─────────────────────────────────────────────────
@@ -1555,7 +1560,7 @@ class ApexSystem:
                             "tp2_price": sltp.take_profit_2,
                             "tp3_price": sltp.take_profit_3,
                             "v7_score_raw": ultra_score,
-                            "mtf_score": mtf_result.score,
+                            "mtf_score": mtf_score.score,
                             "regime": regime_val,
                             "session": SessionTagger.get_session(datetime.utcnow()),
                             "logic_version": "10.5.0"
@@ -1882,6 +1887,8 @@ class ApexSystem:
                                 event_name = "CANCELLED_CVD_MTF"
                                 
                             if cancel_reason:
+                                original_score = item.get('score', 0.0)
+                                new_score = 0.0
                                 logger.warning(f"[PULLBACK TRACKER] {symbol} cancelled due to: {cancel_reason}. Removing active limit grid!")
                                 await update_pullback_status(item['id'], event_name or 'CANCELLED')
                                 
