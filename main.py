@@ -276,11 +276,15 @@ class ApexSystem:
                             if 'opened_at' in trade and trade['opened_at']:
                                 try:
                                     from datetime import datetime
-                                    dt_str = trade['opened_at'].replace(' ', 'T')
-                                    if '.' in dt_str: dt_str = dt_str.split('.')[0]
-                                    if not dt_str.endswith('Z') and '+' not in dt_str:
-                                        dt_str += 'Z'
-                                    opened_dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                                    opened_val = trade['opened_at']
+                                    if isinstance(opened_val, str):
+                                        dt_str = opened_val.replace(' ', 'T')
+                                        if '.' in dt_str: dt_str = dt_str.split('.')[0]
+                                        if not dt_str.endswith('Z') and '+' not in dt_str:
+                                            dt_str += 'Z'
+                                        opened_dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                                    else:
+                                        opened_dt = opened_val
                                     since_ms = int(opened_dt.timestamp() * 1000)
                                     # Fetch history since open to reconstruct peak high/low
                                     hist_ohlcv = await self.exchange.fetch_ohlcv(symbol, '15m', since=since_ms, limit=1000)
@@ -666,8 +670,10 @@ class ApexSystem:
                     if not df_1d.empty and len(df_1d) >= 20:
                         daily_vol_avg_20 = df_1d['volume'].rolling(20).mean().iloc[-1]
                         baseline_hourly_vol = daily_vol_avg_20 / 24.0
+                        daily_volume_usd = daily_vol_avg_20 * current_price
                     else:
                         baseline_hourly_vol = df_1h['volume'].rolling(24).mean().iloc[-1]
+                        daily_volume_usd = baseline_hourly_vol * 24.0 * current_price
                         
                     avg_vol_3 = df_1h['volume'].iloc[-3:].mean()
                     vol_ratio = avg_vol_3 / baseline_hourly_vol if baseline_hourly_vol > 0 else 1.0
@@ -887,7 +893,7 @@ class ApexSystem:
                         ws_data = global_state.live_prices.get(normalize_symbol(symbol), {})
                         
                     last_ws_ts = ws_data.get("timestamp", 0)
-                    health_data = compute_data_health(symbol, last_ws_ts, avg_vol_3, baseline_hourly_vol, funding_pct, market_type="SPOT")
+                    health_data = compute_data_health(symbol, last_ws_ts, avg_vol_3, baseline_hourly_vol, funding_pct, daily_volume_usd, market_type="SPOT")
                     health_score = health_data["score"]
                     
                     if health_data["status"] == "BAD":

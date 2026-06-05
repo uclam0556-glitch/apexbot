@@ -33,7 +33,7 @@ async def get_pool() -> asyncpg.Pool:
                 )
             else:
                 _pool = await asyncpg.create_pool(**DATABASE_CONFIG)
-            logger.info("TimescaleDB pool created successfully.")
+            logger.info("PostgreSQL pool created successfully.")
         except Exception as e:
             logger.error(f"Failed to create TimescaleDB pool: {e}")
             raise
@@ -43,7 +43,7 @@ async def init_timescaledb():
     """Initializes the TimescaleDB schema as defined in APEX v10.5 upgrade."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        logger.info("Initializing TimescaleDB schema...")
+        logger.info("Initializing PostgreSQL schema (with TimescaleDB fallback)...")
         
         # Try to enable TimescaleDB extension, gracefully fallback to vanilla Postgres
         try:
@@ -208,14 +208,14 @@ async def init_timescaledb():
         """)
 
         await setup_missing_tables(conn)
-        logger.info("TimescaleDB schema initialized successfully.")
+        logger.info("PostgreSQL schema initialized successfully.")
 
 async def close_pool():
     global _pool
     if _pool is not None:
         await _pool.close()
         _pool = None
-        logger.info("TimescaleDB pool closed.")
+        logger.info("PostgreSQL pool closed.")
 
 import json
 from datetime import datetime
@@ -437,7 +437,7 @@ async def create_shadow_trade(
 
 # ─── V10.5 Missing Tables ───────────────────────────────────────────────────────
 async def setup_missing_tables(conn):
-    logger.info("Initializing remaining legacy tables in TimescaleDB...")
+    logger.info("Initializing remaining legacy tables in PostgreSQL...")
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS missed_signals (
             id SERIAL PRIMARY KEY,
