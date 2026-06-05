@@ -186,6 +186,9 @@ class ApexSystem:
 
         
         from services.engine.order_fill_monitor import OrderFillMonitor
+        from services.execution.order_router import OrderRouter
+        
+        self.order_router = OrderRouter(self.exchange, is_live=self.config.trading.live_trading_enabled)
         self.fill_monitor = OrderFillMonitor(self.exchange, self.config)
         self.shadow_monitor = ShadowTradeMonitor()
         
@@ -1512,50 +1515,31 @@ class ApexSystem:
                             logger.info(f"[DEMO MODE] {symbol} Market entry simulated. No real order sent.")
                         else:
                             execution_mode = "LIVE"
-                            # 1. Place Market Order
+                            # 1. Place Aggressive Limit Entry via OrderRouter
                             try:
-                                order = await self.exchange.create_order(symbol, 'market', 'buy', amount)
-                                entry_price = order.get('average', current_price)
+                                from services.execution.order_router import ExecutionRequest
+                                from services.execution.transaction_cost_model import OrderUrgency
+                                
+                                urg = OrderUrgency.HIGH if trade_strategy == "MEAN_REVERSION" else OrderUrgency.MEDIUM
+                                req = ExecutionRequest(
+                                    symbol=symbol,
+                                    direction=trade_direction,
+                                    amount=amount,
+                                    current_price=current_price,
+                                    urgency=urg,
+                                    stop_loss=sltp.stop_loss,
+                                    take_profit=sltp.take_profit_1
+                                )
+                                order = await self.order_router.submit_aggressive_entry(req)
+                                entry_price = order.get('average', current_price) or current_price
                                 filled_amount = order.get('amount', amount)
-                                logger.info(f"LIVE Market Fill for {symbol} at {entry_price}")
-                                
-                                # 2. Immediate SL with RETRIES
-                                sl_success = False
-                                for attempt in range(3):
-                                    try:
-                                        sl_order = await self.exchange.create_order(symbol, "stop", "sell", filled_amount, sltp.stop_loss, params={'stopPrice': sltp.stop_loss})
-                                        sl_order_id = sl_order.get('id')
-                                        logger.info(f"Placed Stop Market SL for {symbol} at {sltp.stop_loss}")
-                                        sl_success = True
-                                        break
-                                    except Exception as sl_err:
-                                        logger.error(f"Failed SL for {symbol} (attempt {attempt+1}/3): {sl_err}")
-                                        await asyncio.sleep(1 + attempt*2)
-                                
-                                if not sl_success:
-                                    trade_status = "UNPROTECTED"
-                                    import structlog
-                                    structlog.get_logger("telemetry").error("SL_PLACE_FAILED_CRITICAL", symbol=symbol)
-                                    logger.critical(f"CRITICAL: Failed to place SL for {symbol} after 3 attempts! Position is UNPROTECTED.")
-                                
-                                # 3. Immediate TP with RETRIES
-                                tp_success = False
-                                for attempt in range(3):
-                                    try:
-                                        tp_order = await self.exchange.create_order(symbol, "limit", "sell", filled_amount * 0.40, sltp.take_profit_1)
-                                        tp_order_id = tp_order.get('id')
-                                        logger.info(f"Placed Limit TP1 for {symbol} at {sltp.take_profit_1}")
-                                        tp_success = True
-                                        break
-                                    except Exception as tp_err:
-                                        logger.error(f"Failed TP1 for {symbol} (attempt {attempt+1}/3): {tp_err}")
-                                        await asyncio.sleep(1 + attempt*2)
-                                        
-                                if not tp_success and sl_success:
-                                    trade_status = "OPEN_PROTECTED_NO_TP"
+                                sl_order_id = "async_router_managed"
+                                tp_order_id = "async_router_managed"
+                                trade_status = "OPEN_ROUTER_MANAGED"
+                                logger.info(f"LIVE Aggressive Limit routed for {symbol} at ~{entry_price}")
                                 
                             except Exception as exec_err:
-                                logger.error(f"Failed to execute Market Order for {symbol}: {exec_err}")
+                                logger.error(f"Failed to execute Aggressive Limit Order for {symbol}: {exec_err}")
                                 continue
                                 
                         # Save to TimescaleDB
@@ -2248,6 +2232,7 @@ class ApexSystem:
         # asyncio.create_task(self.background_missed_signals_tracker())
         # asyncio.create_task(self.background_pullback_tracker())
         asyncio.create_task(self.fill_monitor.start())
+        asyncio.create_task(self.order_router.start_limit_dispatcher())
         asyncio.create_task(self.shadow_monitor.start())
         asyncio.create_task(self.ws_manager.start(self.config.trading.symbols))
         asyncio.create_task(rs_matrix_engine.fast_price_poller(self.config.trading.symbols))
