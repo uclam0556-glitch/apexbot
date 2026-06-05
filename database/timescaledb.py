@@ -587,3 +587,50 @@ async def update_missed_signal_result(signal_id: int, pnl_pct: float, outcome: s
     async with pool.acquire() as conn:
         await conn.execute("UPDATE missed_signals SET checked = 1, max_profit_pct = $1, outcome = $2 WHERE id = $3", pnl_pct, outcome, signal_id)
 
+
+async def get_trade_by_signal_id(signal_id: str) -> dict:
+    # Since we dropped 'trades' and use 'signals', but signals primary key is 'id'
+    # In legacy, 'signal_id' was a string like 'live_pb_123'. 
+    # Let's map this string to 'session_tag' or similar, or just check 'pullback_watchlist' if it was already filled.
+    # We will query 'signals' by checking if session_tag = signal_id
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM signals WHERE session_tag = $1 LIMIT 1", signal_id)
+        return dict(row) if row else None
+
+async def save_trade(
+    signal_id: str, symbol: str, direction: str, entry_price: float, stop_loss: float,
+    take_profit_1: float, position_usd: float, reasoning: str, strategy: str = "TREND",
+    features_dict: dict = None, source: str = "MARKET", status: str = "OPEN"
+):
+    signal_dict = {
+        "timestamp": datetime.utcnow(),
+        "symbol": symbol,
+        "strategy": strategy,
+        "direction": direction,
+        "status": status,
+        "block_reason": reasoning,
+        "entry_price": entry_price,
+        "sl_price": stop_loss,
+        "tp1_price": take_profit_1,
+        "tp2_price": 0.0,
+        "tp3_price": 0.0,
+        "v7_score_raw": 0.0,
+        "mtf_score": 0.0,
+        "regime": "UNKNOWN",
+        "session": signal_id, # Using session to store the string signal_id
+        "logic_version": "10.5.0",
+        "is_shadow": False
+    }
+    
+    # Save to signals
+    s_id = await insert_signal_record(signal_dict)
+    
+    # Save to shadow trades for MFE/MAE tracking
+    await insert_shadow_trade(
+        signal_id=s_id,
+        symbol=symbol,
+        session=signal_id,
+        regime="UNKNOWN",
+        logic_version="10.5.0"
+    )
