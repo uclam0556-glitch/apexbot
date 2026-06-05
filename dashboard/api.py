@@ -216,10 +216,10 @@ def create_app() -> FastAPI:
             pool = await get_pool()
             async with pool.acquire() as conn:
                 query = """
-                    SELECT regime, COUNT(*) as total, SUM(CASE WHEN outcome = 'WON' THEN 1 ELSE 0 END) as won
+                    SELECT regime_at_entry as regime, COUNT(*) as total, SUM(CASE WHEN outcome = 'WON' THEN 1 ELSE 0 END) as won
                     FROM shadow_trades 
                     WHERE outcome IS NOT NULL
-                    GROUP BY regime
+                    GROUP BY regime_at_entry
                 """
                 regime_rows = await conn.fetch(query)
                 
