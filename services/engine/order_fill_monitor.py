@@ -3,7 +3,7 @@ import logging
 import ccxt.async_support as ccxt
 from aiogram import Bot
 
-from shared.lite_db import (
+from database.timescaledb import (
     get_pullback_items_by_status, 
     update_pullback_status, 
     save_trade,

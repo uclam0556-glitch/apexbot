@@ -5,7 +5,7 @@ import aiosqlite
 import ccxt.async_support as ccxt
 import json
 
-from shared.lite_db import get_tracking_shadow_trades, update_shadow_trade_status
+from database.timescaledb import get_tracking_shadow_trades, update_shadow_trade_status
 from shared.config import get_config
 
 logger = logging.getLogger("ShadowMonitor")

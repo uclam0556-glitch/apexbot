@@ -277,7 +277,7 @@ async def process_live_portfolio(callback: CallbackQuery):
 async def process_active_limits(callback: CallbackQuery):
     await callback.answer("⏳ Загружаю лимитные ордера...")
     try:
-        from shared.lite_db import get_active_pullback_items, get_pullback_items_by_status
+        from database.timescaledb import get_active_pullback_items, get_pullback_items_by_status
         waiting = await get_active_pullback_items()
         waiting_structure = await get_pullback_items_by_status('WAITING_STRUCTURE')
         

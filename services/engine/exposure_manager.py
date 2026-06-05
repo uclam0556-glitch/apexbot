@@ -15,7 +15,7 @@ class ExposureManager:
         """
         Returns a fresh snapshot of current portfolio exposure.
         """
-        from shared.lite_db import get_open_trades, get_pullback_items_by_status
+        from database.timescaledb import get_open_trades, get_pullback_items_by_status
         open_trades = await get_open_trades()
         waiting_pullbacks = await get_pullback_items_by_status("WAITING")
         

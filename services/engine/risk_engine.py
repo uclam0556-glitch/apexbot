@@ -820,7 +820,7 @@ class RiskEngine:
                         # Save to database as WAITING_STRUCTURE with empty limit entries
                         import asyncio
                         try:
-                            from shared.lite_db import save_pullback_item
+                            from database.timescaledb import save_pullback_item
                             loop = asyncio.get_event_loop()
                             if loop.is_running():
                                 loop.create_task(save_pullback_item(
@@ -912,7 +912,7 @@ class RiskEngine:
                             position_usd = 15.0 if is_capitulation else 30.0
                             import asyncio
                             try:
-                                from shared.lite_db import save_pullback_item
+                                from database.timescaledb import save_pullback_item
                                 loop = asyncio.get_event_loop()
                                 if loop.is_running():
                                     loop.create_task(save_pullback_item(
@@ -985,7 +985,7 @@ class RiskEngine:
                         # Phase 1 / Phase 2 Paper Watchlist Integration
                         import asyncio
                         try:
-                            from shared.lite_db import save_pullback_item
+                            from database.timescaledb import save_pullback_item
                             loop = asyncio.get_event_loop()
                             if loop.is_running():
                                 loop.create_task(save_pullback_item(

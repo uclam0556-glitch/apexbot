@@ -1593,7 +1593,7 @@ class ApexSystem:
 
                     else:
                         # ─── LIMIT / PULLBACK PATH ────────────────────────────────────────────────
-                        from shared.lite_db import save_pullback_item
+                        from database.timescaledb import save_pullback_item
                         # Calculate a logical swing low. Assuming sltp.stop_loss is at or below it.
                         await save_pullback_item(
                             symbol=symbol,
@@ -1639,7 +1639,7 @@ class ApexSystem:
 
     async def background_missed_signals_tracker(self):
         """Periodically checks missed signals to calculate hypothetical outcome."""
-        from shared.lite_db import get_unchecked_missed_signals, update_missed_signal_result
+        from database.timescaledb import get_unchecked_missed_signals, update_missed_signal_result
         while self.running:
             try:
                 missed = await get_unchecked_missed_signals()
@@ -1716,7 +1716,7 @@ class ApexSystem:
 
     async def background_pullback_tracker(self):
         """Continuously monitors pullback watchlist items for limit grid hits, audits score decays, and handles promotions."""
-        from shared.lite_db import (
+        from database.timescaledb import (
             get_active_pullback_items, 
             update_pullback_status, 
             expire_old_pullback_items, 

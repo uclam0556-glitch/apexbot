@@ -207,6 +207,7 @@ async def init_timescaledb():
             );
         """)
 
+        await setup_missing_tables(conn)
         logger.info("TimescaleDB schema initialized successfully.")
 
 async def close_pool():
@@ -433,3 +434,156 @@ async def create_shadow_trade(
             await insert_shadow_trade(signal_id, symbol, "UNKNOWN", regime, "v10.5")
     except Exception as e:
         logger.error(f"Failed to create shadow trade wrapper: {e}")
+
+# ─── V10.5 Missing Tables ───────────────────────────────────────────────────────
+async def setup_missing_tables(conn):
+    logger.info("Initializing remaining legacy tables in TimescaleDB...")
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS missed_signals (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT,
+            direction TEXT,
+            score DOUBLE PRECISION,
+            entry_price DOUBLE PRECISION,
+            created_at TIMESTAMPTZ NOT NULL,
+            checked INTEGER DEFAULT 0,
+            max_profit_pct DOUBLE PRECISION DEFAULT 0.0,
+            max_drawdown_pct DOUBLE PRECISION DEFAULT 0.0,
+            outcome TEXT
+        );
+    """)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS filter_audit (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT,
+            direction TEXT,
+            filter_name TEXT,
+            price_at_block DOUBLE PRECISION,
+            created_at TIMESTAMPTZ NOT NULL,
+            checked INTEGER DEFAULT 0,
+            outcome_1h_pct DOUBLE PRECISION DEFAULT 0.0,
+            outcome_4h_pct DOUBLE PRECISION DEFAULT 0.0,
+            outcome_24h_pct DOUBLE PRECISION DEFAULT 0.0
+        );
+    """)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS pullback_watchlist (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT,
+            direction TEXT,
+            score DOUBLE PRECISION,
+            original_entry DOUBLE PRECISION,
+            swing_low DOUBLE PRECISION,
+            limit_entries TEXT,
+            stop_loss DOUBLE PRECISION,
+            take_profit_1 DOUBLE PRECISION,
+            take_profit_2 DOUBLE PRECISION,
+            take_profit_3 DOUBLE PRECISION,
+            position_usd DOUBLE PRECISION,
+            ttl_expiry TIMESTAMPTZ,
+            regime TEXT,
+            status TEXT,
+            created_at TIMESTAMPTZ NOT NULL,
+            original_breadth DOUBLE PRECISION,
+            original_mtf DOUBLE PRECISION,
+            original_cvd DOUBLE PRECISION,
+            exchange_order_id TEXT
+        );
+    """)
+
+# ─── New Functions to replace lite_db.py ───────────────────────────────────────
+
+async def get_recent_features(limit: int = 20):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM signals ORDER BY created_at DESC LIMIT $1", limit)
+        return rows
+
+async def factory_reset_db():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM signals WHERE status NOT IN ('OPEN', 'BREAKEVEN', 'WAITING', 'WAITING_STRUCTURE')")
+        await conn.execute("DELETE FROM shadow_trades WHERE outcome IS NOT NULL")
+    logger.warning("FACTORY RESET: Historical stats, trades, and ML data wiped (Open trades kept).")
+
+async def get_open_trades():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM signals WHERE status IN ('OPEN', 'BREAKEVEN')")
+
+async def save_pullback_item(
+    symbol: str, direction: str, score: float, original_entry: float, swing_low: float,
+    limit_entries: list, stop_loss: float, take_profit_1: float, take_profit_2: float, take_profit_3: float,
+    position_usd: float, ttl_minutes: int, regime: str, status: str = 'WAITING',
+    original_breadth: float = 50.0, original_mtf: float = 0.0, original_cvd: float = 0.0
+):
+    from datetime import timedelta, datetime
+    expiry = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+    limit_json = json.dumps(limit_entries) if limit_entries else "[]"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO pullback_watchlist (
+                symbol, direction, score, original_entry, swing_low,
+                limit_entries, stop_loss, take_profit_1, take_profit_2, take_profit_3,
+                position_usd, ttl_expiry, regime, status, created_at,
+                original_breadth, original_mtf, original_cvd
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        ''', symbol, direction, score, original_entry, swing_low, limit_json, stop_loss,
+             take_profit_1, take_profit_2, take_profit_3, position_usd, expiry, regime, status,
+             datetime.utcnow(), original_breadth, original_mtf, original_cvd)
+
+async def get_active_pullback_items():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM pullback_watchlist WHERE status = 'WAITING' AND ttl_expiry > NOW()")
+
+async def get_pullback_items_by_status(status: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM pullback_watchlist WHERE status = $1 AND ttl_expiry > NOW()", status)
+
+async def update_pullback_status(item_id: int, new_status: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE pullback_watchlist SET status = $1 WHERE id = $2", new_status, item_id)
+
+async def update_pullback_limit_entries(
+    item_id: int, limit_entries: list, take_profit_1: float, take_profit_2: float,
+    take_profit_3: float, new_status: str, exchange_order_id: str = None
+):
+    limit_json = json.dumps(limit_entries)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            UPDATE pullback_watchlist
+            SET limit_entries = $1, take_profit_1 = $2, take_profit_2 = $3, take_profit_3 = $4, status = $5, exchange_order_id = $6
+            WHERE id = $7
+        ''', limit_json, take_profit_1, take_profit_2, take_profit_3, new_status, exchange_order_id, item_id)
+
+async def get_tracking_shadow_trades():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM shadow_trades WHERE outcome IS NULL")
+
+async def update_shadow_trade_status(trade_id: int, outcome: str, mfe_pct: float, mae_pct: float, duration: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            UPDATE shadow_trades 
+            SET outcome = $1, mfe_pct = $2, mae_pct = $3, bars_to_outcome = $4, resolved_at = NOW()
+            WHERE id = $5
+        ''', outcome, mfe_pct, mae_pct, duration, trade_id)
+
+async def get_unchecked_missed_signals():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM missed_signals WHERE checked = 0 AND created_at <= NOW() - INTERVAL '2 hours'")
+
+async def update_missed_signal_result(signal_id: int, pnl_pct: float, outcome: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE missed_signals SET checked = 1, max_profit_pct = $1, outcome = $2 WHERE id = $3", pnl_pct, outcome, signal_id)
+
