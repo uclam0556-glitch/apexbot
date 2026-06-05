@@ -292,7 +292,7 @@ async def get_open_shadow_trades() -> list:
     query = '''
         SELECT st.signal_id as id, st.symbol, st.created_at as opened_at, st.mfe_pct, st.mae_pct,
                s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, 
-               s.tp2_price as take_profit_2, s.tp3_price as take_profit_3, s.direction, s.strategy, s.status
+               s.tp2_price as take_profit_2, s.tp3_price as take_profit_3, s.direction, s.strategy, s.status, s.is_shadow
         FROM shadow_trades st
         JOIN signals s ON st.signal_id = s.id
         WHERE st.outcome = 'OPEN';

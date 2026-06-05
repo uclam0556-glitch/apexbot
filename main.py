@@ -406,8 +406,8 @@ class ApexSystem:
                                 status = 'WON'
                                 pnl_pct = (trade['take_profit_1'] - trade['entry_price']) / trade['entry_price'] * 100
                             elif recent_low <= trade['stop_loss']:
-                                status = 'LOST'
                                 pnl_pct = (trade['stop_loss'] - trade['entry_price']) / trade['entry_price'] * 100
+                                status = 'WON_BREAKEVEN' if pnl_pct > 0 else 'LOST'
 
                         # SHORT logic (mirror of LONG)
                         elif not status and trade['direction'] == 'SHORT':
@@ -415,8 +415,8 @@ class ApexSystem:
                                 status = 'WON'
                                 pnl_pct = (trade['entry_price'] - trade['take_profit_1']) / trade['entry_price'] * 100
                             elif recent_high >= trade['stop_loss']:
-                                status = 'LOST'
                                 pnl_pct = (trade['entry_price'] - trade['stop_loss']) / trade['entry_price'] * 100
+                                status = 'WON_BREAKEVEN' if pnl_pct > 0 else 'LOST'
                                 
                         if status in ['WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'TIMEOUT_BREAKEVEN', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_SMALL_LOSS']:
                             duration_minutes = 0.0
@@ -443,7 +443,7 @@ class ApexSystem:
                                 del global_state.trade_excursions[trade['id']]
                                 
                             logger.info(f"Trade {symbol} {status} at {current_price} ({pnl_pct:+.2f}%) | MFE: {max_profit_pct:+.2f}% | MAE: {max_drawdown_pct:+.2f}% | Dur: {duration_minutes:.1f}m")
-                            if bot:
+                            if bot and not trade.get('is_shadow', True):
                                 try:
                                     await send_trade_result_notification(bot, int(chat_id_str), trade, status, pnl_pct)
                                 except Exception as e:
@@ -1563,7 +1563,8 @@ class ApexSystem:
                             "mtf_score": mtf_score.score,
                             "regime": regime_val,
                             "session": SessionTagger.get_session(datetime.utcnow()),
-                            "logic_version": "10.5.0"
+                            "logic_version": "10.5.0",
+                            "is_shadow": False
                         }
                         signal_id = await insert_signal_record(signal_dict)
                         await insert_shadow_trade(
@@ -1590,21 +1591,7 @@ class ApexSystem:
                         )
                         logger.info(f"MARKET Signal executed ({execution_mode}): {symbol} {trade_direction}")
                         
-                        # 4. Send Telegram MARKET Alert
-                        signal_data["entry_price"] = entry_price
-                        signal_data["source"] = "MARKET"
-                        try:
-                            from aiogram import Bot
-                            token = self.config.alerts.telegram_bot_token.get_secret_value()
-                            chat_id_str = self.config.alerts.telegram_chat_id
-                            if token and chat_id_str:
-                                bot = Bot(token=token)
-                                from services.notifications.telegram_ui import send_signal
-                                await send_signal(bot, int(chat_id_str), signal_data)
-                                await bot.session.close()
-                                global_state.signals_sent_today += 1
-                        except Exception as send_err:
-                            logger.error(f"Failed to send MARKET signal: {send_err}")
+                        # Shadow trades do not send Telegram alerts.
 
                     else:
                         # ─── LIMIT / PULLBACK PATH ────────────────────────────────────────────────

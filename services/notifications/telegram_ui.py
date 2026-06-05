@@ -880,7 +880,7 @@ async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dic
         pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
         color_emoji = "🟢"
     elif status == "WON_BREAKEVEN":
-        header = "🎯 <b>СДЕЛКА ЗАКРЫТА (TP1 ВЗЯТ)</b>"
+        header = "🎯 <b>СДЕЛКА ЗАКРЫТА В ПЛЮС (ТРЕЙЛИНГ)</b>"
         pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
         color_emoji = "🟢"
     elif status == "TIMEOUT":
