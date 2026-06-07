@@ -180,7 +180,7 @@ class ApexSystem:
         self.kelly_sizer = KellyPositionSizer()        # LOCKED → Kelly blocked until Phase 2 ML
         
         # v11.0 Institutional Risk Engine (ACTIVE — hard gate on all new positions)
-        self.portfolio_risk_engine = PortfolioRiskEngine()
+        self.risk_engine = PortfolioRiskEngine()
         self.data_validator = DataValidator()
         self.institutional_tcm = InstitutionalTCM(exchange="BINANCE", order_type="maker")
 
