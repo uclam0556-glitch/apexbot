@@ -141,13 +141,13 @@ def check_mtf_gate(symbol: str, mtf_score: float, direction: str, regime: str, s
         if regime == "BULL" and mtf_score < 0:
             logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < 0 for LONG in BULL. Trend is against us.")
             return False
-        # SIDEWAYS: allow weak/neutral signal (score >= -1), block only clear downtrends
-        if regime in ("SIDEWAYS", "CRISIS") and mtf_score < -1.0:
-            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < -1.0 for LONG in {regime}. Trend too negative.")
+        # SIDEWAYS: allow weak/neutral signal, block only clear downtrends
+        if regime in ("SIDEWAYS", "CRISIS") and mtf_score < -2.0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < -2.0 for LONG in {regime}. Trend too negative.")
             return False
-        # BEAR: only block full waterfall (score < -2)
-        if regime == "BEAR" and mtf_score < -2.0:
-            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < -2.0 for LONG in BEAR. Trend too toxic for bounce.")
+        # BEAR: only block full waterfall (score < -3)
+        if regime == "BEAR" and mtf_score < -3.0:
+            logger.info(f"{symbol} - [BLOCKED] MTF Gate: score={mtf_score:.1f} < -3.0 for LONG in BEAR. Trend too toxic for bounce.")
             return False
     if direction == "SHORT":
         if regime == "BEAR" and mtf_score > 0:
@@ -621,12 +621,13 @@ class ApexSystem:
                 logger.info(f"Using cached Market Breadth: {breadth_pct:.1f}% (valid for {int((3600 - (current_time - self.breadth_last_updated)) / 60)} more mins)")
             
             # Dynamic config based on breadth (Calibrated for Isotonic Win Probabilities)
-            dynamic_min_score = 50.0  # 50% historic win probability
+            # Dynamic config based on breadth (Calibrated for Isotonic Win Probabilities)
+            dynamic_min_score = 45.0  # Slightly relaxed for testing
             if breadth_pct < 40.0:
-                dynamic_min_score = 52.0
-                logger.warning(f"RISK-OFF: Breadth < 40% ({breadth_pct:.1f}%). Raising min probability gate to 52.0%.")
-            elif breadth_pct > 70.0:
                 dynamic_min_score = 48.0
+                logger.warning(f"RISK-OFF: Breadth < 40% ({breadth_pct:.1f}%). Raising min probability gate to 48.0%.")
+            elif breadth_pct > 70.0:
+                dynamic_min_score = 42.0
                 logger.info(f"RISK-ON: Breadth > 70% ({breadth_pct:.1f}%). Lowering min probability gate to 48.0%.")
 
             for symbol in scan_symbols:
@@ -737,8 +738,8 @@ class ApexSystem:
                     #     continue
 
                     # ─── FILTER 3: VOLUME GATE ────────────────────────────────────────────────
-                    if avg_vol_3 < baseline_hourly_vol * 0.40:
-                        logger.info(f"{symbol} - [BLOCKED] Volume Gate: Vol={avg_vol_3:.0f} < 40% of 24h baseline {baseline_hourly_vol:.0f}. Skipping.")
+                    if avg_vol_3 < baseline_hourly_vol * 0.25:
+                        logger.info(f"{symbol} - [BLOCKED] Volume Gate: Vol={avg_vol_3:.0f} < 25% of 24h baseline {baseline_hourly_vol:.0f}. Skipping.")
                         continue
 
                     # ─── CVD ANALYSIS ─────────────────────────────────────────────────────────
