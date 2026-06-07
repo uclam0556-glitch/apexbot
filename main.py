@@ -402,7 +402,7 @@ class ApexSystem:
 
                         # Standard TP/SL logic (only if not already TIMEOUT)
                         if not status and trade['direction'] == 'LONG':
-                            if recent_high >= trade['take_profit_1'] and trade['status'] == 'OPEN':
+                            if recent_high >= trade['take_profit_1']:
                                 status = 'WON'
                                 pnl_pct = (trade['take_profit_1'] - trade['entry_price']) / trade['entry_price'] * 100
                             elif recent_low <= trade['stop_loss']:
@@ -411,7 +411,7 @@ class ApexSystem:
 
                         # SHORT logic (mirror of LONG)
                         elif not status and trade['direction'] == 'SHORT':
-                            if recent_low <= trade['take_profit_1'] and trade['status'] == 'OPEN':
+                            if recent_low <= trade['take_profit_1']:
                                 status = 'WON'
                                 pnl_pct = (trade['entry_price'] - trade['take_profit_1']) / trade['entry_price'] * 100
                             elif recent_high >= trade['stop_loss']:
