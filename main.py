@@ -926,7 +926,7 @@ class ApexSystem:
                         
                     last_ws_ts = ws_data.get("timestamp", 0)
                     now_ts = datetime.utcnow().timestamp()
-                    last_update_age_sec = now_ts - (last_ws_ts / 1000.0) if last_ws_ts else float('inf')
+                    last_update_age_sec = now_ts - last_ws_ts if last_ws_ts else float('inf')
                     
                     ohlcv_row_1h = df_1h.iloc[-1].to_dict() if not df_1h.empty else {}
                     
@@ -956,7 +956,7 @@ class ApexSystem:
                     # We do NOT return early. We will decide at the very end.
                     block_reason = None
                     if health_result.level == DataHealthLevel.HARD_BLOCK:
-                        block_reason = "DATA_HEALTH_FAIL"
+                        block_reason = f"DATA_HEALTH_FAIL: {health_result.detail}"
                     elif uni_multiplier == 0.0:
                         block_reason = "UNIVERSE_BLACKLIST"
 
