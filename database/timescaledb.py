@@ -127,13 +127,20 @@ async def init_timescaledb():
                 UNIQUE(id, created_at)
             );
         """)
+        
+        # APEX v11.0 schema migrations for signals table
+        try:
+            await conn.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS gate_margin DOUBLE PRECISION;")
+            await conn.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS dynamic_gate DOUBLE PRECISION;")
+            await conn.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS size_multiplier DOUBLE PRECISION DEFAULT 1.0;")
+            # mtf_score_weighted can be added if needed, but mtf_score is already there
+        except Exception as e:
+            logger.warning(f"Failed to add v11 columns to signals: {e}")
+
         try:
             await conn.execute("SELECT create_hypertable('signals', 'created_at');")
         except asyncpg.exceptions.ObjectInUseError:
             pass
-        except Exception as e:
-            logger.debug(f"Skipped hypertable creation: {e}")
-            pass # already a hypertable
         except Exception as e:
             logger.debug(f"Skipped hypertable creation for signals: {e}")
             
@@ -141,6 +148,23 @@ async def init_timescaledb():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_status_time ON signals (status, created_at DESC);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_reg_str_stat ON signals (regime, strategy, status);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_sess_stat ON signals (session_tag, status);")
+        
+        # APEX v11.0: gate_calibration_log
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS gate_calibration_log (
+                time TIMESTAMPTZ NOT NULL,
+                v7_threshold DOUBLE PRECISION,
+                p95_v7_100 DOUBLE PRECISION,
+                p95_v7_500 DOUBLE PRECISION,
+                signals_passed INT,
+                signals_blocked INT
+            );
+        """)
+        try:
+            await conn.execute("SELECT create_hypertable('gate_calibration_log', 'time');")
+        except Exception as e:
+            logger.debug(f"Skipped hypertable creation for gate_calibration_log: {e}")
+
 
         # TABLE 4: Shadow Trades
         await conn.execute("""

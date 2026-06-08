@@ -408,3 +408,52 @@ class MTFEngine:
             return "STRONG_LONG"
         # SPOT ONLY V4: Ignore strong short threshold, do not emit short signals
         return "NO_SIGNAL"
+
+def compute_mtf_score(tf_signals: dict[str, int],
+                      weights: dict[str, float] | None = None) -> tuple[float, bool]:
+    """
+    Weighted MTF score instead of binary gate.
+    
+    Args:
+        tf_signals: e.g. {'1d': 1, '4h': 1, '1h': -1, '15m': 1, '5m': 1}
+                    +1 = bullish, -1 = bearish, 0 = neutral
+        weights: default weights {'1d':0.30, '4h':0.25, '1h':0.20, '15m':0.15, '5m':0.10}
+        
+    Returns:
+        mtf_score: float [-1, +1]
+        strong_alignment: bool (True if > 0.5 or < -0.5)
+    """
+    if weights is None:
+        weights = {'1d': 0.30, '4h': 0.25, '1h': 0.20, '15m': 0.15, '5m': 0.10}
+        
+    weighted_sum = 0.0
+    total_weight = 0.0
+    
+    for tf, signal in tf_signals.items():
+        w = weights.get(tf, 0.0)
+        weighted_sum += w * signal
+        total_weight += w
+        
+    if total_weight == 0:
+        return 0.0, False
+        
+    mtf_score = weighted_sum / total_weight
+    strong_alignment = mtf_score > 0.5 or mtf_score < -0.5
+    
+    return float(mtf_score), strong_alignment
+
+def get_mtf_v7_bonus(mtf_score: float) -> float:
+    """
+    Map mtf_score [-1, +1] to V7 bonus.
+    """
+    if mtf_score > 0.7:
+        return 15.0
+    elif mtf_score > 0.5:
+        return 8.0
+    elif mtf_score > 0.3:
+        return 3.0
+    elif mtf_score >= 0.0:
+        return -5.0
+    else:
+        return -20.0
+

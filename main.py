@@ -829,15 +829,19 @@ class ApexSystem:
                     else:
                         trade_strategy = "TREND"
                         
-                    # ─── MTF ALIGNMENT (HARD GATE) ────────────────────────────────────────────
-                    weights = self.weights_optimizer.get_current_weights()
-                    mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
+                    # ─── V11 MTF ALIGNMENT (WEIGHTED SCORE & BONUS) ───────────────────────────
+                    # MTF is no longer a hard gate, it contributes to V7 score.
+                    from services.engine.mtf_engine import compute_mtf_score, get_mtf_v7_bonus
+                    tf_signals = {}
+                    for tf in ['1d', '4h', '1h', '15m', '5m']:
+                        if tf in tf_data and not tf_data[tf].empty:
+                            tf_signals[tf] = self.mtf_engine.get_trend_direction(tf_data[tf])
+                    
+                    mtf_score_val, mtf_is_strong = compute_mtf_score(tf_signals)
+                    mtf_v7_bonus = get_mtf_v7_bonus(mtf_score_val)
+                    logger.info(f"{symbol} - MTF Score: {mtf_score_val:.2f} -> V7 Bonus: {mtf_v7_bonus:+.1f}")
+                    # Note: We will add mtf_v7_bonus to final v7_score later
 
-                    if not check_mtf_gate(symbol, mtf_score.score, trade_direction, regime_val, trade_strategy):
-                        proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
-                        proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
-                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "MTF Gate", [f"MTF={mtf_score.score:.1f}"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
-                        continue
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 1: ATR MOMENTUM EXHAUSTION ─────────────
                     price_change_4h_pct = (
@@ -881,8 +885,8 @@ class ApexSystem:
                             await insert_filter_block_record(symbol, trade_strategy or "UNKNOWN", "Momentum Exhaustion", 0.0)
                             proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
                             proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
-                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Momentum Exhaustion", [f"Up {price_change_4h_pct:.2f}%"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
-                            continue
+                            block_reason = "Momentum Exhaustion"
+                            # We don't continue here to allow V7 calculation and logging
                         
                         # Penalty conditions instead of hard block
                         elif price_change_4h_pct > (3 * atr_1h_pct):
@@ -904,29 +908,53 @@ class ApexSystem:
                             # Create shadow trade
                             proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
                             proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
-                            await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Absorption Trap", ["Retail FOMO against MM CVD"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
-                            continue
+                            block_reason = "Absorption Trap"
+                            # We don't continue here to allow V7 calculation and logging
                     else:
                         logger.warning(f"{symbol} - Absorption Trap filter skipped due to funding rate data source failure.")
 
-                    # ─── V6.0 DATA HEALTH CHECK ────────────────────────────────────────────────
-                    from shared.symbols import normalize_symbol
+                    # ─── V11 DATA HEALTH & UNIVERSE TIERS ──────────────────────────────────────
+                    from services.engine.data_health import check_data_health, DataHealthLevel
+                    from services.engine.universe import DynamicUniverse
+                    
+                    # Ensure dynamic universe exists globally or instantiate
+                    if not hasattr(self, "dynamic_universe"):
+                        from database.timescaledb import get_pool
+                        self.dynamic_universe = DynamicUniverse(None)
                     
                     ws_data = global_state.live_prices.get(symbol, {})
                     if not ws_data:
+                        from shared.symbols import normalize_symbol
                         ws_data = global_state.live_prices.get(normalize_symbol(symbol), {})
                         
                     last_ws_ts = ws_data.get("timestamp", 0)
-                    health_data = compute_data_health(symbol, last_ws_ts, avg_vol_3, baseline_hourly_vol, funding_pct, daily_volume_usd, market_type="SPOT")
-                    health_score = health_data["score"]
+                    now_ts = datetime.utcnow().timestamp()
+                    last_update_age_sec = now_ts - (last_ws_ts / 1000.0) if last_ws_ts else float('inf')
                     
-                    if health_data["status"] == "BAD":
-                        logger.warning(f"{symbol} - [BLOCKED] Data Health Score {health_score:.1f} < 60. Data is too corrupt/stale.")
-                        await insert_filter_block_record(symbol, trade_strategy or "UNKNOWN", "Data Health < 60", 0.0)
-                        proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
-                        proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
-                        await create_shadow_trade(symbol, trade_direction, trade_strategy, current_price, proxy_sl, proxy_tp, "Data Health", health_data["reasons"], 0.0, regime=regime_val, breadth=breadth_pct, cvd_score=cvd_score_val, mtf_score=mtf_score.score)
-                        continue
+                    ohlcv_row_1h = df_1h.iloc[-1].to_dict() if not df_1h.empty else {}
+                    
+                    health_result = check_data_health(
+                        ohlcv_row=ohlcv_row_1h,
+                        spread_pct=spread_pct,
+                        volume_24h_usd=daily_volume_usd,
+                        last_update_age_sec=last_update_age_sec,
+                        asset_tier=1,  # Simplified to 1 for now
+                        timeframe_seconds=3600
+                    )
+                    
+                    # Get Universe multiplier
+                    uni_multiplier = self.dynamic_universe.get_priority_multiplier(symbol)
+                    
+                    # Final size multiplier
+                    size_multiplier = health_result.position_size_multiplier * uni_multiplier
+                    
+                    # We do NOT return early. We will decide at the very end.
+                    block_reason = None
+                    if health_result.level == DataHealthLevel.HARD_BLOCK:
+                        block_reason = "DATA_HEALTH_FAIL"
+                    elif uni_multiplier == 0.0:
+                        block_reason = "UNIVERSE_BLACKLIST"
+
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 4: Z-SCORE GRAVITY ─────────────────────
                     ema_100 = df_1h['close'].rolling(100).mean().iloc[-1] if len(df_1h) >= 100 else df_1h['close'].mean()
@@ -935,8 +963,8 @@ class ApexSystem:
 
                     if z_score > 3.0 and trade_direction == "LONG":
                         logger.info(f"{symbol} - [BLOCKED] Z-Score Gravity. Price is {z_score:.1f} std devs above mean. Mean reversion inevitable. Skipping.")
-                        await insert_filter_block_record(symbol, trade_strategy or "UNKNOWN", "Z-Score Gravity", 0.0)
-                        continue
+                        block_reason = "Z-Score Gravity"
+                        # We don't continue here to allow V7 calculation and logging
 
                     # ─── SMC + INDICATORS ─────────────────────────────────────────────────────
                     smc_analysis = self.smc_core.analyze(df_1h, symbol=symbol, lookback=10)
@@ -1156,55 +1184,61 @@ class ApexSystem:
                             v7_score += 35.0  # Massive bonus, but must still pass the gate
                             logger.info(f"🌟 {symbol} A+ SETUP BONUS! (RSI={rsi_now:.1f}, CVD+, OFI+, VOL+). Applying +35 points.")
                             
-                    # ─── FINAL V7 CALIBRATION & GATE ───────────────────────────────────────────
-                    # ─── FINAL V7 CALIBRATION & GATE ───────────────────────────────────────────
-                    # In V10.5 Data Collection Mode, we use raw score directly. Calibration comes after training.
-                    isotonic_win_prob = v7_score  # We don't have enough data yet, use raw as proxy
+                    # ─── V11 FINAL V7 CALIBRATION & GATE ─────────────────────────────────────────
+                    # Apply MTF bonus
+                    v7_score += mtf_v7_bonus
                     
-                    if regime_val == 'BULL':
-                        if breadth_pct > 60: dynamic_min_score = 45.0
-                        elif breadth_pct > 40: dynamic_min_score = 48.0
-                        else: dynamic_min_score = 50.0
-                    elif regime_val == 'SIDEWAYS':
-                        if breadth_pct > 40: dynamic_min_score = 45.0
-                        elif breadth_pct > 20: dynamic_min_score = 38.0
-                        else: dynamic_min_score = 35.0
-                    elif regime_val == 'BEAR':
-                        if breadth_pct > 40: dynamic_min_score = 50.0
-                        else: dynamic_min_score = 55.0
-                    else:
-                        dynamic_min_score = 48.0
+                    # Ensure v7_score is within 0-100 limits before gate check
+                    v7_score = max(0.0, min(100.0, v7_score))
+                    
+                    from services.engine.dynamic_gate import compute_dynamic_gate
+                    if not hasattr(self, 'v7_history_buffer'):
+                        self.v7_history_buffer = []
+                        
+                    self.v7_history_buffer.append(v7_score)
+                    if len(self.v7_history_buffer) > 500:
+                        self.v7_history_buffer.pop(0)
+                        
+                    dynamic_min_score = compute_dynamic_gate(breadth_pct, self.v7_history_buffer, base_gate=40.0)
+                    
+                    logger.info(f"{symbol} - Final V7: {v7_score:.1f}/100 | Dynamic Gate: {dynamic_min_score:.1f}")
                         
                     if v7_score < dynamic_min_score:
-                        logger.info(f"{symbol} - [BLOCKED] V7 Score: {v7_score:.1f}/100. Insufficient edge. Skipping.")
-                        
-                        # Create Shadow Trade (Record Blocked Signal)
-                        proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
-                        proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
-                        
-                        blocked_signal = {
-                            "timestamp": datetime.utcnow(),
-                            "symbol": symbol,
-                            "strategy": trade_strategy or "TREND",
-                            "direction": trade_direction,
-                            "status": "REJECTED_BY_FILTER",
-                            "block_reason": f"V7 Score < {dynamic_min_score}",
-                            "entry_price": current_price,
-                            "sl_price": proxy_sl,
-                            "tp1_price": proxy_tp,
-                            "tp2_price": 0.0,
-                            "tp3_price": 0.0,
-                            "v7_score_raw": v7_score,
-                            "mtf_score": mtf_score.score if mtf_score else 0.0,
-                            "regime": regime_val,
-                            "session": SessionTagger.get_session(datetime.utcnow()),
-                            "logic_version": "10.5.0"
-                        }
-                        sig_id = await insert_signal_record(blocked_signal)
-                        await insert_shadow_trade(sig_id, symbol, blocked_signal["session"], regime_val, "10.5.0")
-                        
+                        if block_reason is None:
+                            block_reason = "V7_GATE_FAIL"
+                            logger.info(f"{symbol} - [BLOCKED] V7 Score < Dynamic Gate. Insufficient edge.")
+                            
+                    # ─── DECISION & TELEMETRY ──────────────────────────────────────────────────
+                    
+                    is_approved = (block_reason is None)
+                    status_str = "APPROVED" if is_approved else "REJECTED_BY_FILTER"
+                    
+                    proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
+                    proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
+                    
+                    # Create shadow trade for everything to collect stats
+                    await create_shadow_trade(
+                        symbol=symbol,
+                        direction=trade_direction,
+                        strategy=trade_strategy or "TREND",
+                        entry_price=current_price,
+                        stop_loss=proxy_sl,
+                        take_profit_1=proxy_tp,
+                        block_reason=block_reason or "None",
+                        reasons=[f"V7={v7_score:.1f}", f"Gate={dynamic_min_score:.1f}"],
+                        score=v7_score,
+                        regime=regime_val,
+                        breadth=breadth_pct,
+                        cvd_score=cvd_score_val,
+                        mtf_score=mtf_score_val
+                    )
+                    
+                    if not is_approved:
                         continue
                         
+                    # --- EXECUTION ---
+                    logger.info(f"🚀 {symbol} PASSED V11 GATE! V7={v7_score:.1f} >= {dynamic_min_score:.1f}")
+
                     ultra_score = v7_score
 
                     strategy_label = f"[{trade_strategy}]" if trade_strategy != "TREND" else ""
