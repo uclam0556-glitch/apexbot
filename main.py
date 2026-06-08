@@ -1404,7 +1404,9 @@ class ApexSystem:
                                         
                                     msg += (
                                         f"🛑 <b>Stop Loss:</b> ${sltp.stop_loss:.4f} <i>(-{sl_pct:.2f}%)</i>\n"
-                                        f"🏁 <b>TP Target (TP3):</b> ${sltp.pullback_tp_3:.4f} <i>(+{sltp.rr_ratio_tp1 * sl_pct:.2f}%)</i>\n\n"
+                                        f"🏁 <b>TP Target 1:</b> ${sltp.pullback_tp_1:.4f}\n"
+                                        f"🏁 <b>TP Target 2:</b> ${sltp.pullback_tp_2:.4f}\n"
+                                        f"🏁 <b>TP Target 3:</b> ${sltp.pullback_tp_3:.4f}\n\n"
                                         f"<i>Сформирована лимитная сетка на основе Market Breadth. Ожидаем заполнения.</i>"
                                     )
                                     
@@ -1655,8 +1657,7 @@ class ApexSystem:
                             status=trade_status
                         )
                         logger.info(f"MARKET Signal executed ({execution_mode}): {symbol} {trade_direction}")
-                        
-                        # Shadow trades do not send Telegram alerts.
+                        signal_data["source"] = "MARKET"
 
                     else:
                         # ─── LIMIT / PULLBACK PATH ────────────────────────────────────────────────
@@ -1668,32 +1669,34 @@ class ApexSystem:
                             score=ultra_score,
                             original_entry=current_price,
                             swing_low=sltp.stop_loss, 
+                            limit_entries=[{"price": current_price, "size": 1.0}],
                             stop_loss=sltp.stop_loss,
                             take_profit_1=sltp.take_profit_1,
                             take_profit_2=sltp.take_profit_2,
                             take_profit_3=sltp.take_profit_3,
                             position_usd=position_usd,
+                            ttl_minutes=120,
                             regime=regime_val,
-                            breadth=breadth_pct,
-                            mtf=mtf_score_val,
-                            cvd=cvd_score_val
+                            original_breadth=breadth_pct,
+                            original_mtf=mtf_score_val,
+                            original_cvd=cvd_score_val
                         )
                         logger.info(f"Signal routed to LIMIT Watchlist: {symbol} {trade_direction} [{strat_label}]")
-                        
                         signal_data["source"] = "LIMIT"
-                        # ─── SEND TO TELEGRAM ─────────────────────────────────────────────────────
-                        try:
-                            from aiogram import Bot
-                            token = self.config.alerts.telegram_bot_token.get_secret_value()
-                            chat_id_str = self.config.alerts.telegram_chat_id
-                            if token and chat_id_str:
-                                bot = Bot(token=token)
-                                from services.notifications.telegram_ui import send_signal
-                                await send_signal(bot, int(chat_id_str), signal_data)
-                                await bot.session.close()
-                                global_state.signals_sent_today += 1
-                        except Exception as send_err:
-                            logger.error(f"Failed to send LIMIT signal: {send_err}")
+                        
+                    # ─── SEND TO TELEGRAM ─────────────────────────────────────────────────────
+                    try:
+                        from aiogram import Bot
+                        token = self.config.alerts.telegram_bot_token.get_secret_value()
+                        chat_id_str = self.config.alerts.telegram_chat_id
+                        if token and chat_id_str:
+                            bot = Bot(token=token)
+                            from services.notifications.telegram_ui import send_signal
+                            await send_signal(bot, int(chat_id_str), signal_data)
+                            await bot.session.close()
+                            global_state.signals_sent_today += 1
+                    except Exception as send_err:
+                        logger.error(f"Failed to send {signal_data['source']} signal: {send_err}")
 
                 except Exception as e:
                     logger.error(f"Error processing {symbol}: {e}", exc_info=True)
