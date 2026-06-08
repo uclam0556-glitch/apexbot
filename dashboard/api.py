@@ -175,6 +175,76 @@ def create_app() -> FastAPI:
             logger.error(f"CSV Export error: {e}")
             return Response(content=f"Error exporting CSV: {e}", status_code=500)
 
+    @app.get("/api/query-diagnostics")
+    async def query_diagnostics():
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                q1 = await conn.fetch('''
+                    SELECT s.symbol, s.created_at, s.strategy, s.regime, s.breadth_pct, s.v7_score_raw, s.mtf_score, s.session_tag,
+                           st.mfe_pct, st.mae_pct, st.bars_to_outcome, EXTRACT(HOUR FROM s.created_at) as hour_utc, EXTRACT(DOW FROM s.created_at) as day_of_week
+                    FROM signals s JOIN shadow_trades st ON s.id = st.signal_id
+                    WHERE s.block_reason LIKE '%MTF Gate%' AND st.outcome = 'WON'
+                    ORDER BY st.mfe_pct DESC LIMIT 100;
+                ''')
+                
+                q2 = await conn.fetch('''
+                    SELECT s.regime, s.session_tag, s.strategy, ROUND(AVG(s.v7_score_raw)::numeric, 1) as avg_v7,
+                           ROUND(AVG(s.mtf_score)::numeric, 2) as avg_mtf, ROUND(AVG(s.breadth_pct)::numeric, 1) as avg_breadth,
+                           ROUND(AVG(st.mfe_pct)::numeric, 2) as avg_mfe, COUNT(*) as count
+                    FROM signals s JOIN shadow_trades st ON s.id = st.signal_id
+                    WHERE st.outcome = 'WON' AND s.status = 'REJECTED_BY_FILTER'
+                    GROUP BY s.regime, s.session_tag, s.strategy HAVING COUNT(*) >= 5 ORDER BY avg_mfe DESC;
+                ''')
+                
+                q3 = await conn.fetch('''
+                    SELECT ROUND(s.mtf_score::numeric, 1) as mtf_bucket, COUNT(*) as total_blocked,
+                           COUNT(*) FILTER (WHERE st.outcome = 'WON') as tp_missed, COUNT(*) FILTER (WHERE st.outcome = 'LOST') as sl_saved,
+                           ROUND(COUNT(*) FILTER (WHERE st.outcome = 'WON')::numeric / NULLIF(COUNT(*) FILTER (WHERE st.outcome IN ('WON','LOST')), 0) * 100, 1) as win_rate_pct
+                    FROM signals s JOIN shadow_trades st ON s.id = st.signal_id
+                    WHERE s.block_reason LIKE '%MTF Gate%' AND st.outcome IS NOT NULL
+                    GROUP BY mtf_bucket ORDER BY mtf_bucket DESC;
+                ''')
+                
+                q4 = await conn.fetch('''
+                    SELECT EXTRACT(HOUR FROM s.created_at) as hour_utc, COUNT(*) FILTER (WHERE st.outcome = 'WON') as wins,
+                           COUNT(*) FILTER (WHERE st.outcome = 'LOST') as losses, ROUND(AVG(st.mfe_pct) FILTER (WHERE st.outcome = 'WON')::numeric, 2) as avg_mfe_wins,
+                           ROUND(COUNT(*) FILTER (WHERE st.outcome = 'WON')::numeric / NULLIF(COUNT(*) FILTER (WHERE st.outcome IN ('WON','LOST')), 0) * 100, 1) as win_rate_pct
+                    FROM signals s JOIN shadow_trades st ON s.id = st.signal_id
+                    WHERE st.outcome IS NOT NULL
+                    GROUP BY hour_utc ORDER BY win_rate_pct DESC NULLS LAST;
+                ''')
+                
+                q5 = await conn.fetch('''
+                    SELECT outcome as status, COUNT(*) as count, MIN(created_at) as oldest, MAX(created_at) as newest,
+                           COUNT(*) FILTER (WHERE mfe_pct IS NULL) as no_mfe, COUNT(*) FILTER (WHERE mfe_pct IS NOT NULL) as has_mfe
+                    FROM shadow_trades GROUP BY outcome;
+                ''')
+                
+                q6 = await conn.fetch('''
+                    SELECT CASE WHEN s.v7_score_raw < 30 THEN '0-30' WHEN s.v7_score_raw < 40 THEN '30-40' WHEN s.v7_score_raw < 45 THEN '40-45'
+                                WHEN s.v7_score_raw < 48 THEN '45-48' WHEN s.v7_score_raw < 52 THEN '48-52' WHEN s.v7_score_raw < 60 THEN '52-60' ELSE '60+' END as v7_bucket,
+                           COUNT(*) as total, COUNT(*) FILTER (WHERE st.outcome = 'WON') as wins, COUNT(*) FILTER (WHERE st.outcome = 'LOST') as losses,
+                           ROUND(AVG(st.mfe_pct)::numeric, 2) as avg_mfe
+                    FROM signals s JOIN shadow_trades st ON s.id = st.signal_id
+                    WHERE st.outcome IS NOT NULL GROUP BY v7_bucket ORDER BY v7_bucket;
+                ''')
+                
+                breadth = await conn.fetchval('''SELECT breadth_pct FROM signals ORDER BY created_at DESC LIMIT 1;''')
+
+            return {
+                "q1_missed_tp": [dict(r) for r in q1],
+                "q2_good_setup": [dict(r) for r in q2],
+                "q3_mtf_distribution": [dict(r) for r in q3],
+                "q4_hour_analysis": [dict(r) for r in q4],
+                "q5_shadow_monitor_diag": [dict(r) for r in q5],
+                "q6_v7_threshold": [dict(r) for r in q6],
+                "current_breadth": breadth
+            }
+        except Exception as e:
+            logger.error(f"Diagnostics error: {e}")
+            return {"error": str(e)}
+
     @app.get("/api/shadow-stats")
     async def get_shadow_stats():
         try:
