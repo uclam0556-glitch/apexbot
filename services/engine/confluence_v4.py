@@ -436,23 +436,19 @@ class ConfluenceEngineV4:
 
     def _check_htf_trend(
         self,
-        mtf_score: MTFScore,
+        mtf_score: float,
         direction: Direction,
     ) -> tuple[bool, str]:
         """
-        True if higher timeframe trend (1D, 4H) confirms signal direction.
+        True if higher timeframe trend confirms signal direction.
+        Since mtf_score is now a blended float score, we evaluate it directly.
         """
-        htf_score = 0.0
-        for tf_trend in mtf_score.timeframes:
-            if tf_trend.timeframe in ("1d", "4h"):
-                htf_score += tf_trend.direction * tf_trend.weight
+        if direction == Direction.LONG and mtf_score > 3.0:
+            return True, f"HTF trend bullish (MTF score: {mtf_score:.1f})"
+        elif direction == "SHORT" and mtf_score < -3.0:
+            return True, f"HTF trend bearish (MTF score: {mtf_score:.1f})"
 
-        if direction == Direction.LONG and htf_score > 3.0:
-            return True, f"HTF trend bullish (1D+4H score: {htf_score:.1f})"
-        elif direction == "SHORT" and htf_score < -3.0:
-            return True, f"HTF trend bearish (1D+4H score: {htf_score:.1f})"
-
-        return False, f"HTF trend not aligned (score: {htf_score:.1f})"
+        return False, f"HTF trend not aligned (score: {mtf_score:.1f})"
 
     def _check_fibonacci(
         self,
@@ -678,7 +674,7 @@ class ConfluenceEngineV4:
         df_1h: pd.DataFrame,
         rsi_series: pd.Series,
         smc: SMCAnalysis,
-        mtf_score: MTFScore,
+        mtf_score: float,
         ofi: OFIResult,
         regime: MarketRegime,
         # Optional external data
