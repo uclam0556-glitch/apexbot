@@ -81,10 +81,7 @@ from shared.state import global_state
 
 # V6.0 Shadow & Health
 from services.engine.shadow_monitor import ShadowTradeMonitor
-# DATA HEALTH: now routes through DataValidator (institutional v11.0)
-# Legacy shim at services/engine/data_health.py re-exports from services/data/validator.py
-from services.engine.data_health import compute_data_health
-
+from services.engine.data_health import check_data_health
 # v11.0 Institutional Modules
 from services.data.validator import DataValidator, DataHealthStatus  # Direct institutional use
 from services.risk.portfolio_risk_engine import (
