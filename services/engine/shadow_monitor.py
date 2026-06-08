@@ -5,7 +5,7 @@ import aiosqlite
 import ccxt.async_support as ccxt
 import json
 
-from database.timescaledb import get_tracking_shadow_trades, update_shadow_trade_status
+from database.timescaledb import get_tracking_shadow_trades, update_shadow_trade_status, get_pool
 from shared.config import get_config
 
 logger = logging.getLogger("ShadowMonitor")
@@ -186,7 +186,7 @@ class ShadowTradeMonitor:
                 logger.info(f"[SHADOW TRADE] {sym} {direction} [{strategy}] resolved as {status}. MFE: +{mfe:.2f}%, MAE: {mae:.2f}%")
             else:
                 # Still tracking, but update MFE/MAE in DB so we can see it on the dashboard
-                pool = await __import__('database.timescaledb').timescaledb.get_pool()
+                pool = await get_pool()
                 async with pool.acquire() as conn:
                     await conn.execute('''
                         UPDATE shadow_trades 
