@@ -992,7 +992,7 @@ class ApexSystem:
                         df_1h=df_1h,
                         rsi_series=rsi_series,
                         smc=smc_analysis,
-                        mtf_score=mtf_score,
+                        mtf_score=mtf_score_val,
                         ofi=ofi_real,
                         regime=current_regime,
                         macro_bias=self.macro_state.macro_bias.value,
@@ -1020,7 +1020,7 @@ class ApexSystem:
                     mr_bonus = 0.5 if trade_strategy == "MEAN_REVERSION" and rsi_now < 30 else 0.0
 
                     # ─── MTF MULTIPLIER ────────────────────────────────────────────────────────
-                    mtf_val = mtf_score.score if trade_direction == "LONG" else -mtf_score.score
+                    mtf_val = mtf_score_val if trade_direction == "LONG" else -mtf_score_val
                     if mtf_val >= 6.0:   mtf_mult = 1.20   # сильный тренд = бонус
                     elif mtf_val >= 3.0: mtf_mult = 1.10   # умеренный тренд
                     elif mtf_val >= 0.0: mtf_mult = 1.00   # нейтрально
@@ -1486,7 +1486,7 @@ class ApexSystem:
                         "ultra_score": ultra_score,
                         "btc_rsi": btc_rsi,
                         "cvd_score": cvd_score_val,
-                        "mtf_score": mtf_score.score,
+                        "mtf_score": mtf_score_val,
                         "funding_rate": market_ctx["funding"]["rate_pct"]
                     }
                     conf_winrate = isotonic_win_prob * 100.0  # fallback to isotonic
@@ -1540,7 +1540,7 @@ class ApexSystem:
                         "funding_rate":         market_ctx["funding"]["rate_pct"] if "funding" in market_ctx else 0.0,
                         "oi_change":            market_ctx["open_interest"]["change_pct"] if "open_interest" in market_ctx else 0.0,
                         "fg_index":             market_ctx["fear_greed"]["value"] if "fear_greed" in market_ctx else 50.0,
-                        "mtf_score":            mtf_score.score,
+                        "mtf_score":            mtf_score_val,
                         "cvd_score":            cvd_score_val,
                         "strategy":             trade_strategy,
                         "direction":            trade_direction,
@@ -1616,7 +1616,7 @@ class ApexSystem:
                             "tp2_price": sltp.take_profit_2,
                             "tp3_price": sltp.take_profit_3,
                             "v7_score_raw": ultra_score,
-                            "mtf_score": mtf_score.score,
+                            "mtf_score": mtf_score_val,
                             "regime": regime_val,
                             "session": SessionTagger.get_session(datetime.utcnow()),
                             "logic_version": "10.5.0",
@@ -1666,7 +1666,7 @@ class ApexSystem:
                             position_usd=position_usd,
                             regime=regime_val,
                             breadth=breadth_pct,
-                            mtf=mtf_score.score,
+                            mtf=mtf_score_val,
                             cvd=cvd_score_val
                         )
                         logger.info(f"Signal routed to LIMIT Watchlist: {symbol} {trade_direction} [{strat_label}]")
