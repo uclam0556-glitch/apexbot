@@ -939,6 +939,14 @@ class ApexSystem:
                         timeframe_seconds=3600
                     )
                     
+                    # Backwards compatibility for health_score
+                    if health_result.level == DataHealthLevel.OK:
+                        health_score = 100.0
+                    elif health_result.level == DataHealthLevel.SOFT_WARN:
+                        health_score = 70.0
+                    else:
+                        health_score = 0.0
+                    
                     # Get Universe multiplier
                     uni_multiplier = self.dynamic_universe.get_priority_multiplier(symbol)
                     
