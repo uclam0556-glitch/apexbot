@@ -58,7 +58,7 @@ EXCHANGE_FEES: dict[str, dict[str, float]] = {
 MARKET_IMPACT_ALPHA: float = 0.5
 
 # Minimum USD volume threshold (duplicated from validator for independence).
-MIN_DAILY_USD_VOLUME_FOR_IMPACT: float = 500_000.0
+MIN_DAILY_USD_VOLUME_FOR_IMPACT: float = 200_000.0
 
 # Maximum acceptable round-trip cost as fraction of expected gross edge.
 # If round_trip_cost > this fraction of gross_edge → reject signal.

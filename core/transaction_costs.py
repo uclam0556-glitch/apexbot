@@ -26,4 +26,4 @@ logger.info(
 )
 
 # Legacy constant preserved for call sites that import it directly
-MINIMUM_VOLUME_24H_USD = 500_000
+MINIMUM_VOLUME_24H_USD = 200_000

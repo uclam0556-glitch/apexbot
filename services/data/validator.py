@@ -57,7 +57,7 @@ MAX_SPREAD_PCT: dict[str, float] = {
 # Minimum daily USD volume to qualify for signal generation.
 # Justification: Ensures the market impact of a $10k position is < 0.5% of
 # average daily volume (100x safety margin on $500k minimum).
-MIN_DAILY_USD_VOLUME: float = 500_000.0
+MIN_DAILY_USD_VOLUME: float = 200_000.0
 
 # WebSocket data freshness thresholds (seconds).
 # TEMP: 2.5x expected interval. For 1s ws heartbeat, grace = 2.5s.

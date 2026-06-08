@@ -849,21 +849,21 @@ class ApexSystem:
                     
                     # ─── ADVANCED INSTITUTIONAL FILTER 2: GRADIENT PREMIUM ZONE ────────────────
                     in_premium_zone = False
-                    if len(df_1h) >= 48:
-                        high_48h = df_1h['high'].iloc[-48:].max()
-                        low_48h = df_1h['low'].iloc[-48:].min()
+                    if len(df_1h) >= 96:
+                        high_96h = df_1h['high'].iloc[-96:].max()
+                        low_96h = df_1h['low'].iloc[-96:].min()
                     else:
-                        high_48h = df_1h['high'].max()
-                        low_48h = df_1h['low'].min()
+                        high_96h = df_1h['high'].max()
+                        low_96h = df_1h['low'].min()
                         
-                    range_48h = high_48h - low_48h
+                    range_96h = high_96h - low_96h
                     premium_discount = 1.0
-                    if range_48h > 0:
-                        premium_discount = (current_price - low_48h) / range_48h
-                        premium_threshold = high_48h - (range_48h * 0.30) # Top 30%
+                    if range_96h > 0:
+                        premium_discount = (current_price - low_96h) / range_96h
+                        premium_threshold = high_96h - (range_96h * 0.30) # Top 30%
                         if current_price >= premium_threshold and trade_strategy == "TREND" and trade_direction == "LONG":
                             in_premium_zone = True
-                            logger.info(f"{symbol} - Price in Premium Zone (Top 30% of 48h). Flagged for Overextension Index.")
+                            logger.info(f"{symbol} - Price in Premium Zone (Top 30% of 96h). Flagged for Overextension Index.")
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 1: MOMENTUM EXHAUSTION ──────────────────
                     momentum_penalty = 0.0
@@ -1015,10 +1015,6 @@ class ApexSystem:
                         v7_score -= 20
                         logger.info(f"{symbol} - Data Health penalty: -20 (Score: {health_score:.1f}). Only LIMIT/Shadow.")
                         
-                    if momentum_penalty > 0:
-                        v7_score -= momentum_penalty
-                        logger.info(f"{symbol} - Momentum Exhaustion penalty: -{momentum_penalty} applied to V7 Score.")
-                    
                     # ─── V9 QUANT INDICES (MULTICOLLINEARITY FIX) ─────────────────────────
                     # 1. OVEREXTENSION INDEX
                     overext_points = 0
@@ -1033,14 +1029,20 @@ class ApexSystem:
                     elif fvg_count > 10: overext_points += 2
                     elif fvg_count > 8: overext_points += 1
                     
-                    overext_penalty = 0
-                    if overext_points >= 6: overext_penalty = 30
-                    elif overext_points >= 4: overext_penalty = 20
-                    elif overext_points == 3: overext_penalty = 10
+                    base_penalties = {
+                        0: 0, 1: 5, 2: 8, 3: 10, 4: 12, 5: 15, 6: 18, 7: 20, 8: 22
+                    }
+                    overext_base = base_penalties.get(min(overext_points, 8), 22)
+                    
+                    if breadth_pct < 20.0:
+                        overext_penalty = overext_base * 0.4
+                    elif breadth_pct < 40.0:
+                        overext_penalty = overext_base * 0.65
+                    else:
+                        overext_penalty = float(overext_base)
                     
                     if overext_penalty > 0:
-                        v7_score -= overext_penalty
-                        logger.info(f"{symbol} - Overextension Index: {overext_points} pts. Applied penalty: -{overext_penalty}")
+                        logger.info(f"{symbol} - Overextension Index: {overext_points} pts. Base: {overext_base}, Final: -{overext_penalty:.1f}")
 
                     # 2. STRUCTURAL CHOP INDEX
                     chop_points = 0
@@ -1072,8 +1074,16 @@ class ApexSystem:
                     elif chop_points == 2: chop_penalty = 10
                     
                     if chop_penalty > 0:
-                        v7_score -= chop_penalty
-                        logger.info(f"{symbol} - Structural Chop Index: {chop_points} pts. Applied penalty: -{chop_penalty}")
+                        logger.info(f"{symbol} - Structural Chop Index: {chop_points} pts. Base penalty: -{chop_penalty}")
+
+                    # 3. PENALTY AGGREGATION WITH CAP (-35 MAX)
+                    total_penalty = momentum_penalty + overext_penalty + chop_penalty
+                    MAX_TOTAL_PENALTY = 35.0
+                    total_penalty = min(total_penalty, MAX_TOTAL_PENALTY)
+                    
+                    if total_penalty > 0:
+                        v7_score -= total_penalty
+                        logger.info(f"{symbol} - Total Structural/Momentum Penalty applied: -{total_penalty:.1f} (Capped at 35)")
 
                     # ─── MTF HARD CAP ──────────────────────────────────────────────────────────
                     if mtf_val < 0:
@@ -1150,6 +1160,20 @@ class ApexSystem:
                     # ─── FINAL V7 CALIBRATION & GATE ───────────────────────────────────────────
                     # In V10.5 Data Collection Mode, we use raw score directly. Calibration comes after training.
                     isotonic_win_prob = v7_score  # We don't have enough data yet, use raw as proxy
+                    
+                    if regime_val == 'BULL':
+                        if breadth_pct > 60: dynamic_min_score = 45.0
+                        elif breadth_pct > 40: dynamic_min_score = 48.0
+                        else: dynamic_min_score = 50.0
+                    elif regime_val == 'SIDEWAYS':
+                        if breadth_pct > 40: dynamic_min_score = 45.0
+                        elif breadth_pct > 20: dynamic_min_score = 38.0
+                        else: dynamic_min_score = 35.0
+                    elif regime_val == 'BEAR':
+                        if breadth_pct > 40: dynamic_min_score = 50.0
+                        else: dynamic_min_score = 55.0
+                    else:
+                        dynamic_min_score = 48.0
                         
                     if v7_score < dynamic_min_score:
                         logger.info(f"{symbol} - [BLOCKED] V7 Score: {v7_score:.1f}/100. Insufficient edge. Skipping.")

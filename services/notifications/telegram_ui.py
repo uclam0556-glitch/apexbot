@@ -202,12 +202,17 @@ async def process_market(callback: CallbackQuery):
         alt_season = "🚀 Alt Season!" if btc_dom < 48 else ("⚖️ Нейтрально" if btc_dom < 55 else "₿ BTC доминирует")
     except Exception:
         fg_val, fg_label, fg_emoji, btc_dom, alt_season = 50, "Neutral", "😐", 55.0, "⚖️"
+        oc_flow, oc_sopr = 0.0, 1.0
 
     regime_emoji = {"BULL": "🟢 Бычий", "BEAR": "🔴 Медвежий",
                     "SIDEWAYS": "🟡 Боковик", "CRISIS": "⚠️ Кризис"}.get(global_state.regime, "⚪")
 
-    flow_type = "Outflow (Bullish 🟢)" if oc_flow < 0 else "Inflow (Bearish 🔴)" if oc_flow > 0 else "Нейтрально ⚪"
-
+    if oc_flow is not None:
+        flow_type = "Outflow (Bullish 🟢)" if oc_flow < 0 else "Inflow (Bearish 🔴)" if oc_flow > 0 else "Нейтрально ⚪"
+    else:
+        flow_type = "Нет данных ⚪"
+        oc_flow = 0.0
+        
     text = (
         "🌐 <b>Обзор рынка & On-Chain</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
