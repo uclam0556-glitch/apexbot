@@ -141,6 +141,40 @@ def create_app() -> FastAPI:
             logger.error(f"Shadow trades error: {e}")
             return []
 
+    @app.get("/api/export-shadow-csv")
+    async def export_shadow_csv():
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                query = """
+                    SELECT st.id, st.symbol, s.direction, s.strategy, s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1,
+                           s.block_reason, s.v7_score_raw as v7_score, COALESCE(st.outcome, 'TRACKING') as status,
+                           st.mfe_pct, st.mae_pct, st.created_at, st.resolved_at
+                    FROM shadow_trades st
+                    JOIN signals s ON st.signal_id = s.id
+                    ORDER BY st.created_at DESC
+                    LIMIT 50000
+                """
+                rows = await conn.fetch(query)
+                
+            if not rows:
+                return Response(content="No data", media_type="text/plain")
+                
+            import csv
+            import io
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=dict(rows[0]).keys())
+            writer.writeheader()
+            for r in rows:
+                writer.writerow(dict(r))
+                
+            response = Response(content=output.getvalue(), media_type="text/csv")
+            response.headers["Content-Disposition"] = "attachment; filename=shadow_trades_database.csv"
+            return response
+        except Exception as e:
+            logger.error(f"CSV Export error: {e}")
+            return Response(content=f"Error exporting CSV: {e}", status_code=500)
+
     @app.get("/api/shadow-stats")
     async def get_shadow_stats():
         try:
