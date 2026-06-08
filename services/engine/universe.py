@@ -17,6 +17,7 @@ class DynamicUniverse:
         'APE/USDT',    # 0.0% WR, 16 resolved
         'CHZ/USDT',    # 0.0% WR, 26 resolved
         'EGLD/USDT',   # 0.0% WR, 21 resolved
+        'JTO/USDT',    # Systematic losses > MAE
     ]
     
     # Priority symbols (high win rate, enough data):

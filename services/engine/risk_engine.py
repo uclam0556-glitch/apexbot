@@ -613,21 +613,23 @@ class RiskEngine:
         max_sl_allowed = entry * 0.045
         sl_distance_pct = sl_distance / entry * 100
         atr_pct = atr / entry * 100
-        min_tp_pct = sl_distance_pct * 1.5
-
         # Regime-based limits & volatility-based ATR targets
         if regime == "BULL":
             atr_target_pct = atr_pct * 2.0
             max_tp_pct = 8.0 if (v7_score >= 85 and mtf_score >= 6.0) else 6.0
+            min_tp_pct = sl_distance_pct * 1.5
         elif regime == "SIDEWAYS":
             atr_target_pct = atr_pct * 1.3
             max_tp_pct = 4.0 if v7_score >= 85 else 3.5
+            min_tp_pct = sl_distance_pct * 1.0
         elif regime == "CAPITULATION":
             atr_target_pct = atr_pct * 1.5
             max_tp_pct = 4.0
+            min_tp_pct = sl_distance_pct * 1.5
         else:
             atr_target_pct = atr_pct * 1.2
             max_tp_pct = 3.0
+            min_tp_pct = sl_distance_pct * 1.5
 
         # Overextension check (If Z-Score or RSI is hot, compress the target to prevent late-reversal traps)
         if z_score > 2.5 or rsi > 75:
@@ -978,9 +980,14 @@ class RiskEngine:
                             tp2_pb = best_limit * (1 + 3.0 / 100)
                             tp3_pb = best_limit * (1 + 4.0 / 100)
                         else:
-                            tp1_pb = best_limit * (1 + new_tp_pct / 100)
-                            tp2_pb = best_limit * (1 + new_tp_pct * 1.2 / 100)
-                            tp3_pb = best_limit * (1 + new_tp_pct * 1.5 / 100)
+                            if regime == 'SIDEWAYS':
+                                tp1_rr, tp2_rr, tp3_rr = 1.0, 1.5, 2.5
+                            else:
+                                tp1_rr, tp2_rr, tp3_rr = 1.5, 2.5, 4.0
+                                
+                            tp1_pb = best_limit * (1 + new_sl_dist_pct * tp1_rr / 100)
+                            tp2_pb = best_limit * (1 + new_sl_dist_pct * tp2_rr / 100)
+                            tp3_pb = best_limit * (1 + new_sl_dist_pct * tp3_rr / 100)
                         
                         # Phase 1 / Phase 2 Paper Watchlist Integration
                         import asyncio

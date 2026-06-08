@@ -179,8 +179,18 @@ class ShadowTradeMonitor:
                 
             if status == 'TRACKING' and now - created_at > timeout_delta:
                 status = 'TIMEOUT'
-            
+                
+            duration_bars = int((now - created_at).total_seconds() / 60)
             if status != 'TRACKING':
-                await update_shadow_trade_status(t['id'], status, mfe, mae)
+                await update_shadow_trade_status(t['id'], status, mfe, mae, duration_bars)
                 logger.info(f"[SHADOW TRADE] {sym} {direction} [{strategy}] resolved as {status}. MFE: +{mfe:.2f}%, MAE: {mae:.2f}%")
+            else:
+                # Still tracking, but update MFE/MAE in DB so we can see it on the dashboard
+                pool = await __import__('database.timescaledb').timescaledb.get_pool()
+                async with pool.acquire() as conn:
+                    await conn.execute('''
+                        UPDATE shadow_trades 
+                        SET mfe_pct = $1, mae_pct = $2, bars_to_outcome = $3
+                        WHERE id = $4
+                    ''', mfe, mae, duration_bars, t['id'])
 

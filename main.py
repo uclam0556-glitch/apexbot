@@ -1041,12 +1041,12 @@ class ApexSystem:
                     # ─── V7 ADAPTIVE SCORING (0-100) ───────────────────────────────────────────
                     v7_score = ultra_score * 10.0
                     
-                    if 75 <= health_score < 90:
+                    if 70 <= health_score < 80:
+                        v7_score -= 5
+                        logger.info(f"{symbol} - Data Health penalty: -5 (Score: {health_score:.1f}).")
+                    elif 60 <= health_score < 70:
                         v7_score -= 10
-                        logger.info(f"{symbol} - Data Health penalty: -10 (Score: {health_score:.1f}). MARKET disabled.")
-                    elif 60 <= health_score < 75:
-                        v7_score -= 20
-                        logger.info(f"{symbol} - Data Health penalty: -20 (Score: {health_score:.1f}). Only LIMIT/Shadow.")
+                        logger.info(f"{symbol} - Data Health penalty: -10 (Score: {health_score:.1f}).")
                         
                     # ─── V9 QUANT INDICES (MULTICOLLINEARITY FIX) ─────────────────────────
                     # 1. OVEREXTENSION INDEX
@@ -1218,8 +1218,12 @@ class ApexSystem:
                     is_approved = (block_reason is None)
                     status_str = "APPROVED" if is_approved else "REJECTED_BY_FILTER"
                     
-                    proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
-                    proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
+                    proxy_sl_dist = 1.5 * atr_1h
+                    proxy_sl = current_price - proxy_sl_dist if trade_direction == "LONG" else current_price + proxy_sl_dist
+                    
+                    proxy_tp_rr = 1.0 if regime_val == "SIDEWAYS" else 1.5
+                    proxy_tp_dist = proxy_sl_dist * proxy_tp_rr
+                    proxy_tp = current_price + proxy_tp_dist if trade_direction == "LONG" else current_price - proxy_tp_dist
                     
                     # Create shadow trade for everything to collect stats
                     await create_shadow_trade(
@@ -1263,10 +1267,6 @@ class ApexSystem:
                         global_state.hot_coins.sort(key=lambda x: x['score'], reverse=True)
                         global_state.hot_coins = global_state.hot_coins[:10]
 
-                    min_score = getattr(self.config.trading, 'min_score_for_signal', 6.0)
-                    if ultra_score < min_score:
-                        logger.info(f"{symbol} - Ultra score {ultra_score:.1f} < {min_score}. Skipping.")
-                        continue
 
                     # ─── ADVERSARIAL CHECK ─────────────────────────────────────────────────────
                     all_swing_points = smc_analysis.swing_highs + smc_analysis.swing_lows
