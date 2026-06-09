@@ -1226,6 +1226,14 @@ class ApexSystem:
                     proxy_tp_dist = proxy_sl_dist * proxy_tp_rr
                     proxy_tp = current_price + proxy_tp_dist if trade_direction == "LONG" else current_price - proxy_tp_dist
                     
+                    proxy_tp2_rr = 1.5 if regime_val == "SIDEWAYS" else 2.5
+                    proxy_tp2_dist = proxy_sl_dist * proxy_tp2_rr
+                    proxy_tp2 = current_price + proxy_tp2_dist if trade_direction == "LONG" else current_price - proxy_tp2_dist
+                    
+                    proxy_tp3_rr = 2.5 if regime_val == "SIDEWAYS" else 4.0
+                    proxy_tp3_dist = proxy_sl_dist * proxy_tp3_rr
+                    proxy_tp3 = current_price + proxy_tp3_dist if trade_direction == "LONG" else current_price - proxy_tp3_dist
+                    
                     # Create shadow trade for everything to collect stats
                     await create_shadow_trade(
                         symbol=symbol,
@@ -1234,6 +1242,8 @@ class ApexSystem:
                         entry_price=current_price,
                         stop_loss=proxy_sl,
                         take_profit_1=proxy_tp,
+                        take_profit_2=proxy_tp2,
+                        take_profit_3=proxy_tp3,
                         primary_block_reason=block_reason or "None",
                         all_block_reasons=[f"V7={v7_score:.1f}", f"Gate={dynamic_min_score:.1f}"],
                         v7_score=v7_score,
