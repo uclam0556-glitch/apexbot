@@ -575,11 +575,7 @@ class RiskEngine:
             raise ValueError(f"Entry price must be positive, got {entry}")
         if atr <= 0:
             raise ValueError(f"ATR must be positive, got {atr}")
-        if direction != "LONG":
-            self._log.warning("spot_only_block", direction=direction, reason="Risk Engine currently restricted to LONG only (Spot-Only mode).")
-            return None
-            
-        is_long = True
+        is_long = direction == "LONG"
         key_levels = key_levels or []
 
         # 1. Stop Loss - Structural Placement
@@ -592,7 +588,7 @@ class RiskEngine:
             sl_distance = min_sl_dist
             stop_loss = entry - sl_distance
 
-        # Candidate: swing LOWS below entry (find the swing low value itself)
+        # Candidate: nearest swing anchor (low for LONG, high for SHORT)
         swing_list = []
         if isinstance(swing_points, list):
             swing_list = swing_points
@@ -600,14 +596,22 @@ class RiskEngine:
             swing_list = swing_points.get("lows", []) + swing_points.get("highs", [])
 
         candidates = []
-        for sp in swing_list:
-            if hasattr(sp, 'type') and hasattr(sp, 'price'):
-                if sp.type == "LOW" and sp.price < entry:
-                    candidates.append(sp.price)
-            elif isinstance(sp, dict) and sp.get("type") == "LOW" and sp.get("price", 0) < entry:
-                candidates.append(sp.get("price"))
-
-        swing_low = max(candidates) if candidates else (entry - 2.0 * atr)
+        if is_long:
+            for sp in swing_list:
+                if hasattr(sp, 'type') and hasattr(sp, 'price'):
+                    if sp.type == "LOW" and sp.price < entry:
+                        candidates.append(sp.price)
+                elif isinstance(sp, dict) and sp.get("type") == "LOW" and sp.get("price", 0) < entry:
+                    candidates.append(sp.get("price"))
+            swing_anchor = max(candidates) if candidates else (entry - 2.0 * atr)
+        else:
+            for sp in swing_list:
+                if hasattr(sp, 'type') and hasattr(sp, 'price'):
+                    if sp.type == "HIGH" and sp.price > entry:
+                        candidates.append(sp.price)
+                elif isinstance(sp, dict) and sp.get("type") == "HIGH" and sp.get("price", 0) > entry:
+                    candidates.append(sp.get("price"))
+            swing_anchor = min(candidates) if candidates else (entry + 2.0 * atr)
 
         # SL maximum check: 8.0% cap
         # If the required structural stop loss exceeds 8.0%, we skip the trade to maintain good P&L math
@@ -640,18 +644,29 @@ class RiskEngine:
         atr_target = atr_target_pct
 
         # 3. Locate closest structural target/friction point (min of nearest resistance, HVN, and unmitigated FVG)
-        # Safely parse swing points list or dict (Resistance)
-        swing_highs = []
+        
+        # A) Structural support/resistance
+        target_swings = []
         for sp in swing_list:
             if hasattr(sp, 'type') and hasattr(sp, 'price'):
-                if sp.type == "HIGH" and sp.price > entry:
-                    swing_highs.append(sp.price)
-            elif isinstance(sp, dict) and sp.get("type") == "HIGH" and sp.get("price", 0) > entry:
-                swing_highs.append(sp.get("price"))
-        nearest_resistance = min(swing_highs) if swing_highs else None
-        nearest_resistance_pct = (nearest_resistance - entry) / entry * 100 if nearest_resistance else None
+                if is_long and sp.type == "HIGH" and sp.price > entry:
+                    target_swings.append(sp.price)
+                elif not is_long and sp.type == "LOW" and sp.price < entry:
+                    target_swings.append(sp.price)
+            elif isinstance(sp, dict):
+                if is_long and sp.get("type") == "HIGH" and sp.get("price", 0) > entry:
+                    target_swings.append(sp.get("price"))
+                elif not is_long and sp.get("type") == "LOW" and sp.get("price", 0) < entry:
+                    target_swings.append(sp.get("price"))
+                    
+        if is_long:
+            nearest_resistance = min(target_swings) if target_swings else None
+            nearest_resistance_pct = (nearest_resistance - entry) / entry * 100 if nearest_resistance else None
+        else:
+            nearest_resistance = max(target_swings) if target_swings else None
+            nearest_resistance_pct = (entry - nearest_resistance) / entry * 100 if nearest_resistance else None
 
-        # HVN / POC (High Volume Nodes act as key friction barriers where price stalls)
+        # B) HVN / POC (High Volume Nodes act as key friction barriers where price stalls)
         hvn_list = []
         if isinstance(volume_nodes, list):
             hvn_list = volume_nodes
@@ -661,14 +676,21 @@ class RiskEngine:
         valid_hvns = []
         for vn in hvn_list:
             if hasattr(vn, 'type') and hasattr(vn, 'price'):
-                if vn.type in ["HVN", "POC"] and vn.price > entry:
-                    valid_hvns.append(vn.price)
-            elif isinstance(vn, dict) and vn.get("type") in ["HVN", "POC"] and vn.get("price", 0) > entry:
-                valid_hvns.append(vn.get("price"))
-        nearest_hvn = min(valid_hvns) if valid_hvns else None
-        nearest_hvn_pct = (nearest_hvn - entry) / entry * 100 if nearest_hvn else None
+                if vn.type in ["HVN", "POC"]:
+                    if is_long and vn.price > entry: valid_hvns.append(vn.price)
+                    elif not is_long and vn.price < entry: valid_hvns.append(vn.price)
+            elif isinstance(vn, dict) and vn.get("type") in ["HVN", "POC"]:
+                if is_long and vn.get("price", 0) > entry: valid_hvns.append(vn.get("price"))
+                elif not is_long and vn.get("price", 0) < entry: valid_hvns.append(vn.get("price"))
+                
+        if is_long:
+            nearest_hvn = min(valid_hvns) if valid_hvns else None
+            nearest_hvn_pct = (nearest_hvn - entry) / entry * 100 if nearest_hvn else None
+        else:
+            nearest_hvn = max(valid_hvns) if valid_hvns else None
+            nearest_hvn_pct = (entry - nearest_hvn) / entry * 100 if nearest_hvn else None
 
-        # FVG (Unmitigated Bearish FVGs represent fresh institutional order imbalance acting as strong resistance)
+        # C) FVG (Unmitigated FVGs represent fresh institutional order imbalance acting as strong resistance/support)
         fvg_list = []
         if isinstance(imbalance_zones, list):
             fvg_list = imbalance_zones
@@ -676,21 +698,33 @@ class RiskEngine:
             fvg_list = imbalance_zones.get("zones", [])
             
         valid_fvgs = []
+        target_fvg_type = "BEARISH_FVG" if is_long else "BULLISH_FVG"
+        
         for fvg in fvg_list:
-            if hasattr(fvg, 'type') and hasattr(fvg, 'low'):
-                if fvg.type == "BEARISH_FVG" and fvg.low > entry:
-                    # Only target unmitigated FVGs (not fully filled, fill_pct < 0.8)
+            if hasattr(fvg, 'type'):
+                if fvg.type == target_fvg_type:
                     filled = getattr(fvg, 'filled', False)
                     fill_pct = getattr(fvg, 'fill_pct', 0.0)
                     if not filled and fill_pct < 0.8:
-                        valid_fvgs.append(fvg.low)
-            elif isinstance(fvg, dict) and fvg.get("type") == "BEARISH_FVG" and fvg.get("low", 0) > entry:
+                        if is_long and hasattr(fvg, 'low') and fvg.low > entry:
+                            valid_fvgs.append(fvg.low)
+                        elif not is_long and hasattr(fvg, 'high') and fvg.high < entry:
+                            valid_fvgs.append(fvg.high)
+            elif isinstance(fvg, dict) and fvg.get("type") == target_fvg_type:
                 filled = fvg.get("filled", False)
                 fill_pct = fvg.get("fill_pct", 0.0)
                 if not filled and fill_pct < 0.8:
-                    valid_fvgs.append(fvg.get("low"))
-        nearest_fvg = min(valid_fvgs) if valid_fvgs else None
-        nearest_fvg_pct = (nearest_fvg - entry) / entry * 100 if nearest_fvg else None
+                    if is_long and fvg.get("low", 0) > entry:
+                        valid_fvgs.append(fvg.get("low"))
+                    elif not is_long and fvg.get("high", 0) < entry:
+                        valid_fvgs.append(fvg.get("high"))
+                        
+        if is_long:
+            nearest_fvg = min(valid_fvgs) if valid_fvgs else None
+            nearest_fvg_pct = (nearest_fvg - entry) / entry * 100 if nearest_fvg else None
+        else:
+            nearest_fvg = max(valid_fvgs) if valid_fvgs else None
+            nearest_fvg_pct = (entry - nearest_fvg) / entry * 100 if nearest_fvg else None
 
         # Helper to classify target types
         target_types = {}
@@ -1148,7 +1182,10 @@ class RiskEngine:
                 return None
 
         # Map TP percent back to absolute price
-        tp1 = entry * (1 + raw_tp_pct / 100)
+        if is_long:
+            tp1 = entry * (1 + raw_tp_pct / 100)
+        else:
+            tp1 = entry * (1 - raw_tp_pct / 100)
         tp1_rr = raw_tp_pct / sl_distance_pct
         target_type_selected = target_types.get(structure_target, "ATR")
 
@@ -1447,28 +1484,40 @@ class RiskEngine:
         For SHORT trades: nearest swing HIGH above entry, plus SL_BUFFER_PCT.
         Fallback: ATR-based SL (2.0 × ATR).
         """
-        buffer_mult = 1.0 - SL_BUFFER_PCT
-
         swing_list = []
         if isinstance(swing_points, list):
             swing_list = swing_points
         elif isinstance(swing_points, dict):
             swing_list = swing_points.get("lows", []) + swing_points.get("highs", [])
 
-        # Candidate: swing LOWS below entry
-        candidates = []
-        for sp in swing_list:
-            if hasattr(sp, 'type') and hasattr(sp, 'price'):
-                if sp.type == "LOW" and sp.price < entry:
-                    candidates.append(sp.price)
-            elif isinstance(sp, dict) and sp.get("type") == "LOW" and sp.get("price", 0) < entry:
-                candidates.append(sp.get("price"))
-
-        if candidates:
-            nearest = max(candidates)  # highest low below entry
-            return nearest * buffer_mult
-        else:
+        if is_long:
+            buffer_mult = 1.0 - SL_BUFFER_PCT
+            candidates = []
+            for sp in swing_list:
+                if hasattr(sp, 'type') and hasattr(sp, 'price'):
+                    if sp.type == "LOW" and sp.price < entry:
+                        candidates.append(sp.price)
+                elif isinstance(sp, dict) and sp.get("type") == "LOW" and sp.get("price", 0) < entry:
+                    candidates.append(sp.get("price"))
+                    
+            if candidates:
+                nearest = max(candidates)  # highest low below entry
+                return nearest * buffer_mult
             return entry - 2.0 * atr
+        else:
+            buffer_mult = 1.0 + SL_BUFFER_PCT
+            candidates = []
+            for sp in swing_list:
+                if hasattr(sp, 'type') and hasattr(sp, 'price'):
+                    if sp.type == "HIGH" and sp.price > entry:
+                        candidates.append(sp.price)
+                elif isinstance(sp, dict) and sp.get("type") == "HIGH" and sp.get("price", 0) > entry:
+                    candidates.append(sp.get("price"))
+                    
+            if candidates:
+                nearest = min(candidates)  # lowest high above entry
+                return nearest * buffer_mult
+            return entry + 2.0 * atr
 
     @staticmethod
     def _find_tp1(

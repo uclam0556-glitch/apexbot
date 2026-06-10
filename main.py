@@ -646,6 +646,15 @@ class ApexSystem:
                 dynamic_min_score = 42.0
                 logger.info(f"RISK-ON: Breadth > 70% ({breadth_pct:.1f}%). Lowering min probability gate to 48.0%.")
 
+            # Fetch BTC 1h change for relative weakness tracking
+            btc_change_1h_global = 0.0
+            try:
+                btc_1h_df_global = await self.fetch_market_data('BTC/USDT', '1h', 5)
+                if isinstance(btc_1h_df_global, pd.DataFrame) and len(btc_1h_df_global) >= 5:
+                    btc_change_1h_global = (btc_1h_df_global['close'].iloc[-1] - btc_1h_df_global['close'].iloc[-5]) / btc_1h_df_global['close'].iloc[-5] * 100
+            except Exception as e:
+                logger.warning(f"Failed to fetch BTC 1h data for relative weakness: {e}")
+
             for symbol in scan_symbols:
                 if not self.running:
                     break
@@ -868,6 +877,23 @@ class ApexSystem:
                     
                     fear_greed_val = market_ctx.get('fear_greed', {}).get('value', 50)
                     
+                    # ─── LIQUIDATION SQUEEZE (PHASE 2) ───────────────────────────────────────
+                    from services.api.binance_futures import binance_fapi
+                    from services.engine.signals.funding_engine import funding_engine
+                    from services.engine.signals.lsr_engine import lsr_engine
+                    
+                    try:
+                        funding_rate, lsr_val = await asyncio.gather(
+                            binance_fapi.get_funding_rate(symbol),
+                            binance_fapi.get_long_short_ratio(symbol)
+                        )
+                    except Exception as e:
+                        logger.warning(f"{symbol} - Binance API error: {e}")
+                        funding_rate, lsr_val = 0.0, 1.0
+                        
+                    funding_signal = funding_engine.evaluate(funding_rate)
+                    lsr_signal = lsr_engine.evaluate(lsr_val)
+                    
                     from services.engine.direction_selector import direction_selector
                     trade_direction = direction_selector.select_direction(
                         symbol=symbol,
@@ -875,7 +901,11 @@ class ApexSystem:
                         cvd_signal=cvd_signal,
                         regime=regime_val,
                         premium_discount=premium_discount,
-                        fear_greed=fear_greed_val
+                        fear_greed=fear_greed_val,
+                        symbol_change_1h=price_change_1h,
+                        btc_change_1h=btc_change_1h_global,
+                        funding_bias=funding_signal.bias,
+                        lsr_bias=lsr_signal.bias
                     )
                     
                     if not trade_direction:
@@ -1102,6 +1132,13 @@ class ApexSystem:
                     
                     # ─── V7 ADAPTIVE SCORING (0-100) ───────────────────────────────────────────
                     v7_score = ultra_score * 10.0
+                    
+                    # ─── PHASE 2 LIQUIDATION MODIFIERS ─────────────────────────────────────────
+                    if trade_direction == "SHORT":
+                        v7_score += funding_signal.score_modifier
+                        v7_score += lsr_signal.score_modifier
+                        if funding_signal.score_modifier != 0 or lsr_signal.score_modifier != 0:
+                            logger.info(f"{symbol} - Phase 2 Shorts applied: Funding {funding_signal.bias} ({funding_signal.score_modifier}), LSR {lsr_signal.bias} ({lsr_signal.score_modifier})")
                         
                     # ─── V9 QUANT INDICES (MULTICOLLINEARITY FIX) ─────────────────────────
                     # 1. OVEREXTENSION INDEX
@@ -1122,10 +1159,12 @@ class ApexSystem:
                     }
                     overext_base = base_penalties.get(min(overext_points, 8), 22)
                     
-                    if breadth_pct < 20.0:
+                    if breadth_pct < 20.0 and trade_direction == "LONG":
                         overext_penalty = overext_base * 0.4
-                    elif breadth_pct < 40.0:
+                    elif breadth_pct < 40.0 and trade_direction == "LONG":
                         overext_penalty = overext_base * 0.65
+                    elif breadth_pct > 80.0 and trade_direction == "SHORT":
+                        overext_penalty = overext_base * 2.0  # Double penalty for shorts in overheated bull market
                     else:
                         overext_penalty = float(overext_base)
                     
@@ -1243,6 +1282,12 @@ class ApexSystem:
                         if avg_vol > 0 and (last_vol / avg_vol) > 1.5:
                             v7_score += 35.0  # Massive bonus, but must still pass the gate
                             logger.info(f"🌟 {symbol} A+ SETUP BONUS! (RSI={rsi_now:.1f}, CVD+, OFI+, VOL+). Applying +35 points.")
+                    elif trade_direction == "SHORT" and rsi_now > 72 and cvd_score_val <= 0 and ofi_real.ofi_score < 0:
+                        last_vol = df_15m_check['volume'].iloc[-2] if not df_15m_check.empty else 0
+                        avg_vol = df_15m_check['volume'].iloc[-12:-2].mean() if not df_15m_check.empty else 1
+                        if avg_vol > 0 and (last_vol / avg_vol) > 1.5:
+                            v7_score += 35.0
+                            logger.info(f"🌟 {symbol} A+ SETUP BONUS (SHORT)! (RSI={rsi_now:.1f}, CVD-, OFI-, VOL+). Applying +35 points.")
                             
                     # ─── V11 FINAL V7 CALIBRATION & GATE ─────────────────────────────────────────
                     # Apply MTF bonus
@@ -1596,6 +1641,10 @@ class ApexSystem:
                         risk_pct *= 0.5
                         
                     risk_usd = deposit * risk_pct / 100
+                    
+                    if trade_direction == "SHORT":
+                        risk_usd *= 0.75
+                        logger.info(f"{symbol} - SHORT trade: Risk reduced by 25% to protect against squeeze.")
 
                     # Mean Reversion: reduce risk (shorter TP, tighter market)
                     if trade_strategy == "MEAN_REVERSION":
