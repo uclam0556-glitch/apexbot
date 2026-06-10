@@ -343,6 +343,12 @@ async def update_shadow_trade(signal_id: int, outcome: str, mfe_pct: float, mae_
         await conn.execute(query1, outcome, mfe_pct, mae_pct, bars, datetime.utcnow(), signal_id)
         await conn.execute(query2, outcome, mfe_pct, mae_pct, bars, datetime.utcnow(), signal_id)
 
+async def update_signal_status(signal_id: int, status: str):
+    pool = await get_pool()
+    query = "UPDATE signals SET status = $1 WHERE id = $2"
+    async with pool.acquire() as conn:
+        await conn.execute(query, status, signal_id)
+
 async def get_open_shadow_trades() -> list:
     pool = await get_pool()
     query = '''
@@ -482,7 +488,7 @@ async def create_shadow_trade(
             'symbol': symbol,
             'strategy': strategy,
             'direction': direction,
-            'status': 'APPROVED',
+            'status': 'OPEN',
             'block_reason': 'None',
             'entry_price': entry_price,
             'sl_price': stop_loss,
@@ -492,7 +498,7 @@ async def create_shadow_trade(
             'v7_score_raw': v7_score,
             'mtf_score': mtf_score,
             'regime': regime,
-            'is_shadow': True
+            'is_shadow': False
         }
         signal_id = await insert_signal_record(signal_dict)
         if signal_id:

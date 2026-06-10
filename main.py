@@ -60,7 +60,7 @@ from services.engine.smc_core import FormalizedSMCCore
 from services.adversarial.tester import AdversarialSignalTester
 from services.engine.confluence_v4 import ConfluenceEngineV4
 from services.engine.risk_engine import RiskEngine
-from database.timescaledb import init_timescaledb, insert_signal_record, create_shadow_trade, create_shadow_trade_blocked, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record, is_on_cooldown, is_pullback_on_structure_cooldown, insert_shadow_trade, get_pullback_items_by_status, get_open_trades
+from database.timescaledb import init_timescaledb, insert_signal_record, create_shadow_trade, create_shadow_trade_blocked, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record, is_on_cooldown, is_pullback_on_structure_cooldown, insert_shadow_trade, get_pullback_items_by_status, get_open_trades, update_signal_status
 from core.circuit_breaker import CircuitBreaker          # LEGACY → migrate to PortfolioRiskEngine v11.1
 from core.correlation_filter import CorrelationFilter    # LEGACY → migrate to PortfolioRiskEngine v11.1
 from core.transaction_costs import TransactionCostModel  # SHIM → delegates to services/execution/transaction_cost_model.py
@@ -454,6 +454,7 @@ class ApexSystem:
                                 max_drawdown_pct,
                                 int(duration_minutes)
                             )
+                            await update_signal_status(trade['id'], status)
                             # Cleanup memory
                             from shared.state import global_state
                             if trade['id'] in global_state.trade_excursions:
@@ -1431,6 +1432,45 @@ class ApexSystem:
                             mtf_score=mtf_score_val
                         )
                         self.position_guard.on_trade_opened(symbol)
+
+                        # Send Telegram notification
+                        try:
+                            from aiogram import Bot
+                            token = self.config.alerts.telegram_bot_token.get_secret_value()
+                            chat_id_str = self.config.alerts.telegram_chat_id
+                            if token and chat_id_str:
+                                bot = Bot(token=token)
+                                from services.notifications.telegram_ui import send_signal
+                                signal_data_mock = {
+                                    "symbol": symbol,
+                                    "direction": trade_direction,
+                                    "strategy": trade_strategy or "TREND",
+                                    "source": "MARKET",
+                                    "entry_price": current_price,
+                                    "stop_loss": proxy_sl,
+                                    "tp1": proxy_tp,
+                                    "tp2": proxy_tp2,
+                                    "tp3": proxy_tp3,
+                                    "score": v7_score,
+                                    "regime": regime_val,
+                                    "rsi": rsi_now,
+                                    "funding_rate": market_ctx.get("funding", {}).get("rate_pct", 0.0),
+                                    "oi_change": market_ctx.get("open_interest", {}).get("change_pct", 0.0),
+                                    "fear_greed": market_ctx.get("fear_greed", {}).get("value", 50),
+                                    "btc_dominance": market_ctx.get("btc_dominance", {}).get("value", 55.0),
+                                    "vwap_label": indicators.get("vwap", {}).get("label", ""),
+                                    "ema_label": indicators.get("ema_ribbon", {}).get("label", ""),
+                                    "position_usd": 30.0,
+                                    "risk_usd": 15.0,
+                                    "rr_ratio": 1.5,
+                                    "confidence_bucket": confidence_data["bucket"],
+                                    "confidence_win_rate": confidence_data["win_rate"],
+                                    "confidence_sample_size": confidence_data["sample_size"]
+                                }
+                                await send_signal(bot, int(chat_id_str), signal_data_mock)
+                                await bot.session.close()
+                        except Exception as send_err:
+                            logger.error(f"Failed to send shadow signal to TG: {send_err}")
                     else:
                         await create_shadow_trade_blocked(
                             symbol=symbol,
