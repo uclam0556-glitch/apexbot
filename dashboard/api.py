@@ -102,7 +102,7 @@ def create_app() -> FastAPI:
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
-                rows = await conn.fetch("SELECT id, symbol, direction, strategy, entry_price, sl_price as stop_loss, tp1_price as take_profit_1, v7_score_raw as score, position_usd, created_at as opened_at, status FROM signals WHERE status IN ('OPEN', 'BREAKEVEN') ORDER BY created_at DESC")
+                rows = await conn.fetch("SELECT id, symbol, direction, strategy, entry_price, sl_price as stop_loss, tp1_price as take_profit_1, v7_score_raw as score, 0 as position_usd, created_at as opened_at, status FROM signals WHERE status IN ('OPEN', 'BREAKEVEN') ORDER BY created_at DESC")
             return [dict(r) for r in rows]
         except Exception as e:
             logger.error(f"Open trades error: {e}")
