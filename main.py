@@ -698,15 +698,12 @@ class ApexSystem:
                         logger.warning(f"{symbol} - Could not fetch 1h data. Skipping.")
                         continue
                         
-                    # ─── ADVANCED INSTITUTIONAL FILTER: CORRELATION RISK ──────────────────
+                    # ─── ADVANCED INSTITUTIONAL FILTER: CORRELATION RISK (LEGACY - DISABLED) ───
                     df_1d_sym = tf_data.get('1d', pd.DataFrame())
                     if not df_1d_sym.empty and open_and_pending_symbols:
                         prices_30d[symbol] = df_1d_sym['close']
-                        corr_result = self.correlation_filter.check_correlation(symbol, open_and_pending_symbols, prices_30d)
-                        if not corr_result.is_safe:
-                            logger.info(f"{symbol} - [BLOCKED] Correlation Risk. Highly correlated ({corr_result.max_correlation_value:.2f}) with open/pending position {corr_result.correlated_with}. Skipping.")
-                            await insert_filter_block_record(symbol, "UNKNOWN", "Correlation Risk", 0.0)
-                            continue
+                        # Legacy CorrelationFilter was removed in v11.0. 
+                        # Correlation is now handled by PortfolioRiskEngine.
                     
                     df_1h = tf_data['1h']
                     current_price = df_1h['close'].iloc[-1]
