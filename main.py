@@ -726,7 +726,13 @@ class ApexSystem:
 
                     # ─── BUG 9 & 10: DATA VALIDATOR (HARD BLOCKS & SCORING) ────────────────
                     try:
-                        last_ws_update = self.ws_manager.last_updates.get(symbol)
+                        ws_data = global_state.live_prices.get(symbol, {})
+                        if not ws_data:
+                            from shared.symbols import normalize_symbol
+                            ws_data = global_state.live_prices.get(normalize_symbol(symbol), {})
+                        last_ws_ts = ws_data.get("timestamp", 0)
+                        last_ws_update = datetime.utcfromtimestamp(last_ws_ts) if last_ws_ts > 0 else None
+
                         ohlcv_vol_series = tf_data['15m']['volume'].values[-20:] if '15m' in tf_data and len(tf_data['15m']) >= 20 else None
                         curr_vol_15m = tf_data['15m']['volume'].iloc[-1] if '15m' in tf_data and not tf_data['15m'].empty else avg_vol_3
                         prev_1h_price = df_1h['close'].iloc[-2] if len(df_1h) >= 2 else None
@@ -854,7 +860,13 @@ class ApexSystem:
                     low_100 = df_1h_recent['low'].min()
                     premium_discount = (current_price - low_100) / (high_100 - low_100) if high_100 > low_100 else 0.5
                     
-                    fear_greed_val = self.macro_state['fear_greed']['value'] if self.macro_state else 50
+                    price_change_1h = (
+                        (df_1h['close'].iloc[-1] - df_1h['close'].iloc[-5]) /
+                        df_1h['close'].iloc[-5] * 100
+                    ) if len(df_1h) >= 5 else 0.0
+                    market_ctx = await get_market_context(symbol, price_change_1h)
+                    
+                    fear_greed_val = market_ctx.get('fear_greed', {}).get('value', 50)
                     
                     from services.engine.direction_selector import direction_selector
                     trade_direction = direction_selector.select_direction(
@@ -1035,11 +1047,6 @@ class ApexSystem:
                     if trade_direction == "SHORT":
                         ind_score = -ind_score
 
-                    price_change_1h = (
-                        (df_1h['close'].iloc[-1] - df_1h['close'].iloc[-5]) /
-                        df_1h['close'].iloc[-5] * 100
-                    ) if len(df_1h) >= 5 else 0.0
-                    market_ctx = await get_market_context(symbol, price_change_1h)
                     ctx_score  = market_ctx.get("total_context_score", 0)
 
                     if trade_direction == "SHORT":
