@@ -453,7 +453,7 @@ def get_mtf_v7_bonus(mtf_score: float) -> float:
     elif mtf_score > 0.3:
         return 3.0
     elif mtf_score >= 0.0:
-        return -5.0
+        return 0.0
     else:
         return -20.0
 

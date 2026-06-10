@@ -1091,10 +1091,10 @@ class ApexSystem:
 
                     # ─── MTF MULTIPLIER ────────────────────────────────────────────────────────
                     mtf_val = mtf_score_val if trade_direction == "LONG" else -mtf_score_val
-                    if mtf_val >= 6.0:   mtf_mult = 1.20   # сильный тренд = бонус
-                    elif mtf_val >= 3.0: mtf_mult = 1.10   # умеренный тренд
+                    if mtf_val >= 0.7:   mtf_mult = 1.20   # сильный тренд = бонус
+                    elif mtf_val >= 0.3: mtf_mult = 1.10   # умеренный тренд
                     elif mtf_val >= 0.0: mtf_mult = 1.00   # нейтрально
-                    elif mtf_val >= -2.0: mtf_mult = 0.50  # слабо против = сильный штраф
+                    elif mtf_val >= -0.3: mtf_mult = 0.50  # слабо против = сильный штраф
                     else:                 mtf_mult = 0.25  # явно против = жесткий блок
 
                     base_score = confluence.raw_score + ind_bonus + ctx_bonus + cvd_bonus + mr_bonus
@@ -1438,15 +1438,19 @@ class ApexSystem:
                             max_exposure = 8
                     else:
                         if breadth_pct < 10.0:
-                            max_exposure = 0
-                            logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 10%. ALL new limits BLOCKED for {symbol}.")
-                        elif breadth_pct < 15.0:
-                            if symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"] and ultra_score >= 80:
+                            if scan_symbols.index(symbol) < 5 and ultra_score >= 80:
                                 max_exposure = 1
-                                logger.info(f"RISK-OFF EXCEPTION: Breadth {breadth_pct:.1f}% (10-15%) but {symbol} is Major with score {ultra_score:.1f} >= 80. Allowing limit.")
+                                logger.info(f"RISK-OFF EXCEPTION: Breadth {breadth_pct:.1f}% < 10% but {symbol} is Top-5 Leader. Allowing limit.")
                             else:
                                 max_exposure = 0
-                                logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% (10-15%). {symbol} blocked (Score < 80 or not major).")
+                                logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 10%. ALL new limits BLOCKED for {symbol}.")
+                        elif breadth_pct < 15.0:
+                            if (symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"] or scan_symbols.index(symbol) < 10) and ultra_score >= 75:
+                                max_exposure = 1
+                                logger.info(f"RISK-OFF EXCEPTION: Breadth {breadth_pct:.1f}% (10-15%) but {symbol} is Major/Top-10. Allowing limit.")
+                            else:
+                                max_exposure = 0
+                                logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% (10-15%). {symbol} blocked.")
                         elif breadth_pct < 40.0:
                             max_exposure = 3
                         elif regime_val == "SIDEWAYS" or breadth_pct <= 70.0:
@@ -2123,12 +2127,12 @@ class ApexSystem:
                                 max_exposure = 0
                                 logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 10%. ALL WAITING_STRUCTURE promotions BLOCKED for {symbol}.")
                             elif breadth_pct < 15.0:
-                                if symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"] and item['score'] >= 80:
+                                if symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"] and item['score'] >= 75:
                                     max_exposure = 1
-                                    logger.info(f"RISK-OFF EXCEPTION: Breadth {breadth_pct:.1f}% (10-15%) but {symbol} is Major with score {item['score']:.1f} >= 80. Allowing promotion.")
+                                    logger.info(f"RISK-OFF EXCEPTION: Breadth {breadth_pct:.1f}% (10-15%) but {symbol} is Major with score {item['score']:.1f} >= 75. Allowing promotion.")
                                 else:
                                     max_exposure = 0
-                                    logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% (10-15%). Promotion for {symbol} blocked (Score < 80 or not major).")
+                                    logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% (10-15%). Promotion for {symbol} blocked (Score < 75 or not major).")
                             elif breadth_pct < 40.0:
                                 max_exposure = 3
                             elif item['regime'] == "SIDEWAYS" or breadth_pct <= 70.0:

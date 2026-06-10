@@ -44,10 +44,10 @@ class DirectionSelector:
         if regime == "BEAR" and long_score < 4 and long_score > short_score:
             return None
         
-        if long_score >= 4 and long_score > short_score:
+        if long_score >= 3 and long_score > short_score:
             return "LONG"
         
-        if short_score >= 4 and short_score > long_score:
+        if short_score >= 3 and short_score > long_score:
             return "SHORT"
         
         return None  # нет чёткого направления
