@@ -603,7 +603,7 @@ class RiskEngine:
                         candidates.append(sp.price)
                 elif isinstance(sp, dict) and sp.get("type") == "LOW" and sp.get("price", 0) < entry:
                     candidates.append(sp.get("price"))
-            swing_anchor = max(candidates) if candidates else (entry - 2.0 * atr)
+            swing_low = max(candidates) if candidates else (entry - 2.0 * atr)
         else:
             for sp in swing_list:
                 if hasattr(sp, 'type') and hasattr(sp, 'price'):
@@ -611,7 +611,7 @@ class RiskEngine:
                         candidates.append(sp.price)
                 elif isinstance(sp, dict) and sp.get("type") == "HIGH" and sp.get("price", 0) > entry:
                     candidates.append(sp.get("price"))
-            swing_anchor = min(candidates) if candidates else (entry + 2.0 * atr)
+            swing_low = min(candidates) if candidates else (entry + 2.0 * atr)
 
         # SL maximum check: 8.0% cap
         # If the required structural stop loss exceeds 8.0%, we skip the trade to maintain good P&L math
