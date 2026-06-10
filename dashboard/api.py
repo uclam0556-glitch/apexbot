@@ -369,12 +369,6 @@ def create_app() -> FastAPI:
     @app.post("/api/factory-reset")
     async def api_factory_reset():
         try:
-            open_trades = []
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                open_trades = await conn.fetch("SELECT * FROM signals WHERE status IN ('OPEN', 'BREAKEVEN')")
-            if open_trades:
-                return {"status": "error", "message": "Wipe blocked: active positions exist."}
             await factory_reset_db()
             return {"status": "success", "message": "Database wiped."}
         except Exception as e:
