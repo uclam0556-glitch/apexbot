@@ -1548,10 +1548,16 @@ class RiskEngine:
 
         lvns = [n for n in volume_nodes if n.type == "LVN"]
 
-        candidates = [n.price for n in lvns if n.price > entry + min_tp1_distance]
-        if candidates:
-            return min(candidates)  # nearest LVN above entry
-        return entry + max(1.5 * atr, min_tp1_distance)
+        if is_long:
+            candidates = [n.price for n in lvns if n.price > entry + min_tp1_distance]
+            if candidates:
+                return min(candidates)  # nearest LVN above entry
+            return entry + max(1.5 * atr, min_tp1_distance)
+        else:
+            candidates = [n.price for n in lvns if n.price < entry - min_tp1_distance]
+            if candidates:
+                return max(candidates)  # nearest LVN below entry
+            return entry - max(1.5 * atr, min_tp1_distance)
 
     @staticmethod
     def _find_tp2(
@@ -1586,25 +1592,44 @@ class RiskEngine:
         min_tp2_distance = 2.5 * sl_distance
 
         # Key levels beyond TP1
-        kl_candidates = [
-            lv for lv in key_levels if lv > tp1 and lv > entry + min_tp2_distance
-        ]
-        if kl_candidates:
-            return min(kl_candidates)
-
-        # FVG midpoints beyond TP1 (bearish FVGs act as resistance)
-        fvg_candidates = [
-            (z.low + z.high) / 2
-            for z in imbalance_zones
-            if z.type == "BEARISH_FVG"
-            and not z.filled
-            and (z.low + z.high) / 2 > tp1
-            and (z.low + z.high) / 2 > entry + min_tp2_distance
-        ]
-        if fvg_candidates:
-            return min(fvg_candidates)
-
-        return max(tp1 + 1.0 * atr, entry + min_tp2_distance)
+        if is_long:
+            kl_candidates = [
+                lv for lv in key_levels if lv > tp1 and lv > entry + min_tp2_distance
+            ]
+            if kl_candidates:
+                return min(kl_candidates)
+                
+            # FVG midpoints beyond TP1 (bearish FVGs act as resistance)
+            fvg_candidates = [
+                (z.low + z.high) / 2
+                for z in imbalance_zones
+                if z.type == "BEARISH_FVG"
+                and not z.filled
+                and (z.low + z.high) / 2 > tp1
+                and (z.low + z.high) / 2 > entry + min_tp2_distance
+            ]
+            if fvg_candidates:
+                return min(fvg_candidates)
+            return max(tp1 + 1.0 * atr, entry + min_tp2_distance)
+        else:
+            kl_candidates = [
+                lv for lv in key_levels if lv < tp1 and lv < entry - min_tp2_distance
+            ]
+            if kl_candidates:
+                return max(kl_candidates)
+                
+            # FVG midpoints beyond TP1 (bullish FVGs act as support)
+            fvg_candidates = [
+                (z.low + z.high) / 2
+                for z in imbalance_zones
+                if z.type == "BULLISH_FVG"
+                and not z.filled
+                and (z.low + z.high) / 2 < tp1
+                and (z.low + z.high) / 2 < entry - min_tp2_distance
+            ]
+            if fvg_candidates:
+                return max(fvg_candidates)
+            return min(tp1 - 1.0 * atr, entry - min_tp2_distance)
 
     @staticmethod
     def _find_tp3(
@@ -1636,15 +1661,26 @@ class RiskEngine:
         """
         min_tp3_distance = 4.0 * sl_distance
 
-        candidates = [
-            sp.price for sp in swing_points
-            if sp.type == "HIGH"
-            and sp.price > tp2
-            and sp.price > entry + min_tp3_distance
-        ]
-        if candidates:
-            return min(candidates)  # nearest structural high
-        return max(tp2 + 2.0 * atr, entry + min_tp3_distance)
+        if is_long:
+            candidates = [
+                sp.price for sp in swing_points
+                if sp.type == "HIGH"
+                and sp.price > tp2
+                and sp.price > entry + min_tp3_distance
+            ]
+            if candidates:
+                return min(candidates)  # nearest structural high
+            return max(tp2 + 2.0 * atr, entry + min_tp3_distance)
+        else:
+            candidates = [
+                sp.price for sp in swing_points
+                if sp.type == "LOW"
+                and sp.price < tp2
+                and sp.price < entry - min_tp3_distance
+            ]
+            if candidates:
+                return max(candidates)  # nearest structural low
+            return min(tp2 - 2.0 * atr, entry - min_tp3_distance)
 
     @staticmethod
     def _is_near_round_number(price: float) -> bool:

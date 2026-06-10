@@ -877,22 +877,44 @@ class ApexSystem:
                     
                     fear_greed_val = market_ctx.get('fear_greed', {}).get('value', 50)
                     
-                    # ─── LIQUIDATION SQUEEZE (PHASE 2) ───────────────────────────────────────
+                    # ─── LIQUIDATION SQUEEZE (PHASE 2 & 3) ───────────────────────────────────────
                     from services.api.binance_futures import binance_fapi
                     from services.engine.signals.funding_engine import funding_engine
                     from services.engine.signals.lsr_engine import lsr_engine
                     
+                    if not hasattr(self, 'oi_history'):
+                        self.oi_history = {}
+                    
                     try:
-                        funding_rate, lsr_val = await asyncio.gather(
+                        funding_rate, lsr_val, oi_val = await asyncio.gather(
                             binance_fapi.get_funding_rate(symbol),
-                            binance_fapi.get_long_short_ratio(symbol)
+                            binance_fapi.get_long_short_ratio(symbol),
+                            binance_fapi.get_open_interest(symbol)
                         )
                     except Exception as e:
                         logger.warning(f"{symbol} - Binance API error: {e}")
-                        funding_rate, lsr_val = 0.0, 1.0
+                        funding_rate, lsr_val, oi_val = 0.0, 1.0, 0.0
                         
-                    funding_signal = funding_engine.evaluate(funding_rate)
-                    lsr_signal = lsr_engine.evaluate(lsr_val)
+                    oi_change_1h = 0.0
+                    if oi_val > 0:
+                        last_oi = self.oi_history.get(symbol, oi_val)
+                        oi_change_1h = (oi_val - last_oi) / last_oi * 100 if last_oi > 0 else 0.0
+                        self.oi_history[symbol] = oi_val
+                        
+                    price_rejection = current_price < df_1h['high'].iloc[-2:].max() and df_1h['close'].iloc[-1] < df_1h['open'].iloc[-1]
+                        
+                    funding_signal = funding_engine.evaluate(
+                        funding_rate=funding_rate,
+                        oi_change_1h=oi_change_1h,
+                        cvd_signal=cvd_signal,
+                        price_rejection=price_rejection
+                    )
+                    lsr_signal = lsr_engine.evaluate(
+                        lsr=lsr_val,
+                        funding_bias=funding_signal.bias,
+                        mtf_score=mtf_score_val,
+                        cvd_signal=cvd_signal
+                    )
                     
                     from services.engine.direction_selector import direction_selector
                     trade_direction = direction_selector.select_direction(
@@ -1285,7 +1307,24 @@ class ApexSystem:
                     elif trade_direction == "SHORT" and rsi_now > 72 and cvd_score_val <= 0 and ofi_real.ofi_score < 0:
                         last_vol = df_15m_check['volume'].iloc[-2] if not df_15m_check.empty else 0
                         avg_vol = df_15m_check['volume'].iloc[-12:-2].mean() if not df_15m_check.empty else 1
-                        if avg_vol > 0 and (last_vol / avg_vol) > 1.5:
+                        
+                        # ─── A+ SHORT SAFEGUARDS (PHASE 3) ───
+                        ema20 = df_1h['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                        ema50 = df_1h['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                        is_strong_uptrend = current_price > ema20 and current_price > ema50
+                        
+                        safe_to_short = True
+                        if is_strong_uptrend:
+                            safe_to_short = False
+                            logger.info(f"{symbol} - A+ Short Blocked: Price above EMA20/50 (strong uptrend)")
+                        elif breadth_pct > 65.0:
+                            safe_to_short = False
+                            logger.info(f"{symbol} - A+ Short Blocked: Bullish Breadth > 65%")
+                        elif funding_rate < 0:
+                            safe_to_short = False
+                            logger.info(f"{symbol} - A+ Short Blocked: Funding is negative (shorts crowded)")
+                            
+                        if safe_to_short and avg_vol > 0 and (last_vol / avg_vol) > 1.5:
                             v7_score += 35.0
                             logger.info(f"🌟 {symbol} A+ SETUP BONUS (SHORT)! (RSI={rsi_now:.1f}, CVD-, OFI-, VOL+). Applying +35 points.")
                             
@@ -1753,6 +1792,9 @@ class ApexSystem:
                         
                         if not self.config.trading.live_trading_enabled:
                             logger.info(f"[DEMO MODE] {symbol} Market entry simulated. No real order sent.")
+                        elif trade_direction == "SHORT":
+                            logger.info(f"[SPOT ROUTER GUARD] {symbol} Short entry blocked from LIVE MEXC Spot execution. Falling back to Phase A DEMO execution.")
+                            execution_mode = "DEMO"
                         else:
                             execution_mode = "LIVE"
                             # 1. Place Aggressive Limit Entry via OrderRouter

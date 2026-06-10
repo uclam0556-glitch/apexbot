@@ -30,13 +30,23 @@ class LongShortRatioEngine:
         "extreme_short":0.5,   # < 0.5 = Insanely crowded short
     }
     
-    def evaluate(self, lsr: float) -> LSRSignal:
+    def evaluate(
+        self, 
+        lsr: float,
+        funding_bias: str = "NEUTRAL",
+        mtf_score: float = 0.0,
+        cvd_signal: str = "NEUTRAL"
+    ) -> LSRSignal:
+        
         if lsr >= self.THRESHOLDS["extreme_long"]:
-            logger.info("lsr_extreme_long", lsr=lsr)
-            return LSRSignal("EXTREME_LONG", lsr, 15.0)  # +15 to Short Score
+            if funding_bias in ["EXTREME_LONG", "HIGH_LONG"] and mtf_score <= 0.0 and cvd_signal == "BEARISH":
+                logger.info("lsr_extreme_long_confluence", lsr=lsr)
+                return LSRSignal("EXTREME_LONG", lsr, 15.0)  # Confluence achieved
+            else:
+                return LSRSignal("HIGH_LONG", lsr, 3.0) # Just crowded
             
         elif lsr >= self.THRESHOLDS["high_long"]:
-            return LSRSignal("HIGH_LONG", lsr, 5.0)
+            return LSRSignal("HIGH_LONG", lsr, 2.0)
             
         elif lsr <= self.THRESHOLDS["extreme_short"]:
             logger.warning("lsr_extreme_short_block", lsr=lsr)

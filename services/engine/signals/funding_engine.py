@@ -31,16 +31,25 @@ class FundingRateEngine:
         "extreme_short":     -0.07,   # <= -0.07%
     }
     
-    def evaluate(self, funding_rate: float, oi_change_1h: float = 0.0) -> FundingSignal:
+    def evaluate(
+        self, 
+        funding_rate: float, 
+        oi_change_1h: float = 0.0,
+        cvd_signal: str = "NEUTRAL",
+        price_rejection: bool = False
+    ) -> FundingSignal:
+        
+        # Funding is extreme, but we only give the massive bonus if there's confluence
         if funding_rate >= self.THRESHOLDS["extreme_long_bias"]:
-            # Retail is dangerously long. Massive squeeze potential downwards.
-            # Bonus to Short trades.
-            score = 15.0 if oi_change_1h > 2.0 else 10.0
-            logger.info("funding_extreme_long", rate=funding_rate, oi_change=oi_change_1h)
-            return FundingSignal("EXTREME_LONG", funding_rate, score)
+            if cvd_signal == "BEARISH" and oi_change_1h > 1.0 and price_rejection:
+                logger.info("funding_extreme_long_confluence", rate=funding_rate, oi_change=oi_change_1h)
+                return FundingSignal("EXTREME_LONG", funding_rate, 15.0)
+            else:
+                # Just a very crowded market, no breakdown yet
+                return FundingSignal("HIGH_LONG", funding_rate, 5.0)
             
         elif funding_rate >= self.THRESHOLDS["high_long_bias"]:
-            score = 5.0
+            score = 3.0 if oi_change_1h > 0 else 0.0
             return FundingSignal("HIGH_LONG", funding_rate, score)
             
         elif funding_rate <= self.THRESHOLDS["extreme_short"]:
