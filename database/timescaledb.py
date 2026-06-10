@@ -184,18 +184,38 @@ async def init_timescaledb():
                 PRIMARY KEY(id, created_at)
             );
         """)
+        
+        # TABLE 4b: Shadow Trades Blocked (For AI Auto-Tuner)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS shadow_trades_blocked (
+                id              BIGSERIAL,
+                signal_id       BIGINT,
+                symbol          TEXT NOT NULL,
+                created_at      TIMESTAMPTZ NOT NULL,
+                resolved_at     TIMESTAMPTZ,
+                outcome         TEXT,
+                mfe_pct         DOUBLE PRECISION,
+                mae_pct         DOUBLE PRECISION,
+                bars_to_outcome INTEGER,
+                session_tag     TEXT,
+                regime_at_entry TEXT,
+                logic_version   TEXT NOT NULL,
+                PRIMARY KEY(id, created_at)
+            );
+        """)
+        
         try:
             await conn.execute("SELECT create_hypertable('shadow_trades', 'created_at');")
+            await conn.execute("SELECT create_hypertable('shadow_trades_blocked', 'created_at');")
         except asyncpg.exceptions.ObjectInUseError:
             pass
         except Exception as e:
             logger.debug(f"Skipped hypertable creation: {e}")
-            pass # already a hypertable
-        except Exception as e:
-            logger.debug(f"Skipped hypertable creation for shadow_trades: {e}")
             
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_st_signal ON shadow_trades (signal_id);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_st_outcome_time ON shadow_trades (outcome, created_at DESC);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_stb_signal ON shadow_trades_blocked (signal_id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_stb_outcome_time ON shadow_trades_blocked (outcome, created_at DESC);")
 
         # TABLE 5: System Health
         await conn.execute("""
@@ -303,13 +323,19 @@ async def insert_shadow_trade(signal_id: int, symbol: str, session: str, regime:
 
 async def update_shadow_trade(signal_id: int, outcome: str, mfe_pct: float, mae_pct: float, bars: int):
     pool = await get_pool()
-    query = """
+    query1 = """
         UPDATE shadow_trades
         SET outcome = $1, mfe_pct = $2, mae_pct = $3, bars_to_outcome = $4, resolved_at = $5
         WHERE signal_id = $6;
     """
+    query2 = """
+        UPDATE shadow_trades_blocked
+        SET outcome = $1, mfe_pct = $2, mae_pct = $3, bars_to_outcome = $4, resolved_at = $5
+        WHERE signal_id = $6;
+    """
     async with pool.acquire() as conn:
-        await conn.execute(query, outcome, mfe_pct, mae_pct, bars, datetime.utcnow(), signal_id)
+        await conn.execute(query1, outcome, mfe_pct, mae_pct, bars, datetime.utcnow(), signal_id)
+        await conn.execute(query2, outcome, mfe_pct, mae_pct, bars, datetime.utcnow(), signal_id)
 
 async def get_open_shadow_trades() -> list:
     pool = await get_pool()
@@ -318,6 +344,13 @@ async def get_open_shadow_trades() -> list:
                s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, 
                s.tp2_price as take_profit_2, s.tp3_price as take_profit_3, s.direction, s.strategy, s.status, s.is_shadow
         FROM shadow_trades st
+        JOIN signals s ON st.signal_id = s.id
+        WHERE st.outcome = 'OPEN'
+        UNION ALL
+        SELECT st.signal_id as id, st.symbol, st.created_at as opened_at, st.mfe_pct, st.mae_pct,
+               s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, 
+               s.tp2_price as take_profit_2, s.tp3_price as take_profit_3, s.direction, s.strategy, s.status, s.is_shadow
+        FROM shadow_trades_blocked st
         JOIN signals s ON st.signal_id = s.id
         WHERE st.outcome = 'OPEN';
     '''
@@ -431,6 +464,45 @@ async def create_shadow_trade(
     take_profit_1: float,
     take_profit_2: float,
     take_profit_3: float,
+    v7_score: float,
+    regime: str = "UNKNOWN",
+    breadth: float = 0.0,
+    cvd_score: float = 0.0,
+    mtf_score: float = 0.0
+):
+    """Wrapper to maintain backwards compatibility with main.py shadow trades (APPROVED ONLY)"""
+    try:
+        signal_dict = {
+            'symbol': symbol,
+            'strategy': strategy,
+            'direction': direction,
+            'status': 'APPROVED',
+            'block_reason': 'None',
+            'entry_price': entry_price,
+            'sl_price': stop_loss,
+            'tp1_price': take_profit_1,
+            'tp2_price': take_profit_2,
+            'tp3_price': take_profit_3,
+            'v7_score_raw': v7_score,
+            'mtf_score': mtf_score,
+            'regime': regime,
+            'is_shadow': True
+        }
+        signal_id = await insert_signal_record(signal_dict)
+        if signal_id:
+            await insert_shadow_trade(signal_id, symbol, "UNKNOWN", regime, "11.0.0")
+    except Exception as e:
+        logger.error(f"Failed to create shadow trade wrapper: {e}")
+
+async def create_shadow_trade_blocked(
+    symbol: str,
+    direction: str,
+    strategy: str,
+    entry_price: float,
+    stop_loss: float,
+    take_profit_1: float,
+    take_profit_2: float,
+    take_profit_3: float,
     primary_block_reason: str,
     all_block_reasons: list,
     v7_score: float,
@@ -439,7 +511,7 @@ async def create_shadow_trade(
     cvd_score: float = 0.0,
     mtf_score: float = 0.0
 ):
-    """Wrapper to maintain backwards compatibility with main.py shadow trades"""
+    """Saves blocked trades explicitly into the shadow_trades_blocked table for the Auto-Tuner"""
     try:
         signal_dict = {
             'symbol': symbol,
@@ -459,9 +531,20 @@ async def create_shadow_trade(
         }
         signal_id = await insert_signal_record(signal_dict)
         if signal_id:
-            await insert_shadow_trade(signal_id, symbol, "UNKNOWN", regime, "10.5.0")
+            await insert_shadow_trade_blocked(signal_id, symbol, "UNKNOWN", regime, "11.0.0")
     except Exception as e:
-        logger.error(f"Failed to create shadow trade wrapper: {e}")
+        logger.error(f"Failed to create shadow trade blocked wrapper: {e}")
+
+async def insert_shadow_trade_blocked(signal_id: int, symbol: str, session: str, regime: str, logic_version: str):
+    pool = await get_pool()
+    query = """
+        INSERT INTO shadow_trades_blocked (signal_id, symbol, created_at, outcome, session_tag, regime_at_entry, logic_version)
+        VALUES ($1, $2, $3, 'OPEN', $4, $5, $6);
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(query, signal_id, symbol, datetime.utcnow(), session, regime, logic_version)
+
+
 
 # ─── V10.5 Missing Tables ───────────────────────────────────────────────────────
 async def setup_missing_tables(conn):

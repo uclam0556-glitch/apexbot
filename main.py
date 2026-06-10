@@ -60,7 +60,7 @@ from services.engine.smc_core import FormalizedSMCCore
 from services.adversarial.tester import AdversarialSignalTester
 from services.engine.confluence_v4 import ConfluenceEngineV4
 from services.engine.risk_engine import RiskEngine
-from database.timescaledb import init_timescaledb, insert_signal_record, create_shadow_trade, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record, is_on_cooldown, is_pullback_on_structure_cooldown, insert_shadow_trade, get_pullback_items_by_status, get_open_trades
+from database.timescaledb import init_timescaledb, insert_signal_record, create_shadow_trade, create_shadow_trade_blocked, update_shadow_trade, get_open_shadow_trades, insert_filter_block_record, is_on_cooldown, is_pullback_on_structure_cooldown, insert_shadow_trade, get_pullback_items_by_status, get_open_trades
 from core.circuit_breaker import CircuitBreaker          # LEGACY → migrate to PortfolioRiskEngine v11.1
 from core.correlation_filter import CorrelationFilter    # LEGACY → migrate to PortfolioRiskEngine v11.1
 from core.transaction_costs import TransactionCostModel  # SHIM → delegates to services/execution/transaction_cost_model.py
@@ -202,9 +202,12 @@ class ApexSystem:
         
         # Exposure Manager (P1)
         from services.engine.exposure_manager import ExposureManager
+        from services.engine.guards import OpenPositionGuard
         self.exposure_manager = ExposureManager(self.config)
+        self.position_guard = OpenPositionGuard()
         self.market_breadth = 50.0
         self.dominance_flow_bonus = 0.0
+        self.dynamic_params = {}
         self.breadth_last_updated = 0.0
         
     async def fetch_market_data(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> pd.DataFrame:
@@ -246,6 +249,15 @@ class ApexSystem:
                     
                 # Update RS Matrix
                 await rs_matrix_engine.update_matrix(self.config.trading.symbols)
+                
+                # Fetch Dynamic Auto-Tuner Params
+                from database.dynamic_config import get_active_tuning_params
+                try:
+                    self.dynamic_params = await get_active_tuning_params()
+                    if self.dynamic_params:
+                        logger.info(f"Loaded {len(self.dynamic_params)} active tuning parameters from DB.")
+                except Exception as e:
+                    logger.debug(f"Could not fetch dynamic params: {e}")
                 
             except Exception as e:
                 logger.error(f"Error in macro updater: {e}")
@@ -334,6 +346,10 @@ class ApexSystem:
                         else:
                             max_profit_pct = (entry - excursions["low"]) / entry * 100
                             max_drawdown_pct = (entry - excursions["high"]) / entry * 100
+                            
+                        # Bug 4 Fix: Ensure MFE is positive and MAE is negative
+                        max_profit_pct = max(0.0, max_profit_pct)
+                        max_drawdown_pct = min(0.0, max_drawdown_pct)
                             
                         status = None
                         pnl_pct = 0.0
@@ -439,6 +455,8 @@ class ApexSystem:
                             from shared.state import global_state
                             if trade['id'] in global_state.trade_excursions:
                                 del global_state.trade_excursions[trade['id']]
+                                
+                            self.position_guard.on_trade_closed(symbol)
                                 
                             logger.info(f"Trade {symbol} {status} at {current_price} ({pnl_pct:+.2f}%) | MFE: {max_profit_pct:+.2f}% | MAE: {max_drawdown_pct:+.2f}% | Dur: {duration_minutes:.1f}m")
                             if bot and not trade.get('is_shadow', True):
@@ -636,6 +654,10 @@ class ApexSystem:
                     logger.debug(f"{symbol} already has an open trade. Skipping to avoid duplicate signals.")
                     continue
                     
+                if self.position_guard.is_open(symbol):
+                    logger.debug(f"{symbol} already has an open shadow trade. Skipping to avoid shadow duplication.")
+                    continue
+                    
                 try:
                     global_state.current_symbol = symbol
                     global_state.last_scan_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -702,6 +724,40 @@ class ApexSystem:
                     
                     logger.info(f"{symbol} | Price=${format_price(current_price)} | RSI={rsi_now:.1f} | Vol={vol_ratio:.2f}x | TFs loaded={list(tf_data.keys())}")
 
+                    # ─── BUG 9 & 10: DATA VALIDATOR (HARD BLOCKS & SCORING) ────────────────
+                    try:
+                        last_ws_update = self.ws_manager.last_updates.get(symbol)
+                        ohlcv_vol_series = tf_data['15m']['volume'].values[-20:] if '15m' in tf_data and len(tf_data['15m']) >= 20 else None
+                        curr_vol_15m = tf_data['15m']['volume'].iloc[-1] if '15m' in tf_data and not tf_data['15m'].empty else avg_vol_3
+                        prev_1h_price = df_1h['close'].iloc[-2] if len(df_1h) >= 2 else None
+                        
+                        data_report = self.data_validator.validate(
+                            symbol=symbol,
+                            last_ws_update=last_ws_update,
+                            ohlcv_volume_series=ohlcv_vol_series,
+                            current_volume=curr_vol_15m,
+                            daily_volume_usd=daily_volume_usd,
+                            funding_rate=0.0, # Spot only
+                            market_type="SPOT",
+                            bid_price=current_price * 0.999, # Fallback
+                            ask_price=current_price * 1.001, # Fallback
+                            secondary_exchange_price=None,
+                            current_price=current_price,
+                            prev_hour_price=prev_1h_price
+                        )
+                        
+                        if not data_report.is_tradeable():
+                            reasons = "; ".join(data_report.block_reasons)
+                            logger.warning(f"🛑 {symbol} - [BLOCKED] DataValidator: {reasons}")
+                            await insert_filter_block_record(symbol, "UNKNOWN", f"Data Health: {reasons}", data_report.raw_score)
+                            continue
+                            
+                        # Bug 10: Dynamic Penalty (Subtract score instead of hard -5)
+                        v7_data_penalty = (1.0 - data_report.raw_score) * 10.0 # Up to -10 points based on health
+                        
+                    except Exception as e:
+                        logger.error(f"{symbol} - DataValidator error: {e}")
+                        v7_data_penalty = 0.0
                     # ─── FILTER 1: GLOBAL REGIME ASSIGNMENT ──────────────────────────────
                     regime_val = global_state.regime
                     current_regime = MarketRegime(regime_val)
@@ -779,56 +835,8 @@ class ApexSystem:
                         if avg_vol_15m > 0:
                             vol_ratio_15m = float(last_closed['volume'] / avg_vol_15m)
 
-                    # ─── SPOT ONLY: определяем стратегию (только LONG) ────────────────────────
-                    trade_direction = "LONG"
-                    trade_strategy  = None
-                    regime_val      = current_regime.value
-                    
-                    # BLOCK ALL SHORTS TEMPORARILY AS PER ARCHITECTURAL PLAN
-                    if trade_direction == "SHORT":
-                        logger.info(f"{symbol} - [BLOCKED] System is in TREND LONG ONLY mode. Shorts are disabled.")
-                        continue
-
-                    if regime_val == "BEAR":
-                        # 1. Base Panic: RSI < 25 AND Volume spike > 1.5x
-                        is_panic = rsi_now < 25 and vol_ratio_15m > 1.5
-                        
-                        # 2. Reclaim/Absorption: Real buyers (OFI > 0) OR Technical wick (Wick > 0.4)
-                        is_bought = ofi_real.ofi_score > 0 or lower_wick_ratio > 0.4
-                        
-                        if is_panic and is_bought:
-                            trade_strategy = "CAPITULATION"
-                            logger.info(f"{symbol} - [CAPITULATION CATCHER] RSI={rsi_now:.1f} Vol={vol_ratio_15m:.1f}x Wick={lower_wick_ratio:.2f} OFI={ofi_real.ofi_score:.2f}")
-                        elif rsi_now < 38:
-                            # Mean Reversion: expanded threshold for better coverage in bear markets
-                            # CVD gate: allow if CVD is not in extreme bear (-2 or above means selling is decelerating)
-                            cvd_reversing = cvd_score_val >= -2
-                            if cvd_reversing:
-                                trade_strategy = "MEAN_REVERSION"
-                                logger.info(f"{symbol} - [MEAN REVERSION LONG] BEAR + RSI={rsi_now:.1f} (oversold) | CVD={cvd_score_val}")
-                            else:
-                                logger.info(f"{symbol} - [BLOCKED] Mean reversion blocked: CVD extreme bear ({cvd_score_val}). Skipping.")
-                                continue
-                        else:
-                            trade_strategy = "TREND"
-
-                    elif regime_val == "SIDEWAYS" and rsi_now < 38:
-                        # SIDEWAYS MEAN REVERSION: RSI < 38 (expanded from 35 to catch more valid setups)
-                        # RSI 35-38 range: borderline oversold — valid for mean reversion in ranging market
-                        # CVD gate: allow if CVD is not strongly bearish (>= -1 = neutral or better)
-                        cvd_reversing = cvd_score_val >= -1
-                        if cvd_reversing:
-                            trade_strategy = "MEAN_REVERSION"
-                            logger.info(f"{symbol} - [MEAN REVERSION LONG] SIDEWAYS + RSI={rsi_now:.1f} (oversold) | CVD={cvd_signal}")
-                        else:
-                            logger.info(f"{symbol} - [BLOCKED] Mean reversion blocked: CVD still strongly bearish ({cvd_score_val}). Skipping.")
-                            continue
-
-                    else:
-                        trade_strategy = "TREND"
-                        
                     # ─── V11 MTF ALIGNMENT (WEIGHTED SCORE & BONUS) ───────────────────────────
-                    # MTF is no longer a hard gate, it contributes to V7 score.
+                    # MTF is no longer a hard gate, it contributes to V7 score and DirectionSelector.
                     from services.engine.mtf_engine import compute_mtf_score, get_mtf_v7_bonus
                     tf_signals = {}
                     for tf in ['1d', '4h', '1h', '15m', '5m']:
@@ -836,6 +844,52 @@ class ApexSystem:
                             tf_signals[tf] = self.mtf_engine.get_trend_direction(tf_data[tf])
                     
                     mtf_score_val, mtf_is_strong = compute_mtf_score(tf_signals)
+
+                    # ─── DIRECTION & STRATEGY SELECTION (V11) ────────────────────────────────
+                    regime_val = current_regime.value
+                    
+                    # Calculate Premium/Discount (1h 100-candle structural range)
+                    df_1h_recent = df_1h.iloc[-100:] if len(df_1h) >= 100 else df_1h
+                    high_100 = df_1h_recent['high'].max()
+                    low_100 = df_1h_recent['low'].min()
+                    premium_discount = (current_price - low_100) / (high_100 - low_100) if high_100 > low_100 else 0.5
+                    
+                    fear_greed_val = self.macro_state['fear_greed']['value'] if self.macro_state else 50
+                    
+                    from services.engine.direction_selector import direction_selector
+                    trade_direction = direction_selector.select_direction(
+                        symbol=symbol,
+                        mtf_score=mtf_score_val,
+                        cvd_signal=cvd_signal,
+                        regime=regime_val,
+                        premium_discount=premium_discount,
+                        fear_greed=fear_greed_val
+                    )
+                    
+                    if not trade_direction:
+                        logger.info(f"{symbol} - [BLOCKED] Direction Selector: No clear edge for Long/Short. MTF={mtf_score_val:.1f}, CVD={cvd_signal}, PD={premium_discount:.2f}")
+                        continue
+                        
+                    from services.engine.strategy_router import strategy_router
+                    trade_strategy = strategy_router.get_strategy(regime_val)
+                    
+                    if not trade_strategy:
+                        logger.info(f"{symbol} - [BLOCKED] Strategy Router: Trading stopped for regime {regime_val}.")
+                        continue
+                        
+                    # ─── DYNAMIC REGIME PARAMS ───────────────────────────────────────────────
+                    regime_params = strategy_router.get_params(regime_val)
+                    dynamic_min_score = regime_params.get("min_v7_score", 45.0)
+                    
+                    # Overrides based on extreme conditions
+                    if trade_direction == "LONG" and regime_val == "BEAR":
+                        # 1. Base Panic: RSI < 25 AND Volume spike > 1.5x
+                        is_panic = rsi_now < 25 and vol_ratio_15m > 1.5
+                        is_bought = ofi_real.ofi_score > 0 or lower_wick_ratio > 0.4
+                        if is_panic and is_bought:
+                            trade_strategy = "CAPITULATION"
+                            logger.info(f"{symbol} - [CAPITULATION CATCHER] RSI={rsi_now:.1f} Vol={vol_ratio_15m:.1f}x Wick={lower_wick_ratio:.2f}")
+
                     mtf_v7_bonus = get_mtf_v7_bonus(mtf_score_val)
                     logger.info(f"{symbol} - MTF Score: {mtf_score_val:.2f} -> V7 Bonus: {mtf_v7_bonus:+.1f}")
                     # Note: We will add mtf_v7_bonus to final v7_score later
@@ -1194,6 +1248,11 @@ class ApexSystem:
                     # Apply MTF bonus
                     v7_score += mtf_v7_bonus
                     
+                    # Apply Data Health Penalty (Bug 10)
+                    if v7_data_penalty > 0:
+                        v7_score -= v7_data_penalty
+                        logger.info(f"{symbol} - Data Health Penalty: -{v7_data_penalty:.1f} pts. Score down to {v7_score:.1f}")
+                    
                     # Ensure v7_score is within 0-100 limits before gate check
                     v7_score = max(0.0, min(100.0, v7_score))
                     
@@ -1205,7 +1264,8 @@ class ApexSystem:
                     if len(self.v7_history_buffer) > 500:
                         self.v7_history_buffer.pop(0)
                         
-                    dynamic_min_score = compute_dynamic_gate(breadth_pct, self.v7_history_buffer, base_gate=40.0)
+                    base_gate_value = dynamic_min_score # From Strategy Router
+                    dynamic_min_score = compute_dynamic_gate(breadth_pct, self.v7_history_buffer, base_gate=base_gate_value)
                     
                     logger.info(f"{symbol} - Final V7: {v7_score:.1f}/100 | Dynamic Gate: {dynamic_min_score:.1f}")
                         
@@ -1219,41 +1279,67 @@ class ApexSystem:
                     is_approved = (block_reason is None)
                     status_str = "APPROVED" if is_approved else "REJECTED_BY_FILTER"
                     
-                    proxy_sl_dist = 1.5 * atr_1h
+                    # Bug 3: Symbol-Specific SL Calibration
+                    sl_multiplier = 1.5
+                    if "ETH" in symbol:
+                        sl_multiplier = 2.0
+                    elif "BTC" in symbol:
+                        sl_multiplier = 1.5
+                    elif "SOL" in symbol:
+                        sl_multiplier = 2.2
+                        
+                    proxy_sl_dist = sl_multiplier * atr_1h
                     proxy_sl = current_price - proxy_sl_dist if trade_direction == "LONG" else current_price + proxy_sl_dist
                     
-                    proxy_tp_rr = 1.0 if regime_val == "SIDEWAYS" else 1.5
+                    # Bug 5: Take Profit Ladder (R:R >= 1.5)
+                    proxy_tp_rr = 1.5
                     proxy_tp_dist = proxy_sl_dist * proxy_tp_rr
                     proxy_tp = current_price + proxy_tp_dist if trade_direction == "LONG" else current_price - proxy_tp_dist
                     
-                    proxy_tp2_rr = 1.5 if regime_val == "SIDEWAYS" else 2.5
+                    proxy_tp2_rr = 2.5
                     proxy_tp2_dist = proxy_sl_dist * proxy_tp2_rr
                     proxy_tp2 = current_price + proxy_tp2_dist if trade_direction == "LONG" else current_price - proxy_tp2_dist
                     
-                    proxy_tp3_rr = 2.5 if regime_val == "SIDEWAYS" else 4.0
+                    proxy_tp3_rr = 4.0
                     proxy_tp3_dist = proxy_sl_dist * proxy_tp3_rr
                     proxy_tp3 = current_price + proxy_tp3_dist if trade_direction == "LONG" else current_price - proxy_tp3_dist
                     
                     # Create shadow trade for everything to collect stats
-                    await create_shadow_trade(
-                        symbol=symbol,
-                        direction=trade_direction,
-                        strategy=trade_strategy or "TREND",
-                        entry_price=current_price,
-                        stop_loss=proxy_sl,
-                        take_profit_1=proxy_tp,
-                        take_profit_2=proxy_tp2,
-                        take_profit_3=proxy_tp3,
-                        primary_block_reason=block_reason or "None",
-                        all_block_reasons=[f"V7={v7_score:.1f}", f"Gate={dynamic_min_score:.1f}"],
-                        v7_score=v7_score,
-                        regime=regime_val,
-                        breadth=breadth_pct,
-                        cvd_score=cvd_score_val,
-                        mtf_score=mtf_score_val
-                    )
-                    
-                    if not is_approved:
+                    if is_approved:
+                        await create_shadow_trade(
+                            symbol=symbol,
+                            direction=trade_direction,
+                            strategy=trade_strategy or "TREND",
+                            entry_price=current_price,
+                            stop_loss=proxy_sl,
+                            take_profit_1=proxy_tp,
+                            take_profit_2=proxy_tp2,
+                            take_profit_3=proxy_tp3,
+                            v7_score=v7_score,
+                            regime=regime_val,
+                            breadth=breadth_pct,
+                            cvd_score=cvd_score_val,
+                            mtf_score=mtf_score_val
+                        )
+                        self.position_guard.on_trade_opened(symbol)
+                    else:
+                        await create_shadow_trade_blocked(
+                            symbol=symbol,
+                            direction=trade_direction,
+                            strategy=trade_strategy or "TREND",
+                            entry_price=current_price,
+                            stop_loss=proxy_sl,
+                            take_profit_1=proxy_tp,
+                            take_profit_2=proxy_tp2,
+                            take_profit_3=proxy_tp3,
+                            primary_block_reason=block_reason or "None",
+                            all_block_reasons=[f"V7={v7_score:.1f}", f"Gate={dynamic_min_score:.1f}"],
+                            v7_score=v7_score,
+                            regime=regime_val,
+                            breadth=breadth_pct,
+                            cvd_score=cvd_score_val,
+                            mtf_score=mtf_score_val
+                        )
                         continue
                         
                     # --- EXECUTION ---
@@ -2297,6 +2383,8 @@ class ApexSystem:
     async def start(self):
         self.running = True
         logger.info("Starting APEX System v5.0...")
+        
+        await self.position_guard.load_from_db()
         
         # Start background tasks
         asyncio.create_task(self.background_macro_updater())
