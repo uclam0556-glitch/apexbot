@@ -571,22 +571,6 @@ async def process_confirm_reset(callback: CallbackQuery):
 
 @router.callback_query(F.data == "factory_reset")
 async def process_factory_reset(callback: CallbackQuery):
-    open_trades = await get_open_shadow_trades()
-    if open_trades:
-        try:
-            await callback.message.edit_text(
-                "⚠️ <b>СБРОС ЗАБЛОКИРОВАН</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"Обнаружено <b>{len(open_trades)} открытых позиций</b>.\n"
-                "Нельзя удалять историю и данные ML, пока идут активные торги.\n"
-                "Сначала закройте или сбросьте ордера.",
-                reply_markup=get_back_keyboard(),
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
-        await callback.answer()
-        return
 
     try:
         await callback.message.edit_text(
@@ -606,17 +590,6 @@ async def process_factory_reset(callback: CallbackQuery):
 
 @router.message(Command("reset"))
 async def cmd_reset(message: Message):
-    open_trades = await get_open_shadow_trades()
-    if open_trades:
-        await message.answer(
-            "⚠️ <b>СБРОС ЗАБЛОКИРОВАН</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"Обнаружено <b>{len(open_trades)} открытых позиций</b>.\n"
-            "Нельзя удалять историю и данные ML, пока идут торги.\n"
-            "Сначала закройте или сбросьте ордера.",
-            parse_mode="HTML"
-        )
-        return
 
     await message.answer(
         "⚠️ <b>ВНИМАНИЕ: ПОЛНЫЙ СБРОС (WIPE)</b>\n"
@@ -631,15 +604,6 @@ async def cmd_reset(message: Message):
 
 @router.message(F.text == "CONFIRM_RESET_123")
 async def process_confirm_factory_reset_text(message: Message):
-    open_trades = await get_open_shadow_trades()
-    if open_trades:
-        await message.answer(
-            "⚠️ <b>СБРОС ЗАБЛОКИРОВАН</b>\n\n"
-            f"В системе обнаружено {len(open_trades)} активных сделок. "
-            "Сброс базы данных невозможен.",
-            parse_mode="HTML"
-        )
-        return
 
     await factory_reset_db()
     await message.answer(
