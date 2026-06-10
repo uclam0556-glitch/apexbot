@@ -128,12 +128,19 @@ class ShadowTradeMonitor:
                 ohlcv = await self.exchange.fetch_ohlcv(sym, '1m', since=since_ms, limit=1000)
                 if ohlcv:
                     for candle in ohlcv:
-                        c_high = candle[2]
-                        c_low  = candle[3]
+                        c_ts    = candle[0]
+                        c_open  = candle[1]
+                        c_high  = candle[2]
+                        c_low   = candle[3]
+                        c_close = candle[4]
+                        
+                        # [SENIOR QUANT FIX 1] Filter out pre-entry wicks in the entry minute
+                        if c_ts <= since_ms < c_ts + 60000:
+                            c_high = c_close
+                            c_low  = c_close
                         
                         # MFE: maximum favourable excursion — always POSITIVE (upside reached)
                         # MAE: maximum adverse excursion — always NEGATIVE (downside hit)
-                        # Convention matches analytics queries: mae_pct < -1.0 = SL candidate
                         if direction == 'LONG':
                             cur_mfe = (c_high - entry) / entry * 100       # positive
                             cur_mae = (c_low  - entry) / entry * 100       # negative
@@ -145,33 +152,73 @@ class ShadowTradeMonitor:
                         if cur_mfe > mfe: mfe = cur_mfe          # track peak MFE
                         if cur_mae < mae: mae = cur_mae          # track worst MAE (most negative)
                         
-                        # Path-Dependent SL / TP resolution (sequential — order matters)
+                        # [SENIOR QUANT FIX 2] Intra-candle Path-Dependent SL/TP resolution
                         if direction == 'LONG':
-                            if prev_mfe >= 1.0 and c_low <= entry:
-                                # Trailing SL at breakeven hit
-                                status = 'WON_BREAKEVEN'
-                                break
-                            elif c_low <= sl:
-                                # Original SL hit
-                                status = 'LOST'
-                                mae = min(mae, (sl - entry) / entry * 100)
-                                break
-                            elif c_high >= tp1:
-                                # TP hit
+                            sl_hit = c_low <= sl
+                            tp_hit = c_high >= tp1
+                            be_hit = prev_mfe >= 1.0 and c_low <= entry
+                            
+                            if sl_hit and tp_hit:
+                                if c_close >= c_open: # Green candle: low first, then high
+                                    status = 'LOST'
+                                    mae = min(mae, (sl - entry) / entry * 100)
+                                    break
+                                else: # Red candle: high first, then low
+                                    pnl_pct = (tp1 - entry) / entry * 100
+                                    status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
+                                    break
+                            elif be_hit and tp_hit:
+                                if c_close >= c_open: # Green candle: low first, then high
+                                    status = 'WON_BREAKEVEN'
+                                    break
+                                else: # Red candle: high first, then low
+                                    pnl_pct = (tp1 - entry) / entry * 100
+                                    status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
+                                    break
+                            elif tp_hit:
                                 pnl_pct = (tp1 - entry) / entry * 100
                                 status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
                                 break
-                        elif direction == 'SHORT':
-                            if prev_mfe >= 1.0 and c_high >= entry:
+                            elif sl_hit:
+                                status = 'LOST'
+                                mae = min(mae, (sl - entry) / entry * 100)
+                                break
+                            elif be_hit:
                                 status = 'WON_BREAKEVEN'
                                 break
-                            elif c_high >= sl:
+
+                        elif direction == 'SHORT':
+                            sl_hit = c_high >= sl
+                            tp_hit = c_low <= tp1
+                            be_hit = prev_mfe >= 1.0 and c_high >= entry
+                            
+                            if sl_hit and tp_hit:
+                                if c_close <= c_open: # Red candle: high first, then low
+                                    status = 'LOST'
+                                    mae = min(mae, (entry - sl) / entry * 100)
+                                    break
+                                else: # Green candle: low first, then high
+                                    pnl_pct = (entry - tp1) / entry * 100
+                                    status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
+                                    break
+                            elif be_hit and tp_hit:
+                                if c_close <= c_open: # Red candle: high first, then low
+                                    status = 'WON_BREAKEVEN'
+                                    break
+                                else: # Green candle: low first, then high
+                                    pnl_pct = (entry - tp1) / entry * 100
+                                    status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
+                                    break
+                            elif tp_hit:
+                                pnl_pct = (entry - tp1) / entry * 100
+                                status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
+                                break
+                            elif sl_hit:
                                 status = 'LOST'
                                 mae = min(mae, (entry - sl) / entry * 100)
                                 break
-                            elif c_low <= tp1:
-                                pnl_pct = (entry - tp1) / entry * 100
-                                status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
+                            elif be_hit:
+                                status = 'WON_BREAKEVEN'
                                 break
                                 
             except Exception as e:
