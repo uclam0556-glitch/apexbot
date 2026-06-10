@@ -608,9 +608,9 @@ class RiskEngine:
 
         swing_low = max(candidates) if candidates else (entry - 2.0 * atr)
 
-        # SL maximum check: 4.5% cap
-        # If the required structural stop loss exceeds 4.5%, we skip the trade to maintain good P&L math
-        max_sl_allowed = entry * 0.045
+        # SL maximum check: 8.0% cap
+        # If the required structural stop loss exceeds 8.0%, we skip the trade to maintain good P&L math
+        max_sl_allowed = entry * 0.080
         sl_distance_pct = sl_distance / entry * 100
         atr_pct = atr / entry * 100
         # Regime-based limits & volatility-based ATR targets

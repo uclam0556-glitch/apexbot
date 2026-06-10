@@ -890,9 +890,9 @@ class ApexSystem:
                             trade_strategy = "CAPITULATION"
                             logger.info(f"{symbol} - [CAPITULATION CATCHER] RSI={rsi_now:.1f} Vol={vol_ratio_15m:.1f}x Wick={lower_wick_ratio:.2f}")
 
-                    mtf_v7_bonus = get_mtf_v7_bonus(mtf_score_val)
-                    logger.info(f"{symbol} - MTF Score: {mtf_score_val:.2f} -> V7 Bonus: {mtf_v7_bonus:+.1f}")
-                    # Note: We will add mtf_v7_bonus to final v7_score later
+                    directional_mtf = mtf_score_val if trade_direction == "LONG" else -mtf_score_val
+                    mtf_v7_bonus = get_mtf_v7_bonus(directional_mtf)
+                    logger.info(f"{symbol} - MTF Score: {mtf_score_val:.2f} ({trade_direction}) -> V7 Bonus: {mtf_v7_bonus:+.1f}")
 
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 1: ATR MOMENTUM EXHAUSTION ─────────────
@@ -1095,13 +1095,6 @@ class ApexSystem:
                     
                     # ─── V7 ADAPTIVE SCORING (0-100) ───────────────────────────────────────────
                     v7_score = ultra_score * 10.0
-                    
-                    if 70 <= health_score < 80:
-                        v7_score -= 5
-                        logger.info(f"{symbol} - Data Health penalty: -5 (Score: {health_score:.1f}).")
-                    elif 60 <= health_score < 70:
-                        v7_score -= 10
-                        logger.info(f"{symbol} - Data Health penalty: -10 (Score: {health_score:.1f}).")
                         
                     # ─── V9 QUANT INDICES (MULTICOLLINEARITY FIX) ─────────────────────────
                     # 1. OVEREXTENSION INDEX
@@ -1418,22 +1411,41 @@ class ApexSystem:
                     # Total exposure slots: open trades + waiting pullbacks (APEX v10.4)
                     open_count = len(open_trades)
                     total_exposure = open_count + active_total
-                    if breadth_pct < 10.0:
-                        max_exposure = 0
-                        logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 10%. ALL new limits BLOCKED for {symbol}.")
-                    elif breadth_pct < 15.0:
-                        if symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"] and ultra_score >= 80:
-                            max_exposure = 1
-                            logger.info(f"RISK-OFF EXCEPTION: Breadth {breadth_pct:.1f}% (10-15%) but {symbol} is Major with score {ultra_score:.1f} >= 80. Allowing limit.")
-                        else:
+                    if trade_direction == "SHORT":
+                        # For shorts, high breadth (>85%) is RISK-OFF
+                        if breadth_pct > 90.0:
                             max_exposure = 0
-                            logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% (10-15%). {symbol} blocked (Score < 80 or not major).")
-                    elif breadth_pct < 40.0:
-                        max_exposure = 3
-                    elif regime_val == "SIDEWAYS" or breadth_pct <= 70.0:
-                        max_exposure = 5
+                            logger.warning(f"HARD RISK-OFF (SHORT): Breadth {breadth_pct:.1f}% > 90%. ALL shorts BLOCKED.")
+                        elif breadth_pct > 85.0:
+                            if symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"] and ultra_score >= 80:
+                                max_exposure = 1
+                                logger.info(f"RISK-OFF EXCEPTION (SHORT): Breadth {breadth_pct:.1f}% (85-90%) but {symbol} is Major with score >= 80.")
+                            else:
+                                max_exposure = 0
+                                logger.warning(f"HARD RISK-OFF (SHORT): Breadth {breadth_pct:.1f}% (85-90%). {symbol} blocked.")
+                        elif breadth_pct > 60.0:
+                            max_exposure = 3
+                        elif regime_val == "SIDEWAYS" or breadth_pct >= 30.0:
+                            max_exposure = 5
+                        else:
+                            max_exposure = 8
                     else:
-                        max_exposure = 8
+                        if breadth_pct < 10.0:
+                            max_exposure = 0
+                            logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% < 10%. ALL new limits BLOCKED for {symbol}.")
+                        elif breadth_pct < 15.0:
+                            if symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"] and ultra_score >= 80:
+                                max_exposure = 1
+                                logger.info(f"RISK-OFF EXCEPTION: Breadth {breadth_pct:.1f}% (10-15%) but {symbol} is Major with score {ultra_score:.1f} >= 80. Allowing limit.")
+                            else:
+                                max_exposure = 0
+                                logger.warning(f"HARD RISK-OFF: Breadth {breadth_pct:.1f}% (10-15%). {symbol} blocked (Score < 80 or not major).")
+                        elif breadth_pct < 40.0:
+                            max_exposure = 3
+                        elif regime_val == "SIDEWAYS" or breadth_pct <= 70.0:
+                            max_exposure = 5
+                        else:
+                            max_exposure = 8
                         
                     exposure_slots_ok = total_exposure < max_exposure
                     slots_ok = slots_ok and exposure_slots_ok
@@ -1463,7 +1475,7 @@ class ApexSystem:
                     )
 
                     if sltp is None:
-                        logger.info(f"{symbol} - Setup rejected by Risk Engine: did not meet min R:R ratio (> 1.5) or structural SL exceeded 4.5%.")
+                        logger.info(f"{symbol} - Setup rejected by Risk Engine: did not meet min R:R ratio (> 1.5) or structural SL exceeded 8.0%.")
                         continue
 
                     if getattr(sltp, 'is_pullback', False):
