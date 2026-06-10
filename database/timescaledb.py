@@ -621,9 +621,9 @@ async def get_recent_features(limit: int = 20):
 async def factory_reset_db():
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM signals WHERE status NOT IN ('OPEN', 'BREAKEVEN', 'WAITING', 'WAITING_STRUCTURE')")
-        await conn.execute("DELETE FROM shadow_trades WHERE outcome != 'OPEN'")
-    logger.warning("FACTORY RESET: Historical stats, trades, and ML data wiped (Open trades kept).")
+        await conn.execute("TRUNCATE TABLE signals CASCADE")
+        await conn.execute("TRUNCATE TABLE shadow_trades CASCADE")
+    logger.warning("FACTORY RESET: All tables truncated. Total wipe complete.")
 
 async def get_open_trades():
     pool = await get_pool()
