@@ -87,14 +87,18 @@ class ShadowTradeMonitor:
         for t in trades:
             sym = t['symbol']
             strategy = t.get('strategy', 'TREND')
-            created_str = t['created_at']
-            if not created_str:
+            created_at = t['created_at']
+            if not created_at:
                 continue
                 
-            try:
-                created_at = datetime.strptime(created_str, "%Y-%m-%d %H:%M:%S")
-            except:
-                continue
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+                except:
+                    continue
+                    
+            if hasattr(created_at, 'tzinfo') and created_at.tzinfo is not None:
+                created_at = created_at.replace(tzinfo=None)
                 
             # Dynamic Timeout based on Strategy
             timeout_hours = 6
@@ -121,6 +125,8 @@ class ShadowTradeMonitor:
             status = 'TRACKING'
             mfe = 0.0
             mae = 0.0
+            pnl_pct = 0.0
+            duration_bars = 0
             
             try:
                 since_ms = int(created_at.timestamp() * 1000)
@@ -134,10 +140,14 @@ class ShadowTradeMonitor:
                         c_low   = candle[3]
                         c_close = candle[4]
                         
+                        duration_bars = int((c_ts - since_ms) / 60000)
+                        
                         # [SENIOR QUANT FIX 1] Filter out pre-entry wicks in the entry minute
                         if c_ts <= since_ms < c_ts + 60000:
-                            c_high = c_close
-                            c_low  = c_close
+                            if direction == 'LONG':
+                                c_low = max(c_low, entry)
+                            else:
+                                c_high = min(c_high, entry)
                         
                         # MFE: maximum favourable excursion — always POSITIVE (upside reached)
                         # MAE: maximum adverse excursion — always NEGATIVE (downside hit)
@@ -159,19 +169,23 @@ class ShadowTradeMonitor:
                             be_hit = prev_mfe >= 1.0 and c_low <= entry
                             
                             if sl_hit and tp_hit:
-                                if c_close >= c_open: # Green candle: low first, then high
+                                sl_dist = abs(c_open - sl) / entry
+                                tp_dist = abs(c_open - tp1) / entry
+                                if sl_dist < tp_dist:
                                     status = 'LOST'
                                     mae = min(mae, (sl - entry) / entry * 100)
                                     break
-                                else: # Red candle: high first, then low
+                                else:
                                     pnl_pct = (tp1 - entry) / entry * 100
                                     status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
                                     break
                             elif be_hit and tp_hit:
-                                if c_close >= c_open: # Green candle: low first, then high
+                                sl_dist = abs(c_open - entry) / entry
+                                tp_dist = abs(c_open - tp1) / entry
+                                if sl_dist < tp_dist:
                                     status = 'WON_BREAKEVEN'
                                     break
-                                else: # Red candle: high first, then low
+                                else:
                                     pnl_pct = (tp1 - entry) / entry * 100
                                     status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
                                     break
@@ -193,19 +207,23 @@ class ShadowTradeMonitor:
                             be_hit = prev_mfe >= 1.0 and c_high >= entry
                             
                             if sl_hit and tp_hit:
-                                if c_close <= c_open: # Red candle: high first, then low
+                                sl_dist = abs(c_open - sl) / entry
+                                tp_dist = abs(c_open - tp1) / entry
+                                if sl_dist < tp_dist:
                                     status = 'LOST'
                                     mae = min(mae, (entry - sl) / entry * 100)
                                     break
-                                else: # Green candle: low first, then high
+                                else:
                                     pnl_pct = (entry - tp1) / entry * 100
                                     status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
                                     break
                             elif be_hit and tp_hit:
-                                if c_close <= c_open: # Red candle: high first, then low
+                                sl_dist = abs(c_open - entry) / entry
+                                tp_dist = abs(c_open - tp1) / entry
+                                if sl_dist < tp_dist:
                                     status = 'WON_BREAKEVEN'
                                     break
-                                else: # Green candle: low first, then high
+                                else:
                                     pnl_pct = (entry - tp1) / entry * 100
                                     status = 'WON' if pnl_pct >= 1.0 else 'BREAKEVEN'
                                     break
@@ -227,10 +245,12 @@ class ShadowTradeMonitor:
             if status == 'TRACKING' and now - created_at > timeout_delta:
                 status = 'TIMEOUT'
                 
-            duration_bars = int((now - created_at).total_seconds() / 60)
+            if duration_bars == 0:
+                duration_bars = int((now - created_at).total_seconds() / 60)
+                
             if status != 'TRACKING':
-                await update_shadow_trade_status(t['id'], status, mfe, mae, duration_bars)
-                logger.info(f"[SHADOW TRADE] {sym} {direction} [{strategy}] resolved as {status}. MFE: +{mfe:.2f}%, MAE: {mae:.2f}%")
+                await update_shadow_trade_status(t['id'], status, mfe, mae, duration_bars, pnl_pct)
+                logger.info(f"[SHADOW TRADE] {sym} {direction} [{strategy}] resolved as {status}. MFE: +{mfe:.2f}%, MAE: {mae:.2f}%, PnL: {pnl_pct:.2f}%")
             else:
                 # Still tracking, but update MFE/MAE in DB so we can see it on the dashboard
                 pool = await get_pool()

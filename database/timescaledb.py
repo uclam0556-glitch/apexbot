@@ -138,6 +138,11 @@ async def init_timescaledb():
             logger.warning(f"Failed to add v11 columns to signals: {e}")
 
         try:
+            await conn.execute("ALTER TABLE shadow_trades ADD COLUMN IF NOT EXISTS pnl_pct DOUBLE PRECISION;")
+        except Exception as e:
+            logger.warning(f"Failed to add pnl_pct column to shadow_trades: {e}")
+
+        try:
             await conn.execute("SELECT create_hypertable('signals', 'created_at');")
         except asyncpg.exceptions.ObjectInUseError:
             pass
@@ -177,6 +182,7 @@ async def init_timescaledb():
                 outcome         TEXT,
                 mfe_pct         DOUBLE PRECISION,
                 mae_pct         DOUBLE PRECISION,
+                pnl_pct         DOUBLE PRECISION,
                 bars_to_outcome INTEGER,
                 session_tag     TEXT,
                 regime_at_entry TEXT,
@@ -361,7 +367,7 @@ async def get_open_shadow_trades() -> list:
 async def get_stats_timescale() -> dict:
     pool = await get_pool()
     query = """
-        SELECT outcome, COUNT(*) as cnt, SUM(mfe_pct) as sum_mfe
+        SELECT outcome, COUNT(*) as cnt, SUM(pnl_pct) as sum_pnl
         FROM shadow_trades 
         WHERE outcome != 'OPEN'
         GROUP BY outcome;
@@ -382,14 +388,14 @@ async def get_stats_timescale() -> dict:
         
         if out in wins: stats['won'] += cnt
         elif out == 'LOST': stats['lost'] += cnt
-        elif 'BREAKEVEN' in out: stats['breakeven'] += cnt
+        elif out == 'BREAKEVEN': stats['breakeven'] += cnt
         elif out == 'TIMEOUT_SMALL_WIN': stats['small_win'] += cnt
         elif out == 'TIMEOUT_SMALL_LOSS': stats['small_loss'] += cnt
         elif out == 'TIMEOUT': stats['breakeven'] += cnt # approximate
         
-        # approximate PnL sum using MFE for tracking purposes
-        if r['sum_mfe']:
-            stats['pnl_sum'] += r['sum_mfe']
+        # calculate true PnL using pnl_pct instead of MFE
+        if r.get('sum_pnl'):
+            stats['pnl_sum'] += r['sum_pnl']
             
     if stats['total'] > 0:
         stats['win_rate'] = (stats['won'] + stats['small_win']) / stats['total'] * 100
@@ -616,7 +622,7 @@ async def factory_reset_db():
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM signals WHERE status NOT IN ('OPEN', 'BREAKEVEN', 'WAITING', 'WAITING_STRUCTURE')")
-        await conn.execute("DELETE FROM shadow_trades WHERE outcome IS NOT NULL")
+        await conn.execute("DELETE FROM shadow_trades WHERE outcome != 'OPEN'")
     logger.warning("FACTORY RESET: Historical stats, trades, and ML data wiped (Open trades kept).")
 
 async def get_open_trades():
@@ -677,16 +683,21 @@ async def update_pullback_limit_entries(
 async def get_tracking_shadow_trades():
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return await conn.fetch("SELECT * FROM shadow_trades WHERE outcome IS NULL")
+        return await conn.fetch("""
+            SELECT st.*, s.direction, s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, s.strategy 
+            FROM shadow_trades st 
+            JOIN signals s ON st.signal_id = s.id 
+            WHERE st.outcome = 'OPEN'
+        """)
 
-async def update_shadow_trade_status(trade_id: int, outcome: str, mfe_pct: float, mae_pct: float, duration: int):
+async def update_shadow_trade_status(trade_id: int, outcome: str, mfe_pct: float, mae_pct: float, duration: int, pnl_pct: float = 0.0):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute('''
             UPDATE shadow_trades 
-            SET outcome = $1, mfe_pct = $2, mae_pct = $3, bars_to_outcome = $4, resolved_at = NOW()
-            WHERE id = $5
-        ''', outcome, mfe_pct, mae_pct, duration, trade_id)
+            SET outcome = $1, mfe_pct = $2, mae_pct = $3, bars_to_outcome = $4, pnl_pct = $5, resolved_at = NOW()
+            WHERE id = $6
+        ''', outcome, mfe_pct, mae_pct, duration, pnl_pct, trade_id)
 
 async def get_unchecked_missed_signals():
     pool = await get_pool()

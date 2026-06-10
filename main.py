@@ -288,6 +288,9 @@ class ApexSystem:
                     logger.info(f"Tracking {len(open_trades)} open paper trades...")
                     for t in open_trades:
                         trade = dict(t)
+                        if trade.get('is_shadow', True):
+                            continue # Let ShadowMonitor resolve it
+                            
                         symbol = trade['symbol']
                         # Fetch latest 1m candles to catch wicks (Stop Loss hits between 15s intervals)
                         ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=2)
@@ -706,7 +709,13 @@ class ApexSystem:
                     
                     df_1h = tf_data['1h']
                     current_price = df_1h['close'].iloc[-1]
-                    atr_1h = (df_1h['high'] - df_1h['low']).rolling(14).mean().iloc[-1]
+                    # --- ATR (Real True Range) ---
+                    prev_close = df_1h['close'].shift(1)
+                    tr1 = df_1h['high'] - df_1h['low']
+                    tr2 = (df_1h['high'] - prev_close).abs()
+                    tr3 = (df_1h['low'] - prev_close).abs()
+                    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+                    atr_1h = tr.rolling(14).mean().iloc[-1]
                     
                     # --- RSI (Real) ---
                     delta = df_1h['close'].diff()
@@ -754,8 +763,8 @@ class ApexSystem:
                             daily_volume_usd=daily_volume_usd,
                             funding_rate=0.0, # Spot only
                             market_type="SPOT",
-                            bid_price=current_price * 0.999, # Fallback
-                            ask_price=current_price * 1.001, # Fallback
+                            bid_price=None, # Real spread checked via orderbook later
+                            ask_price=None, # Real spread checked via orderbook later
                             secondary_exchange_price=None,
                             current_price=current_price,
                             prev_hour_price=prev_1h_price
@@ -977,27 +986,41 @@ class ApexSystem:
                         low_96h = df_1h['low'].min()
                         
                     range_96h = high_96h - low_96h
-                    premium_discount = 1.0
+                    gradient_pd = 1.0
                     if range_96h > 0:
-                        premium_discount = (current_price - low_96h) / range_96h
-                        premium_threshold = high_96h - (range_96h * 0.30) # Top 30%
-                        if current_price >= premium_threshold and trade_strategy == "TREND" and trade_direction == "LONG":
-                            in_premium_zone = True
-                            logger.info(f"{symbol} - Price in Premium Zone (Top 30% of 96h). Flagged for Overextension Index.")
+                        gradient_pd = (current_price - low_96h) / range_96h
+                        if trade_direction == "LONG":
+                            premium_threshold = high_96h - (range_96h * 0.30) # Top 30%
+                            if current_price >= premium_threshold and trade_strategy == "TREND":
+                                in_premium_zone = True
+                                logger.info(f"{symbol} - Price in Premium Zone (Top 30% of 96h). Flagged for Overextension Index.")
+                        else:
+                            discount_threshold = low_96h + (range_96h * 0.30) # Bottom 30%
+                            if current_price <= discount_threshold and trade_strategy == "TREND":
+                                in_premium_zone = True
+                                logger.info(f"{symbol} - Price in Discount Zone (Bottom 30% of 96h). Flagged for Overextension Index.")
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 1: MOMENTUM EXHAUSTION ──────────────────
+                    block_reason = None  # Initialize before any filter can set it
                     momentum_penalty = 0.0
-                    if trade_direction == "LONG" and trade_strategy == "TREND":
-                        is_bearish_cvd = cvd_score_val < 0
-                        is_rsi_overbought = rsi_now > 78
-                        is_premium_bearish = in_premium_zone and is_bearish_cvd
+                    if trade_strategy == "TREND":
+                        if trade_direction == "LONG":
+                            is_bearish_cvd = cvd_score_val < 0
+                            is_rsi_overextended = rsi_now > 78
+                            momentum_change_pct = price_change_4h_pct
+                        else:
+                            is_bearish_cvd = cvd_score_val > 0
+                            is_rsi_overextended = rsi_now < 22
+                            momentum_change_pct = price_change_4h_pct * -1
+
+                        is_zone_exhaustion = in_premium_zone and is_bearish_cvd
                         
                         # Extreme hard block conditions
-                        if price_change_4h_pct > (4 * atr_1h_pct) or price_change_4h_pct > 8.0 or \
-                           (price_change_4h_pct > (2 * atr_1h_pct) and is_bearish_cvd) or \
-                           (price_change_4h_pct > (2 * atr_1h_pct) and is_rsi_overbought) or \
-                           (price_change_4h_pct > (2 * atr_1h_pct) and is_premium_bearish):
-                            logger.info(f"{symbol} - [BLOCKED] Momentum Exhaustion (Hard Block). Up {price_change_4h_pct:.2f}%. Late impulse trap. Skipping.")
+                        if momentum_change_pct > (4 * atr_1h_pct) or momentum_change_pct > 8.0 or \
+                           (momentum_change_pct > (2 * atr_1h_pct) and is_bearish_cvd) or \
+                           (momentum_change_pct > (2 * atr_1h_pct) and is_rsi_overextended) or \
+                           (momentum_change_pct > (2 * atr_1h_pct) and is_zone_exhaustion):
+                            logger.info(f"{symbol} - [BLOCKED] Momentum Exhaustion (Hard Block). Moved {momentum_change_pct:.2f}%. Late impulse trap. Skipping.")
                             await insert_filter_block_record(symbol, trade_strategy or "UNKNOWN", "Momentum Exhaustion", 0.0)
                             proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
                             proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
@@ -1005,10 +1028,10 @@ class ApexSystem:
                             # We don't continue here to allow V7 calculation and logging
                         
                         # Penalty conditions instead of hard block
-                        elif price_change_4h_pct > (3 * atr_1h_pct):
+                        elif momentum_change_pct > (3 * atr_1h_pct):
                             momentum_penalty = 15.0
                             logger.info(f"{symbol} - Momentum Growth > 3x ATR. Applying penalty -15 to final score.")
-                        elif price_change_4h_pct > (2 * atr_1h_pct):
+                        elif momentum_change_pct > (2 * atr_1h_pct):
                             momentum_penalty = 10.0
                             logger.info(f"{symbol} - Momentum Growth > 2x ATR. Applying penalty -10 to final score.")
 
@@ -1073,11 +1096,13 @@ class ApexSystem:
                     size_multiplier = health_result.position_size_multiplier * uni_multiplier
                     
                     # We do NOT return early. We will decide at the very end.
-                    block_reason = None
-                    if health_result.level == DataHealthLevel.HARD_BLOCK:
-                        block_reason = f"DATA_HEALTH_FAIL: {health_result.detail}"
-                    elif uni_multiplier == 0.0:
-                        block_reason = "UNIVERSE_BLACKLIST"
+                    # [CRITICAL FIX] Only set block_reason from health/universe if no
+                    # previous institutional filter has already blocked the signal.
+                    if block_reason is None:
+                        if health_result.level == DataHealthLevel.HARD_BLOCK:
+                            block_reason = f"DATA_HEALTH_FAIL: {health_result.detail}"
+                        elif uni_multiplier == 0.0:
+                            block_reason = "UNIVERSE_BLACKLIST"
 
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 4: Z-SCORE GRAVITY ─────────────────────

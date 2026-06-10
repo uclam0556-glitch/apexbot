@@ -34,8 +34,8 @@ def create_app() -> FastAPI:
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
-                rows = await conn.fetch("SELECT * FROM signals WHERE status IN ('WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'BREAKEVEN', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_SMALL_LOSS', 'TIMEOUT_BREAKEVEN')")
-                open_count = await conn.fetchval("SELECT COUNT(*) FROM signals WHERE status IN ('OPEN', 'BREAKEVEN')")
+                rows = await conn.fetch("SELECT * FROM shadow_trades WHERE outcome IN ('WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'BREAKEVEN', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_SMALL_LOSS', 'TIMEOUT_BREAKEVEN')")
+                open_count = await conn.fetchval("SELECT COUNT(*) FROM shadow_trades WHERE outcome = 'OPEN'")
 
             rows = [dict(r) for r in rows]
             total = len(rows)
@@ -49,8 +49,8 @@ def create_app() -> FastAPI:
             # Wait, the v10.5 signals table doesn't have pnl_pct. 
             # I will assume all `pnl_pct` calculations return 0 for now since we are in Shadow Mode and the system relies on shadow_trades for stats.
             
-            won = [r for r in rows if r['status'] in ('WON', 'WON_BREAKEVEN')]
-            lost = [r for r in rows if r['status'] == 'LOST']
+            won = [r for r in rows if r['outcome'] in ('WON', 'WON_BREAKEVEN')]
+            lost = [r for r in rows if r['outcome'] == 'LOST']
             
             active_trades = len(won) + len(lost)
             win_rate = round(len(won) / active_trades * 100, 1) if active_trades > 0 else 0
@@ -258,7 +258,9 @@ def create_app() -> FastAPI:
                         SUM(CASE WHEN st.outcome = 'LOST' THEN 1 ELSE 0 END) as lost,
                         SUM(CASE WHEN st.outcome = 'TIMEOUT' THEN 1 ELSE 0 END) as timeout,
                         SUM(CASE WHEN st.outcome = 'BREAKEVEN' THEN 1 ELSE 0 END) as breakeven,
-                        SUM(CASE WHEN st.outcome IS NULL THEN 1 ELSE 0 END) as tracking
+                        SUM(CASE WHEN st.outcome = 'WON_BREAKEVEN' THEN 1 ELSE 0 END) as won_breakeven,
+                        SUM(CASE WHEN st.outcome IN ('TIMEOUT_SMALL_WIN','TIMEOUT_SMALL_LOSS','TIMEOUT_BREAKEVEN') THEN 1 ELSE 0 END) as timeout_variants,
+                        SUM(CASE WHEN st.outcome = 'OPEN' THEN 1 ELSE 0 END) as tracking
                     FROM shadow_trades st
                     JOIN signals s ON st.signal_id = s.id
                     GROUP BY s.block_reason
@@ -320,9 +322,9 @@ def create_app() -> FastAPI:
             pool = await get_pool()
             async with pool.acquire() as conn:
                 query = """
-                    SELECT regime_at_entry as regime, COUNT(*) as total, SUM(CASE WHEN outcome = 'WON' THEN 1 ELSE 0 END) as won
+                    SELECT regime_at_entry as regime, COUNT(*) as total, SUM(CASE WHEN outcome IN ('WON', 'WON_BREAKEVEN') THEN 1 ELSE 0 END) as won
                     FROM shadow_trades 
-                    WHERE outcome IS NOT NULL
+                    WHERE outcome IN ('WON', 'LOST', 'WON_BREAKEVEN')
                     GROUP BY regime_at_entry
                 """
                 regime_rows = await conn.fetch(query)

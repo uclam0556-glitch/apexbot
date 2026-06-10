@@ -222,7 +222,7 @@ class RiskEngine:
         # half_kelly is a fraction (e.g. 0.02 = 2%); convert appropriately
         # Kelly outputs fraction of capital to risk, already in % terms when
         # avg_win_pct and avg_loss_pct are expressed in %
-        adjusted_size_pct = half_kelly * 100.0 * vol_mult * dd_mult
+        adjusted_size_pct = half_kelly * vol_mult * dd_mult
 
         # Step 6: Hard caps (Regime-based)
         # V6.1: Regime caps: LOW (BULL)=2.0%, NORMAL (SIDEWAYS)=1.0%, HIGH (BEAR)=0.5%
@@ -586,7 +586,7 @@ class RiskEngine:
         min_sl_dist = entry * 0.007
         if sl_distance < min_sl_dist:
             sl_distance = min_sl_dist
-            stop_loss = entry - sl_distance
+            stop_loss = entry - sl_distance if is_long else entry + sl_distance
 
         # Candidate: nearest swing anchor (low for LONG, high for SHORT)
         swing_list = []
@@ -621,12 +621,12 @@ class RiskEngine:
         # Regime-based limits & volatility-based ATR targets
         if regime == "BULL":
             atr_target_pct = atr_pct * 2.0
-            max_tp_pct = 8.0 if (v7_score >= 85 and mtf_score >= 6.0) else 6.0
+            max_tp_pct = 8.0 if (v7_score >= 85 and mtf_score >= 0.6) else 6.0
             min_tp_pct = sl_distance_pct * 1.5
         elif regime == "SIDEWAYS":
             atr_target_pct = atr_pct * 1.3
             max_tp_pct = 4.0 if v7_score >= 85 else 3.5
-            min_tp_pct = sl_distance_pct * 1.0
+            min_tp_pct = sl_distance_pct * 1.5
         elif regime == "CAPITULATION":
             atr_target_pct = atr_pct * 1.5
             max_tp_pct = 4.0
@@ -1064,7 +1064,7 @@ class RiskEngine:
                             stop_loss=round(stop_loss, 8),
                             expected_sl_pct=round(new_sl_dist_pct, 2),
                             expected_tp_pct=round(new_tp_pct, 2),
-                            expected_rr=round(new_tp_pct / new_sl_dist_pct, 2),
+                            expected_rr=round(new_tp_pct / new_sl_dist_pct, 2) if new_sl_dist_pct > 0 else 0.0,
                             ttl_minutes=ttl_minutes,
                             cancel_reason="N/A",
                             fill_status="WAITING",
