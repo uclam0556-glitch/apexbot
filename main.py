@@ -1463,9 +1463,9 @@ class ApexSystem:
                                     "position_usd": 30.0,
                                     "risk_usd": 15.0,
                                     "rr_ratio": 1.5,
-                                    "confidence_bucket": confidence_data["bucket"],
-                                    "confidence_win_rate": confidence_data["win_rate"],
-                                    "confidence_sample_size": confidence_data["sample_size"]
+                                    "confidence_bucket": "Mock (Shadow)",
+                                    "confidence_win_rate": 50.0,
+                                    "confidence_sample_size": 100
                                 }
                                 await send_signal(bot, int(chat_id_str), signal_data_mock)
                                 await bot.session.close()
