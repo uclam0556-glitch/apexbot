@@ -576,8 +576,9 @@ class RiskEngine:
         if atr <= 0:
             raise ValueError(f"ATR must be positive, got {atr}")
         if direction != "LONG":
-            raise ValueError(f"direction must be 'LONG', got {direction} (Spot-Only mode)")
-
+            self._log.warning("spot_only_block", direction=direction, reason="Risk Engine currently restricted to LONG only (Spot-Only mode).")
+            return None
+            
         is_long = True
         key_levels = key_levels or []
 

@@ -731,7 +731,7 @@ class ApexSystem:
                             from shared.symbols import normalize_symbol
                             ws_data = global_state.live_prices.get(normalize_symbol(symbol), {})
                         last_ws_ts = ws_data.get("timestamp", 0)
-                        last_ws_update = datetime.utcfromtimestamp(last_ws_ts) if last_ws_ts > 0 else None
+                        last_ws_update = float(last_ws_ts) if last_ws_ts > 0 else None
 
                         ohlcv_vol_series = tf_data['15m']['volume'].values[-20:] if '15m' in tf_data and len(tf_data['15m']) >= 20 else None
                         curr_vol_15m = tf_data['15m']['volume'].iloc[-1] if '15m' in tf_data and not tf_data['15m'].empty else avg_vol_3
