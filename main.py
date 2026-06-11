@@ -80,7 +80,7 @@ from services.optimization.dynamic_weights import DynamicWeightsOptimizer
 from shared.state import global_state
 
 # V6.0 Shadow & Health
-from services.engine.shadow_monitor import ShadowTradeMonitor
+from services.trading.exit_engine import ExitEngine
 from services.engine.data_health import check_data_health
 # v11.0 Institutional Modules
 from services.data.validator import DataValidator, DataHealthStatus  # Direct institutional use
@@ -188,7 +188,7 @@ class ApexSystem:
         
         self.order_router = OrderRouter(self.exchange, is_live=self.config.trading.live_trading_enabled)
         self.fill_monitor = OrderFillMonitor(self.exchange, self.config)
-        self.shadow_monitor = ShadowTradeMonitor()
+        self.exit_engine = ExitEngine()
         
         # v5.0 Engines
         self.ws_manager = ExchangeWSManager()
@@ -289,7 +289,7 @@ class ApexSystem:
                     for t in open_trades:
                         trade = dict(t)
                         if trade.get('is_shadow', True):
-                            # Shadow/blocked trades handled by ShadowMonitor — skip
+                            # Shadow/blocked trades handled by ExitEngine — skip
                             continue
 
                         symbol = trade['symbol']
@@ -2579,7 +2579,7 @@ class ApexSystem:
         # asyncio.create_task(self.background_pullback_tracker())
         asyncio.create_task(self.fill_monitor.start())
         asyncio.create_task(self.order_router.start_limit_dispatcher())
-        asyncio.create_task(self.shadow_monitor.start())
+        asyncio.create_task(self.exit_engine.start())
         asyncio.create_task(self.ws_manager.start(self.config.trading.symbols))
         asyncio.create_task(rs_matrix_engine.fast_price_poller(self.config.trading.symbols))
         

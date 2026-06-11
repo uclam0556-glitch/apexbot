@@ -223,6 +223,22 @@ async def init_timescaledb():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_stb_signal ON shadow_trades_blocked (signal_id);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_stb_outcome_time ON shadow_trades_blocked (outcome, created_at DESC);")
 
+        # APEX v11.0: Dynamic Exit Engine Migrations
+        try:
+            for tbl in ["shadow_trades", "shadow_trades_blocked"]:
+                await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS unrealized_pnl_pct DOUBLE PRECISION DEFAULT 0.0;")
+                await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS realized_pnl_pct DOUBLE PRECISION DEFAULT 0.0;")
+                await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS highest_price_seen DOUBLE PRECISION;")
+                await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS lowest_price_seen DOUBLE PRECISION;")
+                await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS partial_exit_count INTEGER DEFAULT 0;")
+                await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS remaining_size_pct DOUBLE PRECISION DEFAULT 100.0;")
+                await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS breakeven_activated BOOLEAN DEFAULT FALSE;")
+                await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS trailing_stop_price DOUBLE PRECISION;")
+                await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS exit_reason TEXT;")
+                await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS last_update_at TIMESTAMPTZ;")
+        except Exception as e:
+            logger.warning(f"Failed to add dynamic exit columns to shadow_trades: {e}")
+
         # TABLE 5: System Health
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS system_health (
@@ -692,19 +708,23 @@ async def get_tracking_shadow_trades():
                    st.outcome, st.mfe_pct, st.mae_pct, COALESCE(st.pnl_pct, 0.0) as pnl_pct,
                    st.bars_to_outcome, st.session_tag, st.regime_at_entry, st.logic_version,
                    s.direction, s.entry_price, s.sl_price as stop_loss,
-                   s.tp1_price as take_profit_1, s.strategy
+                   s.tp1_price as take_profit_1, s.strategy,
+                   st.highest_price_seen, st.lowest_price_seen, st.partial_exit_count,
+                   st.remaining_size_pct, st.breakeven_activated, st.trailing_stop_price
             FROM shadow_trades st 
             JOIN signals s ON st.signal_id = s.id 
-            WHERE st.outcome = 'OPEN'
+            WHERE st.outcome IN ('OPEN', 'PARTIAL_TP', 'BREAKEVEN', 'TRAILING')
             UNION ALL
             SELECT st.id, st.signal_id, st.symbol, st.created_at, st.resolved_at,
                    st.outcome, st.mfe_pct, st.mae_pct, 0.0 as pnl_pct,
                    st.bars_to_outcome, st.session_tag, st.regime_at_entry, st.logic_version,
                    s.direction, s.entry_price, s.sl_price as stop_loss,
-                   s.tp1_price as take_profit_1, s.strategy
+                   s.tp1_price as take_profit_1, s.strategy,
+                   st.highest_price_seen, st.lowest_price_seen, st.partial_exit_count,
+                   st.remaining_size_pct, st.breakeven_activated, st.trailing_stop_price
             FROM shadow_trades_blocked st 
             JOIN signals s ON st.signal_id = s.id 
-            WHERE st.outcome = 'OPEN'
+            WHERE st.outcome IN ('OPEN', 'PARTIAL_TP', 'BREAKEVEN', 'TRAILING')
         """)
 
 async def update_shadow_trade_status(trade_id: int, outcome: str, mfe_pct: float, mae_pct: float, duration: int, pnl_pct: float = 0.0):
@@ -724,6 +744,42 @@ async def update_shadow_trade_status(trade_id: int, outcome: str, mfe_pct: float
                 outcome, row['signal_id']
             )
             logger.debug(f"[ShadowMonitor] Synced signals.status={outcome} for signal_id={row['signal_id']}")
+
+async def update_exit_engine_state(trade_id: int, state_updates: dict):
+    """
+    Updates the live trade state for the frontend dashboard and tracking.
+    state_updates can contain:
+    - unrealized_pnl_pct
+    - realized_pnl_pct
+    - highest_price_seen
+    - lowest_price_seen
+    - partial_exit_count
+    - remaining_size_pct
+    - breakeven_activated
+    - trailing_stop_price
+    - exit_reason
+    - status / outcome
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        set_clauses = []
+        values = []
+        for i, (k, v) in enumerate(state_updates.items(), start=1):
+            if k == "status":
+                k = "outcome"
+            set_clauses.append(f"{k} = ${i}")
+            values.append(v)
+            
+        set_clauses.append(f"last_update_at = NOW()")
+        
+        if set_clauses:
+            query = f"UPDATE shadow_trades SET {', '.join(set_clauses)} WHERE id = ${len(values)+1} RETURNING signal_id"
+            values.append(trade_id)
+            row = await conn.fetchrow(query, *values)
+            
+            # Sync signal status if outcome is provided
+            if row and row['signal_id'] and "status" in state_updates:
+                await conn.execute("UPDATE signals SET status = $1 WHERE id = $2", state_updates["status"], row['signal_id'])
 
 async def get_unchecked_missed_signals():
     pool = await get_pool()

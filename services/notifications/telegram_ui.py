@@ -844,48 +844,15 @@ async def send_tp1_notification(bot: Bot, chat_id: int, trade_data: dict, pnl_pc
     except Exception as e:
         logger.error(f"Failed to send TP1 notification: {e}")
 
-async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dict, status: str, pnl_pct: float):
-    """Sends a notification when a trade hits TP or SL."""
-    if status == "WON":
-        header = "✅ <b>ТЕЙК-ПРОФИТ ДОСТИГНУТ</b>"
-        pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
-        color_emoji = "🟢"
-    elif status == "WON_BREAKEVEN":
-        header = "🎯 <b>СДЕЛКА ЗАКРЫТА В ПЛЮС (ТРЕЙЛИНГ)</b>"
-        pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
-        color_emoji = "🟢"
-    elif status == "TIMEOUT":
-        header = "⏱ <b>ЗАКРЫТО ПО ТАЙМ-АУТУ (>6ч)</b>"
-        pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
-        color_emoji = "⚪"
-    elif status == "TIMEOUT_SMALL_WIN":
-        header = "⏱ <b>ВЫХОД ПО ТАЙМ-АУТУ (МИКРО-ПЛЮС)</b>"
-        pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
-        color_emoji = "🟢"
-    elif status == "TIMEOUT_BREAKEVEN":
-        header = "⏱ <b>ВЫХОД ПО ТАЙМ-АУТУ (БЕЗУБЫТОК)</b>"
-        pnl_text = f"+{pnl_pct:.2f}%" if pnl_pct > 0 else f"{pnl_pct:.2f}%"
-        color_emoji = "🟡"
-    elif status == "TIMEOUT_SMALL_LOSS":
-        header = "⏱ <b>ВЫХОД ПО ТАЙМ-АУТУ (МИКРО-МИНУС)</b>"
-        pnl_text = f"{pnl_pct:.2f}%"
-        color_emoji = "🟠"
-    else:
-        header = "❌ <b>СДЕЛКА ЗАКРЫТА ПО СТОПУ</b>"
-        pnl_text = f"{pnl_pct:.2f}%"
-        color_emoji = "🔴"
-        
+async def send_trade_update_notification(bot: Bot, chat_id: int, sym: str, dir_str: str, pnl_pct: float, mfe_pct: float, msg: str, remaining_pct: float):
+    """Sends a notification for partial TP or breakeven updates."""
     text = (
-        f"{header}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🪙 <b>Монета:</b> {trade_data.get('symbol')}\n"
-        f"📈 <b>Направление:</b> {trade_data.get('direction', 'LONG')}\n\n"
-        f"💸 <b>Итоговый PnL:</b>  <b>{pnl_text}</b> {color_emoji}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Вход:</b>  ${format_price(trade_data.get('entry_price', 0))}\n"
-        f"🏁 <b>Выход:</b> ${format_price(trade_data.get('take_profit_3', 0) if status == 'WON' else trade_data.get('stop_loss', 0))}\n\n"
-        f"🕒 <i>Открыта: {trade_data.get('opened_at', '—')} UTC</i>\n"
-        f"🏁 <i>Закрыта: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC</i>"
+        f"🔄 <b>TRADE UPDATE | {sym}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Текущий PnL: <b>{pnl_pct:+.2f}%</b>\n"
+        f"MFE (Макс прибыль): <b>{mfe_pct:+.2f}%</b>\n\n"
+        f"🔔 <b>{msg}</b>\n"
+        f"Оставшийся объем: <b>{remaining_pct:.0f}%</b>\n"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
@@ -894,7 +861,46 @@ async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dic
     try:
         await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
-        logger.error(f"Telegram failed to send result: {e}")
+        logger.error(f"Failed to send trade update notification: {e}")
+
+async def send_trade_result_notification(bot: Bot, chat_id: int, trade_data: dict, status: str, pnl_pct: float, mfe_pct: float = 0.0, exit_reason: str = ""):
+    """Sends a notification when a trade hits TP, SL, Trailing Stop, or Momentum Decay."""
+    header = "🏁 <b>СДЕЛКА ЗАКРЫТА</b>"
+    if 'WON' in status or pnl_pct > 0:
+        header = "✅ <b>ТЕЙК-ПРОФИТ / ТРЕЙЛИНГ ДОСТИГНУТ</b>"
+    elif 'BREAKEVEN' in status or exit_reason == 'BREAKEVEN':
+        header = "🛡 <b>ЗАКРЫТО В БЕЗУБЫТОК</b>"
+    else:
+        header = "❌ <b>СТОП-ЛОСС ПОЛУЧЕН</b>"
+
+    text = (
+        f"{header} | {trade_data.get('symbol')}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📉 <b>Причина выхода:</b> {exit_reason or status}\n"
+        f"💸 <b>Итоговый PnL:</b>  <b>{pnl_pct:+.2f}%</b>\n"
+        f"📈 <b>MFE (Макс прибыль):</b>  <b>{mfe_pct:+.2f}%</b>\n\n"
+    )
+    if 'WON' in status or pnl_pct > 0:
+        text += "💰 Прибыль успешно зафиксирована. 🚀\n"
+    elif 'BREAKEVEN' in status or exit_reason == 'BREAKEVEN':
+        text += "Капитал сохранен. Ждем новую возможность. 🛡\n"
+    else:
+        text += "Риск-менеджмент защитил капитал. Ищем новый вход. 🛡\n"
+
+    text += (
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕒 <i>Открыта: {trade_data.get('created_at', '—')}</i>\n"
+        f"🏁 <i>Закрыта: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC</i>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+         InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
+    ])
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Failed to send result notification: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
