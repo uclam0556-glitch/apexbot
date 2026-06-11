@@ -631,7 +631,8 @@ async def factory_reset_db():
 async def get_open_trades():
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return await conn.fetch("SELECT * FROM signals WHERE status IN ('OPEN', 'BREAKEVEN')")
+        # Only count real (is_shadow=FALSE) trades for ExposureManager slot calculation
+        return await conn.fetch("SELECT * FROM signals WHERE status IN ('OPEN', 'BREAKEVEN') AND is_shadow = FALSE")
 
 async def save_pullback_item(
     symbol: str, direction: str, score: float, original_entry: float, swing_low: float,
@@ -709,11 +710,20 @@ async def get_tracking_shadow_trades():
 async def update_shadow_trade_status(trade_id: int, outcome: str, mfe_pct: float, mae_pct: float, duration: int, pnl_pct: float = 0.0):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute('''
+        # Update the shadow trade outcome
+        row = await conn.fetchrow('''
             UPDATE shadow_trades 
             SET outcome = $1, mfe_pct = $2, mae_pct = $3, bars_to_outcome = $4, pnl_pct = $5, resolved_at = NOW()
             WHERE id = $6
+            RETURNING signal_id
         ''', outcome, mfe_pct, mae_pct, duration, pnl_pct, trade_id)
+        # Also sync signals.status so ExposureManager slot count stays accurate
+        if row and row['signal_id']:
+            await conn.execute(
+                "UPDATE signals SET status = $1 WHERE id = $2",
+                outcome, row['signal_id']
+            )
+            logger.debug(f"[ShadowMonitor] Synced signals.status={outcome} for signal_id={row['signal_id']}")
 
 async def get_unchecked_missed_signals():
     pool = await get_pool()
