@@ -254,6 +254,7 @@ class ExitEngine:
         #    but never tighter than the alt-noise floor.
         if mfe_pct >= TRAIL_ACTIVATION_MFE_PCT:
             trail_distance_pct = max(TRAIL_MIN_DISTANCE_PCT, TRAIL_RATIO_OF_MFE * mfe_pct)
+            first_trail = trail_price is None
             if direction == 'LONG':
                 new_trail = highest * (1 - trail_distance_pct / 100.0)
                 if not trail_price or new_trail > trail_price:
@@ -264,6 +265,11 @@ class ExitEngine:
                 if not trail_price or new_trail < trail_price:
                     trail_price = new_trail
                     update_db = True
+            if first_trail and trail_price and not notify_update:
+                notify_update = (
+                    f"Trailing-стоп активирован 🎯 Стоп: {trail_price:.6g} "
+                    f"({trail_distance_pct:.2f}% от пика)"
+                )
 
         prev_unrealized = t.get('unrealized_pnl_pct')
         if update_db or prev_unrealized is None or abs((prev_unrealized or 0.0) - pnl_pct) > 0.05:
