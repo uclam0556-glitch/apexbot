@@ -38,7 +38,7 @@ import asyncio
 import logging
 import os
 import signal
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import ccxt.async_support as ccxt
