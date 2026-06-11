@@ -6,7 +6,7 @@ Reads from TimescaleDB and rs_matrix_engine.
 import os
 from datetime import datetime
 from pathlib import Path
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import structlog
@@ -29,13 +29,26 @@ def create_app() -> FastAPI:
         """TimescaleDB cannot be easily downloaded as a file. Returns 404."""
         return JSONResponse(status_code=404, content={"error": "Database is TimescaleDB (PostgreSQL). Direct download not supported."})
 
+    CLOSED_OUTCOMES = (
+        'WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'BREAKEVEN',
+        'TIMEOUT_SMALL_WIN', 'TIMEOUT_SMALL_LOSS', 'TIMEOUT_BREAKEVEN',
+        'CLOSED_WON', 'CLOSED_LOST', 'CLOSED_BREAKEVEN', 'MOMENTUM_DECAY', 'TIME_STOP'
+    )
+    OPEN_OUTCOMES = ('OPEN', 'PARTIAL_TP', 'BREAKEVEN', 'TRAILING')
+
     @app.get("/api/stats")
     async def get_stats():
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
-                rows = await conn.fetch("SELECT * FROM shadow_trades WHERE outcome IN ('WON', 'LOST', 'WON_BREAKEVEN', 'TIMEOUT', 'BREAKEVEN', 'TIMEOUT_SMALL_WIN', 'TIMEOUT_SMALL_LOSS', 'TIMEOUT_BREAKEVEN')")
-                open_count = await conn.fetchval("SELECT COUNT(*) FROM shadow_trades WHERE outcome = 'OPEN'")
+                rows = await conn.fetch(
+                    "SELECT outcome, COALESCE(pnl_pct, 0.0) as pnl FROM shadow_trades WHERE outcome = ANY($1::text[])",
+                    list(CLOSED_OUTCOMES)
+                )
+                open_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM shadow_trades WHERE outcome = ANY($1::text[])",
+                    list(OPEN_OUTCOMES)
+                )
 
             rows = [dict(r) for r in rows]
             total = len(rows)
@@ -44,22 +57,25 @@ def create_app() -> FastAPI:
                         "win_rate": 0, "pnl_sum": 0.0, "best_trade": 0.0,
                         "worst_trade": 0.0, "avg_win": 0.0, "avg_loss": 0.0, "regime_stats": {}}
 
-            # NOTE: signals table might not have pnl_pct stored explicitly in v10.5. 
-            # If so, we estimate pnl_pct from entry_price and exit_price, but let's assume it's in v7_components or rr_ratio.
-            # Wait, the v10.5 signals table doesn't have pnl_pct. 
-            # I will assume all `pnl_pct` calculations return 0 for now since we are in Shadow Mode and the system relies on shadow_trades for stats.
-            
-            won = [r for r in rows if r['outcome'] in ('WON', 'WON_BREAKEVEN')]
-            lost = [r for r in rows if r['outcome'] == 'LOST']
-            
-            active_trades = len(won) + len(lost)
-            win_rate = round(len(won) / active_trades * 100, 1) if active_trades > 0 else 0
-            
+            # Real PnL math from shadow_trades.pnl_pct (populated by ExitEngine v2 / tracker)
+            wins = [r for r in rows if r['pnl'] > 0.1]
+            losses = [r for r in rows if r['pnl'] < -0.1]
+            flats = [r for r in rows if -0.1 <= r['pnl'] <= 0.1]
+            pnls = [r['pnl'] for r in rows]
+
+            decided = len(wins) + len(losses)
+            win_rate = round(len(wins) / decided * 100, 1) if decided > 0 else 0
+
             return {
-                "total": total, "open": open_count, "won": len(won), "small_win": 0,
-                "breakeven": 0, "small_loss": 0, "lost": len(lost),
-                "win_rate": win_rate, "pnl_sum": 0.0, "best_trade": 0.0,
-                "worst_trade": 0.0, "avg_win": 0.0, "avg_loss": 0.0, "regime_stats": {}
+                "total": total, "open": open_count, "won": len(wins), "small_win": 0,
+                "breakeven": len(flats), "small_loss": 0, "lost": len(losses),
+                "win_rate": win_rate,
+                "pnl_sum": round(sum(pnls), 2),
+                "best_trade": round(max(pnls), 2) if pnls else 0.0,
+                "worst_trade": round(min(pnls), 2) if pnls else 0.0,
+                "avg_win": round(sum(r['pnl'] for r in wins) / len(wins), 2) if wins else 0.0,
+                "avg_loss": round(sum(r['pnl'] for r in losses) / len(losses), 2) if losses else 0.0,
+                "regime_stats": {}
             }
         except Exception as e:
             logger.error(f"Stats error: {e}")
@@ -69,8 +85,29 @@ def create_app() -> FastAPI:
 
     @app.get("/api/equity-curve")
     async def get_equity_curve():
-        # Equity curve depends on actual trades which are managed via shadow_trades in Demo.
-        return [{"date": "Start", "pnl": 0.0}]
+        """Cumulative realized PnL (%) over resolved trades, by resolution time."""
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT resolved_at, COALESCE(pnl_pct, 0.0) as pnl
+                    FROM shadow_trades
+                    WHERE resolved_at IS NOT NULL AND outcome = ANY($1::text[])
+                    ORDER BY resolved_at ASC
+                    LIMIT 5000
+                    """,
+                    list(CLOSED_OUTCOMES)
+                )
+            curve = []
+            cum = 0.0
+            for r in rows:
+                cum += r['pnl']
+                curve.append({"date": r['resolved_at'].strftime("%m-%d %H:%M"), "pnl": round(cum, 2)})
+            return curve if curve else [{"date": "Start", "pnl": 0.0}]
+        except Exception as e:
+            logger.error(f"Equity curve error: {e}")
+            return [{"date": "Start", "pnl": 0.0}]
 
     @app.get("/api/trades")
     async def get_trades(limit: int = 500, filter_type: str = "ALL"):
@@ -79,13 +116,13 @@ def create_app() -> FastAPI:
             query = "SELECT * FROM signals"
             params = []
             if filter_type == "WON":
-                query += " WHERE status IN ('WON', 'WON_BREAKEVEN')"
+                query += " WHERE status IN ('WON', 'WON_BREAKEVEN', 'CLOSED_WON')"
             elif filter_type == "LOST":
-                query += " WHERE status = 'LOST'"
+                query += " WHERE status IN ('LOST', 'CLOSED_LOST')"
             elif filter_type == "OPEN":
-                query += " WHERE status IN ('OPEN', 'BREAKEVEN')"
+                query += " WHERE status IN ('OPEN', 'BREAKEVEN', 'PARTIAL_TP', 'TRAILING')"
             elif filter_type == "CLOSED":
-                query += " WHERE status NOT IN ('OPEN', 'BREAKEVEN', 'WAITING', 'WAITING_STRUCTURE')"
+                query += " WHERE status NOT IN ('OPEN', 'BREAKEVEN', 'PARTIAL_TP', 'TRAILING', 'WAITING', 'WAITING_STRUCTURE')"
             
             query += " ORDER BY created_at DESC LIMIT $1"
             params.append(limit)
@@ -102,7 +139,17 @@ def create_app() -> FastAPI:
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
-                rows = await conn.fetch("SELECT id, symbol, direction, strategy, entry_price, sl_price as stop_loss, tp1_price as take_profit_1, v7_score_raw as score, 0 as position_usd, created_at as opened_at, status FROM signals WHERE status IN ('OPEN', 'BREAKEVEN') ORDER BY created_at DESC")
+                rows = await conn.fetch("""
+                    SELECT s.id, s.symbol, s.direction, s.strategy, s.entry_price, s.sl_price as stop_loss,
+                           s.tp1_price as take_profit_1, s.v7_score_raw as score, 0 as position_usd,
+                           s.created_at as opened_at, s.status,
+                           st.unrealized_pnl_pct, st.realized_pnl_pct, st.mfe_pct, st.mae_pct,
+                           st.partial_exit_count, st.remaining_size_pct, st.breakeven_activated, st.trailing_stop_price
+                    FROM signals s
+                    LEFT JOIN shadow_trades st ON st.signal_id = s.id
+                    WHERE s.status IN ('OPEN', 'BREAKEVEN', 'PARTIAL_TP', 'TRAILING') AND s.is_shadow = FALSE
+                    ORDER BY s.created_at DESC
+                """)
             return [dict(r) for r in rows]
         except Exception as e:
             logger.error(f"Open trades error: {e}")
@@ -356,8 +403,18 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"error": str(e)}
 
+    def _check_admin(request) -> bool:
+        """Destructive endpoints require APEX_ADMIN_TOKEN (was: anyone with the URL could wipe the DB)."""
+        expected = os.getenv("APEX_ADMIN_TOKEN")
+        if not expected:
+            return False  # no token configured -> destructive API disabled entirely
+        provided = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        return provided == expected
+
     @app.post("/api/reset-shadow-stats")
-    async def api_reset_shadow_stats():
+    async def api_reset_shadow_stats(request: Request):
+        if not _check_admin(request):
+            return JSONResponse(status_code=403, content={"status": "error", "message": "Forbidden: set APEX_ADMIN_TOKEN and pass it as Bearer token."})
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
@@ -367,7 +424,9 @@ def create_app() -> FastAPI:
             return {"status": "error", "message": str(e)}
 
     @app.post("/api/factory-reset")
-    async def api_factory_reset():
+    async def api_factory_reset(request: Request):
+        if not _check_admin(request):
+            return JSONResponse(status_code=403, content={"status": "error", "message": "Forbidden: set APEX_ADMIN_TOKEN and pass it as Bearer token."})
         try:
             await factory_reset_db()
             return {"status": "success", "message": "Database wiped."}

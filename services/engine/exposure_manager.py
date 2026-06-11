@@ -41,12 +41,15 @@ class ExposureManager:
             logger.info(f"[EXPOSURE] {symbol} already has an OPEN position.")
             return False
             
-        # 2. Hard limits based on Market Breadth and Regime
-        max_slots = 3
+        # 2. Hard limits based on Market Breadth and Regime.
+        # Regime values must match MarketRegime enum strings ("BEAR", not "BEAR_MARKET" —
+        # the old names never matched, silently disabling the regime branch).
+        max_slots = 4
         if breadth_pct > 75:
-            max_slots = 5
-        elif breadth_pct < 25 or regime in ["BEAR_MARKET", "DISTRIBUTION"]:
-            max_slots = 1
+            max_slots = 6
+        elif breadth_pct < 25 or regime in ["BEAR", "CRISIS"]:
+            # Paper/shadow stage: keep enough flow for statistics; live should tighten this.
+            max_slots = 2
             
         if exposure["total_slots_used"] >= max_slots:
             logger.info(f"[TRADE_BLOCKED_BY_EXPOSURE] Max slots reached ({exposure['total_slots_used']}/{max_slots}). Cannot add {symbol}.")
