@@ -289,8 +289,9 @@ class ApexSystem:
                     for t in open_trades:
                         trade = dict(t)
                         if trade.get('is_shadow', True):
-                            continue # Let ShadowMonitor resolve it
-                            
+                            # Shadow/blocked trades handled by ShadowMonitor — skip
+                            continue
+
                         symbol = trade['symbol']
                         # Fetch latest 1m candles to catch wicks (Stop Loss hits between 15s intervals)
                         ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=2)
@@ -360,11 +361,15 @@ class ApexSystem:
                         # ─── V7 SMART TIME-BASED EXIT ──────────────────────────
                         if 'opened_at' in trade and trade['opened_at']:
                             try:
-                                from datetime import datetime
-                                dt_str = trade['opened_at'].replace(' ', 'T')
-                                if '.' in dt_str: dt_str = dt_str.split('.')[0]
-                                opened_dt = datetime.fromisoformat(dt_str)
-                                minutes_open = (datetime.utcnow() - opened_dt).total_seconds() / 60
+                                from datetime import datetime, timezone
+                                opened_val = trade['opened_at']
+                                if isinstance(opened_val, str):
+                                    dt_str = opened_val.replace(' ', 'T')
+                                    if '.' in dt_str: dt_str = dt_str.split('.')[0]
+                                    opened_dt = datetime.fromisoformat(dt_str.replace('Z', '')).replace(tzinfo=timezone.utc)
+                                else:
+                                    opened_dt = opened_val if opened_val.tzinfo else opened_val.replace(tzinfo=timezone.utc)
+                                minutes_open = (datetime.now(timezone.utc) - opened_dt).total_seconds() / 60
                                 trade_strat = trade.get('strategy', 'TREND')
                                 
                                 if trade['direction'] == 'LONG':
@@ -439,11 +444,15 @@ class ApexSystem:
                             duration_minutes = 0.0
                             if 'opened_at' in trade and trade['opened_at']:
                                 try:
-                                    from datetime import datetime
-                                    dt_str = trade['opened_at'].replace(' ', 'T')
-                                    if '.' in dt_str: dt_str = dt_str.split('.')[0]
-                                    opened_dt = datetime.fromisoformat(dt_str)
-                                    duration_minutes = (datetime.utcnow() - opened_dt).total_seconds() / 60.0
+                                    from datetime import datetime, timezone
+                                    opened_val = trade['opened_at']
+                                    if isinstance(opened_val, str):
+                                        dt_str = opened_val.replace(' ', 'T')
+                                        if '.' in dt_str: dt_str = dt_str.split('.')[0]
+                                        opened_dt = datetime.fromisoformat(dt_str.replace('Z', '')).replace(tzinfo=timezone.utc)
+                                    else:
+                                        opened_dt = opened_val if opened_val.tzinfo else opened_val.replace(tzinfo=timezone.utc)
+                                    duration_minutes = (datetime.now(timezone.utc) - opened_dt).total_seconds() / 60.0
                                 except Exception:
                                     pass
 

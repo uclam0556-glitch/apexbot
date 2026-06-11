@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import aiosqlite
 import ccxt.async_support as ccxt
 import json
@@ -82,7 +82,7 @@ class ShadowTradeMonitor:
                     logger.warning(f"Individual fetch failed for {sym}. Adding to invalid cache.")
                     self.invalid_symbol_cache.add(sym)
             
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         for t in trades:
             sym = t['symbol']
@@ -93,12 +93,13 @@ class ShadowTradeMonitor:
                 
             if isinstance(created_at, str):
                 try:
-                    created_at = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+                    created_at = datetime.fromisoformat(created_at.replace(' ', 'T').replace('Z', '')).replace(tzinfo=timezone.utc)
                 except:
                     continue
-                    
-            if hasattr(created_at, 'tzinfo') and created_at.tzinfo is not None:
-                created_at = created_at.replace(tzinfo=None)
+
+            # Ensure timezone-aware for comparison with datetime.now(timezone.utc)
+            if hasattr(created_at, 'tzinfo') and created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
                 
             # Dynamic Timeout based on Strategy
             timeout_hours = 6

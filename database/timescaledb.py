@@ -351,20 +351,15 @@ async def update_signal_status(signal_id: int, status: str):
 
 async def get_open_shadow_trades() -> list:
     pool = await get_pool()
+    # Only return NON-shadow (is_shadow=False) open trades for the background tracker.
+    # Shadow/blocked trades are handled exclusively by ShadowMonitor.
     query = '''
         SELECT st.signal_id as id, st.symbol, st.created_at as opened_at, st.mfe_pct, st.mae_pct,
                s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, 
                s.tp2_price as take_profit_2, s.tp3_price as take_profit_3, s.direction, s.strategy, s.status, s.is_shadow
         FROM shadow_trades st
         JOIN signals s ON st.signal_id = s.id
-        WHERE st.outcome = 'OPEN'
-        UNION ALL
-        SELECT st.signal_id as id, st.symbol, st.created_at as opened_at, st.mfe_pct, st.mae_pct,
-               s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, 
-               s.tp2_price as take_profit_2, s.tp3_price as take_profit_3, s.direction, s.strategy, s.status, s.is_shadow
-        FROM shadow_trades_blocked st
-        JOIN signals s ON st.signal_id = s.id
-        WHERE st.outcome = 'OPEN';
+        WHERE st.outcome = 'OPEN' AND s.is_shadow = FALSE;
     '''
     async with pool.acquire() as conn:
         records = await conn.fetch(query)
@@ -692,12 +687,20 @@ async def get_tracking_shadow_trades():
     pool = await get_pool()
     async with pool.acquire() as conn:
         return await conn.fetch("""
-            SELECT st.*, s.direction, s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, s.strategy 
+            SELECT st.id, st.signal_id, st.symbol, st.created_at, st.resolved_at,
+                   st.outcome, st.mfe_pct, st.mae_pct, COALESCE(st.pnl_pct, 0.0) as pnl_pct,
+                   st.bars_to_outcome, st.session_tag, st.regime_at_entry, st.logic_version,
+                   s.direction, s.entry_price, s.sl_price as stop_loss,
+                   s.tp1_price as take_profit_1, s.strategy
             FROM shadow_trades st 
             JOIN signals s ON st.signal_id = s.id 
             WHERE st.outcome = 'OPEN'
             UNION ALL
-            SELECT st.*, s.direction, s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, s.strategy 
+            SELECT st.id, st.signal_id, st.symbol, st.created_at, st.resolved_at,
+                   st.outcome, st.mfe_pct, st.mae_pct, 0.0 as pnl_pct,
+                   st.bars_to_outcome, st.session_tag, st.regime_at_entry, st.logic_version,
+                   s.direction, s.entry_price, s.sl_price as stop_loss,
+                   s.tp1_price as take_profit_1, s.strategy
             FROM shadow_trades_blocked st 
             JOIN signals s ON st.signal_id = s.id 
             WHERE st.outcome = 'OPEN'
