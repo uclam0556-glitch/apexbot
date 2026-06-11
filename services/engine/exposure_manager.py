@@ -49,7 +49,7 @@ class ExposureManager:
             max_slots = 1
             
         if exposure["total_slots_used"] >= max_slots:
-            logger.info(f"[EXPOSURE] Max slots reached ({exposure['total_slots_used']}/{max_slots}). Cannot add {symbol}.")
+            logger.info(f"[TRADE_BLOCKED_BY_EXPOSURE] Max slots reached ({exposure['total_slots_used']}/{max_slots}). Cannot add {symbol}.")
             return False
             
         # 3. Sector Limits (Risk Diversification)

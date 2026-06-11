@@ -770,7 +770,7 @@ class ApexSystem:
                         
                         if not data_report.is_tradeable():
                             reasons = "; ".join(data_report.block_reasons)
-                            logger.warning(f"🛑 {symbol} - [BLOCKED] DataValidator: {reasons}")
+                            logger.warning(f"🛑 [TRADE_BLOCKED_BY_VALIDATOR] {symbol} - {reasons}")
                             await insert_filter_block_record(symbol, "UNKNOWN", f"Data Health: {reasons}", data_report.raw_score)
                             continue
                             
@@ -1413,6 +1413,7 @@ class ApexSystem:
                     
                     # Create shadow trade for everything to collect stats
                     if is_approved:
+                        logger.info(f"[SIGNAL_PASSED] {symbol} {trade_direction} [{trade_strategy or 'TREND'}] passed all filters. Score: {v7_score:.1f}")
                         await create_shadow_trade(
                             symbol=symbol,
                             direction=trade_direction,

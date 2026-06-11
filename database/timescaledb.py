@@ -300,7 +300,7 @@ async def insert_signal_record(signal_record_dict: dict) -> int:
             signal_record_dict.get('regime', 'UNKNOWN'),
             signal_record_dict.get('session', 'UNKNOWN'),
             signal_record_dict.get('logic_version', '10.5.0'),
-            True # is_shadow always true in v10.5 data collection
+            signal_record_dict.get('is_shadow', True)
         )
         return signal_id
 
@@ -503,6 +503,7 @@ async def create_shadow_trade(
         signal_id = await insert_signal_record(signal_dict)
         if signal_id:
             await insert_shadow_trade(signal_id, symbol, "UNKNOWN", regime, "11.0.0")
+            logger.info(f"[PAPER_TRADE_OPENED] {symbol} {direction} [{strategy}] | Entry: {entry_price:.4f} | SL: {stop_loss:.4f} | TP1: {take_profit_1:.4f} | Score: {v7_score:.1f}")
     except Exception as e:
         logger.error(f"Failed to create shadow trade wrapper: {e}")
 
@@ -544,6 +545,7 @@ async def create_shadow_trade_blocked(
         signal_id = await insert_signal_record(signal_dict)
         if signal_id:
             await insert_shadow_trade_blocked(signal_id, symbol, "UNKNOWN", regime, "11.0.0")
+            logger.info(f"[PAPER_TRADE_BLOCKED] {symbol} {direction} [{strategy}] blocked by: {primary_block_reason} | Shadow tracking initiated.")
     except Exception as e:
         logger.error(f"Failed to create shadow trade blocked wrapper: {e}")
 
@@ -692,6 +694,11 @@ async def get_tracking_shadow_trades():
         return await conn.fetch("""
             SELECT st.*, s.direction, s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, s.strategy 
             FROM shadow_trades st 
+            JOIN signals s ON st.signal_id = s.id 
+            WHERE st.outcome = 'OPEN'
+            UNION ALL
+            SELECT st.*, s.direction, s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, s.strategy 
+            FROM shadow_trades_blocked st 
             JOIN signals s ON st.signal_id = s.id 
             WHERE st.outcome = 'OPEN'
         """)

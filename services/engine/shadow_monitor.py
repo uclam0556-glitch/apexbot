@@ -250,8 +250,9 @@ class ShadowTradeMonitor:
                 
             if status != 'TRACKING':
                 await update_shadow_trade_status(t['id'], status, mfe, mae, duration_bars, pnl_pct)
-                logger.info(f"[SHADOW TRADE] {sym} {direction} [{strategy}] resolved as {status}. MFE: +{mfe:.2f}%, MAE: {mae:.2f}%, PnL: {pnl_pct:.2f}%")
+                logger.info(f"[PAPER_TRADE_CLOSED] {sym} {direction} [{strategy}] resolved as {status}. MFE: +{mfe:.2f}%, MAE: {mae:.2f}%, PnL: {pnl_pct:.2f}%")
             else:
+                logger.info(f"[PAPER_TRADE_UPDATED] {sym} | Status: TRACKING | PnL: {pnl_pct:.2f}% | MFE: +{mfe:.2f}% | MAE: {mae:.2f}% | Age: {duration_bars}m")
                 # Still tracking, but update MFE/MAE in DB so we can see it on the dashboard
                 pool = await get_pool()
                 async with pool.acquire() as conn:
