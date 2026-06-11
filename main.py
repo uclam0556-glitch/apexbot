@@ -533,6 +533,8 @@ class ApexSystem:
                 continue
                 
             logger.info("=== STARTING SCAN CYCLE ===")
+            import time as _cycle_time
+            cycle_started = _cycle_time.time()
             
             # ─── V6.2 ON-CHAIN DATA BRIEFING ─────────────────────────────────────────
             try:
@@ -708,10 +710,19 @@ class ApexSystem:
                     for tf, df_tf in zip(timeframes_to_fetch, results):
                         if isinstance(df_tf, pd.DataFrame) and not df_tf.empty:
                             tf_data[tf] = df_tf
-                    
+
                     if '1h' not in tf_data:
                         logger.warning(f"{symbol} - Could not fetch 1h data. Skipping.")
                         continue
+
+                    # Persist closed candles -> in-house history for backtesting/edge studies
+                    try:
+                        from database.timescaledb import bulk_upsert_ohlcv
+                        for tf in ('1d', '4h', '1h', '15m'):
+                            if tf in tf_data:
+                                await bulk_upsert_ohlcv(symbol, tf, tf_data[tf], tail=3)
+                    except Exception as ohlcv_err:
+                        logger.debug(f"OHLCV persist failed (non-fatal): {ohlcv_err}")
                         
                     # ─── ADVANCED INSTITUTIONAL FILTER: CORRELATION RISK (LEGACY - DISABLED) ───
                     df_1d_sym = tf_data.get('1d', pd.DataFrame())
@@ -834,11 +845,10 @@ class ApexSystem:
                         await insert_filter_block_record(symbol, "UNKNOWN", "Volume Gate", 0.0)
                         continue
 
-                    # ─── CVD ANALYSIS ─────────────────────────────────────────────────────────
-                    cvd_result = {"score": 0, "divergence": False, "cvd_signal": "NEUTRAL"}
+                    # ─── CVD ANALYSIS (REAL TAKER FLOW, proxy fallback) ──────────────────────
+                    from services.intelligence.cvd_engine import calculate_cvd_real
                     df_5m_cvd = tf_data.get('5m', pd.DataFrame())
-                    if not df_5m_cvd.empty:
-                        cvd_result = calculate_cvd(df_5m_cvd, lookback=20)
+                    cvd_result = await calculate_cvd_real(symbol, lookback=20, fallback_df=df_5m_cvd)
 
                     cvd_signal = cvd_result.get("cvd_signal", "NEUTRAL")
                     cvd_score_val = cvd_result.get("score", 0)
@@ -1054,7 +1064,7 @@ class ApexSystem:
                     # re-fetched funding from MEXC spot which always returned is_valid=False,
                     # silently disabling this filter.
                     if funding_rate and funding_rate != 0.0:
-                        funding_pct_real = funding_rate * 100  # decimal -> percent
+                        funding_pct_real = funding_rate  # binance_fapi already returns percent
                         if funding_pct_real > 0.04 and rsi_now > 65 and cvd_score_val < 0 and trade_direction == "LONG":
                             logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct_real:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
                             await insert_filter_block_record(symbol, trade_strategy or "UNKNOWN", "Absorption Trap", 0.0)
@@ -1694,8 +1704,9 @@ class ApexSystem:
                     # Use Binance futures funding/OI fetched earlier in this scan (real data);
                     # MEXC spot context returns is_valid=False and used to disable this branch.
                     is_squeeze = False
-                    if trade_direction == "LONG" and funding_rate < -0.0005 and oi_change_1h > 2.0:
-                        logger.info(f"🚨 SHORT SQUEEZE on {symbol}! Funding {funding_rate*100:.3f}%, OI +{oi_change_1h:.1f}%. Extending TP ladder.")
+                    # funding_rate is in PERCENT units (binance_fapi multiplies by 100)
+                    if trade_direction == "LONG" and funding_rate < -0.05 and oi_change_1h > 2.0:
+                        logger.info(f"🚨 SHORT SQUEEZE on {symbol}! Funding {funding_rate:.3f}%, OI +{oi_change_1h:.1f}%. Extending TP ladder.")
                         is_squeeze = True
                         tp2_price = current_price + d1 * 2.2
                         tp3_price = current_price + d1 * 3.5
@@ -1719,11 +1730,27 @@ class ApexSystem:
                     elif regime_val == "BEAR":            vol_enum = VolatilityRegime.HIGH
                     elif regime_val == "CRISIS":          vol_enum = VolatilityRegime.CRISIS
 
+                    # Kelly fed by ACTUAL rolling 30d performance once >=30 resolved trades
+                    # exist; conservative defaults until then (was: hardcoded forever).
+                    import time as _time
+                    if not hasattr(self, '_kelly_stats_cache') or _time.time() - getattr(self, '_kelly_stats_ts', 0) > 3600:
+                        from database.timescaledb import get_rolling_performance
+                        try:
+                            self._kelly_stats_cache = await get_rolling_performance(days=30, min_trades=30)
+                        except Exception as kerr:
+                            logger.debug(f"Rolling performance fetch failed: {kerr}")
+                            self._kelly_stats_cache = None
+                        self._kelly_stats_ts = _time.time()
+                        if self._kelly_stats_cache:
+                            s = self._kelly_stats_cache
+                            logger.info(f"Kelly inputs from live stats: WR={s['win_rate']:.2f}, avgW={s['avg_win_pct']:.2f}%, avgL={s['avg_loss_pct']:.2f}% (n={s['sample_size']})")
+
+                    _ks = self._kelly_stats_cache
                     kelly_result = self.risk_engine.calculate_position_size_kelly(
                         deposit=deposit,
-                        win_rate_calibrated=0.55,
-                        avg_win_pct=2.0,
-                        avg_loss_pct=1.0,
+                        win_rate_calibrated=_ks['win_rate'] if _ks else 0.50,
+                        avg_win_pct=_ks['avg_win_pct'] if _ks else 1.5,
+                        avg_loss_pct=_ks['avg_loss_pct'] if _ks else 1.5,
                         volatility_regime=vol_enum,
                         current_drawdown_pct=0.0
                     )
@@ -1769,6 +1796,31 @@ class ApexSystem:
 
                     # ─── OPEN PAPER TRADE WITH REAL STRUCTURAL SL/TP ───────────────────────────
                     # ExitEngine v2 takes over from here: partial TP -> BE -> trailing -> exit.
+                    # v7_components captures the full factor vector at entry — this is the
+                    # learning loop: recalibrate_weights.py computes per-factor lift from
+                    # outcomes and feeds it back into ConfluenceV4 weights.
+                    factor_components = {
+                        "confluence_factors": {
+                            f.name: {"v": bool(f.value), "w": round(f.weight, 3)}
+                            for f in getattr(confluence, 'factors', [])
+                        },
+                        "cvd_score": cvd_score_val,
+                        "cvd_source": cvd_result.get("source", "proxy"),
+                        "mtf_score": mtf_score_val,
+                        "rsi_1h": round(float(rsi_now), 2),
+                        "z_score": round(float(z_score), 3),
+                        "funding_pct": round(float(funding_rate), 4) if funding_rate else 0.0,
+                        "lsr": round(float(lsr_val), 3) if lsr_val else 1.0,
+                        "oi_change_1h": round(float(oi_change_1h), 3),
+                        "spread_pct": round(float(spread_pct), 4),
+                        "vol_ratio_15m": round(float(vol_ratio_15m), 3),
+                        "premium_discount": round(float(premium_discount), 3),
+                        "overext_points": overext_points,
+                        "chop_points": chop_points,
+                        "total_penalty": round(float(total_penalty), 1),
+                        "tp_source": sltp.structure_target_type,
+                        "is_squeeze": is_squeeze,
+                    }
                     await create_shadow_trade(
                         symbol=symbol,
                         direction=trade_direction,
@@ -1782,7 +1834,8 @@ class ApexSystem:
                         regime=regime_val,
                         breadth=breadth_pct,
                         cvd_score=cvd_score_val,
-                        mtf_score=mtf_score_val
+                        mtf_score=mtf_score_val,
+                        components=factor_components
                     )
                     self.position_guard.on_trade_opened(symbol)
                     logger.info(
@@ -1831,7 +1884,7 @@ class ApexSystem:
                         "score":                ultra_score,
                         "regime":               regime_val,
                         "rsi":                  rsi_now,
-                        "funding_rate":         funding_rate * 100 if funding_rate else market_ctx["funding"]["rate_pct"],
+                        "funding_rate":         funding_rate if funding_rate else market_ctx["funding"]["rate_pct"],
                         "oi_change":            oi_change_1h,
                         "fear_greed":           market_ctx["fear_greed"]["value"],
                         "btc_dominance":        market_ctx["btc_dominance"]["value"],
@@ -1868,6 +1921,21 @@ class ApexSystem:
                 await asyncio.sleep(2)  # Prevent rate limiting between pairs
                 
             logger.info("=== SCAN CYCLE COMPLETE ===")
+            # Heartbeat for monitoring (system_health was a schema-only orphan table)
+            try:
+                from database.timescaledb import insert_system_health
+                cycle_ms = (_cycle_time.time() - cycle_started) * 1000
+                exposure_now = await self.exposure_manager.get_current_exposure()
+                await insert_system_health(
+                    regime=global_state.regime,
+                    breadth_pct=self.market_breadth,
+                    cycle_duration_ms=cycle_ms,
+                    symbols_healthy=len(scan_symbols),
+                    symbols_blocked=0,
+                    active_signals=exposure_now["total_slots_used"]
+                )
+            except Exception as hb_err:
+                logger.debug(f"system_health heartbeat failed (non-fatal): {hb_err}")
             # Sleep for 5 minutes (300 seconds)
             await asyncio.sleep(300)
 
@@ -1930,14 +1998,14 @@ class ApexSystem:
 
             # Check CVD — only block extreme institutional selling (score <= -4)
             # NOTE: In BEAR market, CVD is typically -2 to -3 by default. Threshold raised to -4.
+            from services.intelligence.cvd_engine import calculate_cvd_real
             df_5m = await self.fetch_market_data(symbol, '5m', limit=30)
-            if not df_5m.empty:
-                cvd_res = calculate_cvd(df_5m, lookback=20)
-                cvd_score = cvd_res.get("score", 0)
-                cvd_signal = cvd_res.get("cvd_signal", "NEUTRAL")
-                if cvd_signal == "BEARISH" and cvd_score <= -4:
-                    logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] CVD extreme sell (Score={cvd_score}).")
-                    return False
+            cvd_res = await calculate_cvd_real(symbol, lookback=20, fallback_df=df_5m)
+            cvd_score = cvd_res.get("score", 0)
+            cvd_signal = cvd_res.get("cvd_signal", "NEUTRAL")
+            if cvd_signal == "BEARISH" and cvd_score <= -4:
+                logger.warning(f"[PRE-ROUTE GATE] {symbol} - [CANCELLED] CVD extreme sell (Score={cvd_score}, src={cvd_res.get('source')}).")
+                return False
 
             # NOTE: EMA20 check removed. Limit orders are placed BELOW market by design.
             # Price will always be below EMA20 at fill point — checking this was blocking all limits.
@@ -2053,13 +2121,11 @@ class ApexSystem:
                             except Exception:
                                 pass
                                 
-                            # Check CVD & trend decay
-                            cvd_score = 0
-                            cvd_signal = "NEUTRAL"
-                            if not df_5m.empty:
-                                cvd_res = calculate_cvd(df_5m, lookback=20)
-                                cvd_score = cvd_res.get("score", 0)
-                                cvd_signal = cvd_res.get("cvd_signal", "NEUTRAL")
+                            # Check CVD & trend decay (real taker flow with proxy fallback)
+                            from services.intelligence.cvd_engine import calculate_cvd_real
+                            cvd_res = await calculate_cvd_real(symbol, lookback=20, fallback_df=df_5m)
+                            cvd_score = cvd_res.get("score", 0)
+                            cvd_signal = cvd_res.get("cvd_signal", "NEUTRAL")
                             is_trend_decay = cvd_signal == "BEARISH" and cvd_score <= -2 and mtf_val < 4.0
                             
                             cancel_reason = None

@@ -162,11 +162,45 @@ class ConfluenceEngineV4:
 
     def __init__(self) -> None:
         self._weights_cache: dict[str, dict[str, float]] = {}
+        self._db_weights_ts: float = 0.0
+
+    async def _get_db_trained_weights(self, regime_value: str) -> dict[str, float] | None:
+        """
+        Outcome-trained weights from PostgreSQL (confluence_weights table),
+        populated by scripts/recalibrate_weights.py from realized trade results.
+        This replaces the Redis dependency that never existed on Railway —
+        the system can now actually learn from its own outcomes.
+        Cached for 1 hour.
+        """
+        import time as _time
+        cache_key = f"db_{regime_value}"
+        if cache_key in self._weights_cache and _time.time() - self._db_weights_ts < 3600:
+            return self._weights_cache[cache_key]
+        try:
+            from database.timescaledb import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT factor, weight FROM confluence_weights WHERE regime = $1 AND sample_size >= 50",
+                    regime_value
+                )
+            if rows:
+                weights = {r['factor']: float(r['weight']) for r in rows}
+                self._weights_cache[cache_key] = weights
+                self._db_weights_ts = _time.time()
+                return weights
+        except Exception as e:
+            logger.debug(f"DB trained weights unavailable: {e}")
+        self._weights_cache[cache_key] = None
+        self._db_weights_ts = _time.time()
+        return None
 
     async def get_dynamic_weights(self, regime: MarketRegime) -> tuple[dict[str, float], str]:
         """
-        Load weights from Redis if available, otherwise use seeded weights.
-        Gracefully handles Railway/lightweight deployments without Redis.
+        Weight source priority:
+          1. Redis (legacy feature-store path, if deployed)
+          2. PostgreSQL confluence_weights (outcome-trained, recalibrate_weights.py)
+          3. Seeded regime-specific weights (cold start)
         """
         redis = get_redis()  # Returns None if Redis not available
         if redis is not None:
@@ -180,6 +214,13 @@ class ConfluenceEngineV4:
                     return weights, "feature_store_trained"
             except Exception as e:
                 logger.warning(f"Redis weights load failed: {e}")
+
+        db_weights = await self._get_db_trained_weights(regime.value)
+        if db_weights:
+            # Merge over seeded so factors without enough samples keep priors
+            seeded_base = dict(SEEDED_WEIGHTS_BY_REGIME.get(regime.value, DEFAULT_EQUAL_WEIGHTS))
+            seeded_base.update(db_weights)
+            return seeded_base, "outcome_trained_db"
 
         # Fallback: use seeded regime-specific weights (no Redis needed)
         seeded = SEEDED_WEIGHTS_BY_REGIME.get(regime.value, DEFAULT_EQUAL_WEIGHTS)

@@ -292,11 +292,13 @@ async def insert_signal_record(signal_record_dict: dict) -> int:
         INSERT INTO signals (
             created_at, symbol, strategy, direction, status, block_reason,
             entry_price, sl_price, tp1_price, tp2_price, tp3_price,
-            v7_score_raw, mtf_score, regime, session_tag, logic_version, is_shadow
+            v7_score_raw, mtf_score, regime, session_tag, logic_version, is_shadow,
+            v7_components, breadth_pct
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
         ) RETURNING id;
     """
+    components = signal_record_dict.get('v7_components')
     async with pool.acquire() as conn:
         signal_id = await conn.fetchval(
             query,
@@ -316,7 +318,9 @@ async def insert_signal_record(signal_record_dict: dict) -> int:
             signal_record_dict.get('regime', 'UNKNOWN'),
             signal_record_dict.get('session', 'UNKNOWN'),
             signal_record_dict.get('logic_version', '10.5.0'),
-            signal_record_dict.get('is_shadow', True)
+            signal_record_dict.get('is_shadow', True),
+            json.dumps(components) if components else None,
+            signal_record_dict.get('breadth_pct')
         )
         return signal_id
 
@@ -506,7 +510,8 @@ async def create_shadow_trade(
     regime: str = "UNKNOWN",
     breadth: float = 0.0,
     cvd_score: float = 0.0,
-    mtf_score: float = 0.0
+    mtf_score: float = 0.0,
+    components: dict = None
 ):
     """Wrapper to maintain backwards compatibility with main.py shadow trades (APPROVED ONLY)"""
     try:
@@ -524,7 +529,9 @@ async def create_shadow_trade(
             'v7_score_raw': v7_score,
             'mtf_score': mtf_score,
             'regime': regime,
-            'is_shadow': False
+            'is_shadow': False,
+            'v7_components': components,
+            'breadth_pct': breadth
         }
         signal_id = await insert_signal_record(signal_dict)
         if signal_id:
@@ -616,6 +623,18 @@ async def setup_missing_tables(conn):
             outcome_1h_pct DOUBLE PRECISION DEFAULT 0.0,
             outcome_4h_pct DOUBLE PRECISION DEFAULT 0.0,
             outcome_24h_pct DOUBLE PRECISION DEFAULT 0.0
+        );
+    """)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS confluence_weights (
+            regime TEXT NOT NULL,
+            factor TEXT NOT NULL,
+            weight DOUBLE PRECISION NOT NULL,
+            lift DOUBLE PRECISION,
+            sample_size INTEGER DEFAULT 0,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (regime, factor)
         );
     """)
 
@@ -920,6 +939,75 @@ async def save_trade(
         regime="UNKNOWN",
         logic_version="10.5.0"
     )
+
+async def bulk_upsert_ohlcv(symbol: str, timeframe: str, df, tail: int = 3):
+    """
+    Persist the last `tail` CLOSED candles for a symbol/timeframe.
+    Builds the in-house history needed for backtesting and edge studies —
+    the ohlcv table existed since v10.5 but was never written to.
+    The still-forming last candle is excluded.
+    """
+    if df is None or len(df) < tail + 1:
+        return
+    closed = df.iloc[-(tail + 1):-1]
+    pool = await get_pool()
+    rows = [
+        (
+            r['timestamp'].to_pydatetime() if hasattr(r['timestamp'], 'to_pydatetime') else r['timestamp'],
+            symbol, timeframe,
+            float(r['open']), float(r['high']), float(r['low']), float(r['close']), float(r['volume'])
+        )
+        for _, r in closed.iterrows()
+    ]
+    async with pool.acquire() as conn:
+        await conn.executemany("""
+            INSERT INTO ohlcv (time, symbol, timeframe, open, high, low, close, volume, data_source, is_closed)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'MEXC_SCAN', TRUE)
+            ON CONFLICT (symbol, timeframe, time) DO NOTHING
+        """, rows)
+
+async def insert_system_health(regime: str, breadth_pct: float, cycle_duration_ms: float,
+                               symbols_healthy: int, symbols_blocked: int, active_signals: int):
+    """One heartbeat row per scan cycle (table existed but was never populated)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO system_health (time, regime, breadth_pct, cycle_duration_ms,
+                                       symbols_healthy, symbols_blocked, active_signals, ws_latency_ms, queue_size)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0)
+            ON CONFLICT (time) DO NOTHING
+        """, datetime.now(timezone.utc), regime, breadth_pct, cycle_duration_ms,
+             symbols_healthy, symbols_blocked, active_signals)
+
+async def get_rolling_performance(days: int = 30, min_trades: int = 30) -> dict | None:
+    """
+    Rolling realized performance for Kelly sizing. Returns None until enough
+    resolved trades exist — callers must fall back to conservative defaults.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT
+                COUNT(*) FILTER (WHERE pnl_pct >  0.1)  AS wins,
+                COUNT(*) FILTER (WHERE pnl_pct < -0.1)  AS losses,
+                AVG(pnl_pct) FILTER (WHERE pnl_pct >  0.1) AS avg_win,
+                AVG(pnl_pct) FILTER (WHERE pnl_pct < -0.1) AS avg_loss
+            FROM shadow_trades
+            WHERE resolved_at >= NOW() - INTERVAL '1 day' * $1
+              AND pnl_pct IS NOT NULL
+        """, days)
+    if not row:
+        return None
+    wins, losses = row['wins'] or 0, row['losses'] or 0
+    decided = wins + losses
+    if decided < min_trades or not row['avg_win'] or not row['avg_loss']:
+        return None
+    return {
+        "win_rate": wins / decided,
+        "avg_win_pct": float(row['avg_win']),
+        "avg_loss_pct": abs(float(row['avg_loss'])),
+        "sample_size": decided,
+    }
 
 async def get_recent_trades(limit: int = 1000):
     pool = await get_pool()
