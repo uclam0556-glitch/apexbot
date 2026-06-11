@@ -268,7 +268,7 @@ async def close_pool():
         logger.info("PostgreSQL pool closed.")
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 async def insert_signal_record(signal_record_dict: dict) -> int:
     pool = await get_pool()
@@ -284,7 +284,7 @@ async def insert_signal_record(signal_record_dict: dict) -> int:
     async with pool.acquire() as conn:
         signal_id = await conn.fetchval(
             query,
-            signal_record_dict.get('timestamp', datetime.utcnow()),
+            signal_record_dict.get('timestamp', datetime.now(timezone.utc)),
             signal_record_dict.get('symbol', 'UNKNOWN'),
             signal_record_dict.get('strategy', 'TREND'),
             signal_record_dict.get('direction', 'LONG'),
@@ -318,7 +318,7 @@ async def insert_shadow_trade(signal_id: int, symbol: str, session: str, regime:
             query,
             signal_id,
             symbol,
-            datetime.utcnow(),
+            datetime.now(timezone.utc),
             'OPEN', # Initial state
             0.0,
             0.0,
@@ -340,8 +340,8 @@ async def update_shadow_trade(signal_id: int, outcome: str, mfe_pct: float, mae_
         WHERE signal_id = $6;
     """
     async with pool.acquire() as conn:
-        await conn.execute(query1, outcome, mfe_pct, mae_pct, bars, datetime.utcnow(), signal_id)
-        await conn.execute(query2, outcome, mfe_pct, mae_pct, bars, datetime.utcnow(), signal_id)
+        await conn.execute(query1, outcome, mfe_pct, mae_pct, bars, datetime.now(timezone.utc), signal_id)
+        await conn.execute(query2, outcome, mfe_pct, mae_pct, bars, datetime.now(timezone.utc), signal_id)
 
 async def update_signal_status(signal_id: int, status: str):
     pool = await get_pool()
@@ -421,7 +421,7 @@ async def insert_filter_block_record(symbol: str, strategy: str, block_reason: s
     async with pool.acquire() as conn:
         await conn.execute(
             query,
-            datetime.utcnow(),
+            datetime.now(timezone.utc),
             symbol,
             strategy,
             "LONG", # Defaulting direction
@@ -551,7 +551,7 @@ async def insert_shadow_trade_blocked(signal_id: int, symbol: str, session: str,
         VALUES ($1, $2, $3, 'OPEN', $4, $5, $6);
     """
     async with pool.acquire() as conn:
-        await conn.execute(query, signal_id, symbol, datetime.utcnow(), session, regime, logic_version)
+        await conn.execute(query, signal_id, symbol, datetime.now(timezone.utc), session, regime, logic_version)
 
 
 
@@ -641,7 +641,7 @@ async def save_pullback_item(
     original_breadth: float = 50.0, original_mtf: float = 0.0, original_cvd: float = 0.0
 ):
     from datetime import timedelta, datetime
-    expiry = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
     limit_json = json.dumps(limit_entries) if limit_entries else "[]"
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -654,7 +654,7 @@ async def save_pullback_item(
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         ''', symbol, direction, score, original_entry, swing_low, limit_json, stop_loss,
              take_profit_1, take_profit_2, take_profit_3, position_usd, expiry, regime, status,
-             datetime.utcnow(), original_breadth, original_mtf, original_cvd)
+             datetime.now(timezone.utc), original_breadth, original_mtf, original_cvd)
 
 async def get_active_pullback_items():
     pool = await get_pool()
@@ -752,7 +752,7 @@ async def save_trade(
     features_dict: dict = None, source: str = "MARKET", status: str = "OPEN"
 ):
     signal_dict = {
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(timezone.utc),
         "symbol": symbol,
         "strategy": strategy,
         "direction": direction,

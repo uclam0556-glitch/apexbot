@@ -506,7 +506,7 @@ class ApexSystem:
                 position_size_multiplier=1.0,
                 execution_type_override=None
             ),
-            audited_at=datetime.utcnow()
+            audited_at=datetime.now(timezone.utc)
         )
 
     async def run_trading_pipeline(self):
@@ -682,7 +682,7 @@ class ApexSystem:
                     
                 try:
                     global_state.current_symbol = symbol
-                    global_state.last_scan_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+                    global_state.last_scan_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                     logger.info(f"Scanning {symbol}...")
                     
                     # ─── LIQUIDATION CASCADE CHECK ───────────────────────────────────────────
@@ -817,7 +817,7 @@ class ApexSystem:
                         continue
 
                     # ─── FILTER 2: SESSION FILTER ────────────────────────────────────────────
-                    utc_hour = datetime.utcnow().hour
+                    utc_hour = datetime.now(timezone.utc).hour
                     # if 22 <= utc_hour or utc_hour < 1:
                     #     logger.info(f"{symbol} - [BLOCKED] Session Filter: Dead zone {utc_hour}:00 UTC. Skipping.")
                     #     continue
@@ -1074,7 +1074,7 @@ class ApexSystem:
                         ws_data = global_state.live_prices.get(normalize_symbol(symbol), {})
                         
                     last_ws_ts = ws_data.get("timestamp", 0)
-                    now_ts = datetime.utcnow().timestamp()
+                    now_ts = datetime.now(timezone.utc).timestamp()
                     last_update_age_sec = now_ts - last_ws_ts if last_ws_ts else float('inf')
                     
                     ohlcv_row_1h = df_1h.iloc[-1].to_dict() if not df_1h.empty else {}
@@ -1898,7 +1898,7 @@ class ApexSystem:
                                 
                         # Save to TimescaleDB
                         signal_dict = {
-                            "timestamp": datetime.utcnow(),
+                            "timestamp": datetime.now(timezone.utc),
                             "symbol": symbol,
                             "strategy": trade_strategy,
                             "direction": trade_direction,
@@ -1911,7 +1911,7 @@ class ApexSystem:
                             "v7_score_raw": ultra_score,
                             "mtf_score": mtf_score_val,
                             "regime": regime_val,
-                            "session": SessionTagger.get_session(datetime.utcnow()),
+                            "session": SessionTagger.get_session(datetime.now(timezone.utc)),
                             "logic_version": "10.5.0",
                             "is_shadow": False
                         }

@@ -10,7 +10,7 @@ trades = cur.fetchall()
 
 if trades:
     print(f"Found {len(trades)} stuck trades.")
-    now = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     
     # Update trades table
     cur.execute("UPDATE trades SET status = 'WON', closed_at = ? WHERE status = 'BREAKEVEN'", (now,))
