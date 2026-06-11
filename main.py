@@ -289,8 +289,18 @@ class ApexSystem:
                     for t in open_trades:
                         trade = dict(t)
                         if trade.get('is_shadow', True):
-                            # Shadow/blocked trades handled by ExitEngine — skip
+                            # Shadow/blocked trades handled by ShadowTradeMonitor — skip
                             continue
+
+                        # Single-owner rule: ExitEngine v2 is the primary manager.
+                        # This tracker only handles trades ExitEngine hasn't touched
+                        # recently (no WS price for the symbol, engine restart, etc).
+                        last_managed = trade.get('last_update_at')
+                        if last_managed is not None:
+                            if hasattr(last_managed, 'tzinfo') and last_managed.tzinfo is None:
+                                last_managed = last_managed.replace(tzinfo=timezone.utc)
+                            if (datetime.now(timezone.utc) - last_managed).total_seconds() < 120:
+                                continue
 
                         symbol = trade['symbol']
                         # Fetch latest 1m candles to catch wicks (Stop Loss hits between 15s intervals)
@@ -457,11 +467,12 @@ class ApexSystem:
                                     pass
 
                             await update_shadow_trade(
-                                trade['id'], 
-                                status, 
+                                trade['id'],
+                                status,
                                 max_profit_pct,
                                 max_drawdown_pct,
-                                int(duration_minutes)
+                                int(duration_minutes),
+                                pnl_pct=pnl_pct
                             )
                             await update_signal_status(trade['id'], status)
                             # Cleanup memory
@@ -649,15 +660,10 @@ class ApexSystem:
                 breadth_pct = self.market_breadth
                 logger.info(f"Using cached Market Breadth: {breadth_pct:.1f}% (valid for {int((3600 - (current_time - self.breadth_last_updated)) / 60)} more mins)")
             
-            # Dynamic config based on breadth (Calibrated for Isotonic Win Probabilities)
-            # Dynamic config based on breadth (Calibrated for Isotonic Win Probabilities)
-            dynamic_min_score = 45.0  # Slightly relaxed for testing
-            if breadth_pct < 40.0:
-                dynamic_min_score = 48.0
-                logger.warning(f"RISK-OFF: Breadth < 40% ({breadth_pct:.1f}%). Raising min probability gate to 48.0%.")
-            elif breadth_pct > 70.0:
-                dynamic_min_score = 42.0
-                logger.info(f"RISK-ON: Breadth > 70% ({breadth_pct:.1f}%). Lowering min probability gate to 48.0%.")
+            # NOTE (audit v11.1): the old breadth-based dynamic_min_score branch was dead code —
+            # it was unconditionally overwritten per-symbol by strategy_router params +
+            # compute_dynamic_gate (which already takes breadth into account).
+            dynamic_min_score = 45.0
 
             # Fetch BTC 1h change for relative weakness tracking
             btc_change_1h_global = 0.0
@@ -806,15 +812,15 @@ class ApexSystem:
                         logger.info(f"{symbol} - [BLOCKED] Pullback Structure Cooldown: active EXPIRED_STRUCTURE within 120 min. Skipping.")
                         continue
 
-                    # ─── FILTER 1.3: EXHAUSTION FILTER ────────────────────────────────────
+                    # NOTE (audit v11.1): early "Exhaustion >5%/4h" hard block removed.
+                    # It duplicated the direction-aware Momentum Exhaustion filter (the single
+                    # best filter per shadow data: 77% of its blocks went on to LOSE) and,
+                    # being direction-blind, it also blocked SHORT setups on pumped coins —
+                    # exactly the trades it should have allowed.
                     price_change_4h = (
                         (df_1h['close'].iloc[-1] - df_1h['close'].iloc[-5]) /
                         df_1h['close'].iloc[-5] * 100
                     ) if len(df_1h) >= 5 else 0.0
-                    
-                    if price_change_4h > 5.0:
-                        logger.info(f"{symbol} - [BLOCKED] Exhaustion Filter: Up {price_change_4h:.2f}% in 4h. Skipping LONG.")
-                        continue
 
                     # ─── FILTER 2: SESSION FILTER ────────────────────────────────────────────
                     utc_hour = datetime.now(timezone.utc).hour
@@ -825,6 +831,7 @@ class ApexSystem:
                     # ─── FILTER 3: VOLUME GATE ────────────────────────────────────────────────
                     if avg_vol_3 < baseline_hourly_vol * 0.25:
                         logger.info(f"{symbol} - [BLOCKED] Volume Gate: Vol={avg_vol_3:.0f} < 25% of 24h baseline {baseline_hourly_vol:.0f}. Skipping.")
+                        await insert_filter_block_record(symbol, "UNKNOWN", "Volume Gate", 0.0)
                         continue
 
                     # ─── CVD ANALYSIS ─────────────────────────────────────────────────────────
@@ -1043,21 +1050,16 @@ class ApexSystem:
                             logger.info(f"{symbol} - Momentum Growth > 2x ATR. Applying penalty -10 to final score.")
 
                     # ─── ADVANCED INSTITUTIONAL FILTER 3: ABSORPTION TRAP (FUNDING + RSI + CVD) ────
-                    from services.indicators.market_data import get_funding_rate
-                    funding_data = await get_funding_rate(symbol)
-                    funding_pct = funding_data.get("rate_pct", 0.0)
-                    funding_is_valid = funding_data.get("is_valid", False)
-                    if funding_is_valid:
-                        if funding_pct > 0.04 and rsi_now > 65 and cvd_score_val < 0 and trade_direction == "LONG":
-                            logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
+                    # Uses REAL Binance futures funding (fetched above). The old version
+                    # re-fetched funding from MEXC spot which always returned is_valid=False,
+                    # silently disabling this filter.
+                    if funding_rate and funding_rate != 0.0:
+                        funding_pct_real = funding_rate * 100  # decimal -> percent
+                        if funding_pct_real > 0.04 and rsi_now > 65 and cvd_score_val < 0 and trade_direction == "LONG":
+                            logger.info(f"{symbol} - [BLOCKED] Absorption Trap! Retail FOMO (Funding: +{funding_pct_real:.3f}%, RSI: {rsi_now:.1f}) met with MM Limit Selling (CVD < 0). Squeeze imminent. Skipping.")
                             await insert_filter_block_record(symbol, trade_strategy or "UNKNOWN", "Absorption Trap", 0.0)
-                            # Create shadow trade
-                            proxy_sl = current_price - (1.5 * atr_1h) if trade_direction == "LONG" else current_price + (1.5 * atr_1h)
-                            proxy_tp = current_price + (3.0 * atr_1h) if trade_direction == "LONG" else current_price - (3.0 * atr_1h)
                             block_reason = "Absorption Trap"
                             # We don't continue here to allow V7 calculation and logging
-                    else:
-                        logger.warning(f"{symbol} - Absorption Trap filter skipped due to funding rate data source failure.")
 
                     # ─── V11 DATA HEALTH & UNIVERSE TIERS ──────────────────────────────────────
                     from services.engine.data_health import check_data_health, DataHealthLevel
@@ -1420,64 +1422,12 @@ class ApexSystem:
                     proxy_tp3_dist = proxy_sl_dist * proxy_tp3_rr
                     proxy_tp3 = current_price + proxy_tp3_dist if trade_direction == "LONG" else current_price - proxy_tp3_dist
                     
-                    # Create shadow trade for everything to collect stats
+                    # Blocked signals: record counterfactual immediately (proxy levels are fine here).
+                    # Approved signals: trade is created LATER with REAL structural SL/TP from
+                    # RiskEngine — previously paper trades ran on proxy ATR levels while the
+                    # structural levels were computed in dead code (NameError at confidence calc).
                     if is_approved:
                         logger.info(f"[SIGNAL_PASSED] {symbol} {trade_direction} [{trade_strategy or 'TREND'}] passed all filters. Score: {v7_score:.1f}")
-                        await create_shadow_trade(
-                            symbol=symbol,
-                            direction=trade_direction,
-                            strategy=trade_strategy or "TREND",
-                            entry_price=current_price,
-                            stop_loss=proxy_sl,
-                            take_profit_1=proxy_tp,
-                            take_profit_2=proxy_tp2,
-                            take_profit_3=proxy_tp3,
-                            v7_score=v7_score,
-                            regime=regime_val,
-                            breadth=breadth_pct,
-                            cvd_score=cvd_score_val,
-                            mtf_score=mtf_score_val
-                        )
-                        self.position_guard.on_trade_opened(symbol)
-
-                        # Send Telegram notification
-                        try:
-                            from aiogram import Bot
-                            token = self.config.alerts.telegram_bot_token.get_secret_value()
-                            chat_id_str = self.config.alerts.telegram_chat_id
-                            if token and chat_id_str:
-                                bot = Bot(token=token)
-                                from services.notifications.telegram_ui import send_signal
-                                signal_data_mock = {
-                                    "symbol": symbol,
-                                    "direction": trade_direction,
-                                    "strategy": trade_strategy or "TREND",
-                                    "source": "MARKET",
-                                    "entry_price": current_price,
-                                    "stop_loss": proxy_sl,
-                                    "tp1": proxy_tp,
-                                    "tp2": proxy_tp2,
-                                    "tp3": proxy_tp3,
-                                    "score": v7_score,
-                                    "regime": regime_val,
-                                    "rsi": rsi_now,
-                                    "funding_rate": market_ctx.get("funding", {}).get("rate_pct", 0.0),
-                                    "oi_change": market_ctx.get("open_interest", {}).get("change_pct", 0.0),
-                                    "fear_greed": market_ctx.get("fear_greed", {}).get("value", 50),
-                                    "btc_dominance": market_ctx.get("btc_dominance", {}).get("value", 55.0),
-                                    "vwap_label": indicators.get("vwap", {}).get("label", ""),
-                                    "ema_label": indicators.get("ema_ribbon", {}).get("label", ""),
-                                    "position_usd": 30.0,
-                                    "risk_usd": 15.0,
-                                    "rr_ratio": 1.5,
-                                    "confidence_bucket": "Mock (Shadow)",
-                                    "confidence_win_rate": 50.0,
-                                    "confidence_sample_size": 100
-                                }
-                                await send_signal(bot, int(chat_id_str), signal_data_mock)
-                                await bot.session.close()
-                        except Exception as send_err:
-                            logger.error(f"Failed to send shadow signal to TG: {send_err}")
                     else:
                         await create_shadow_trade_blocked(
                             symbol=symbol,
@@ -1643,6 +1593,24 @@ class ApexSystem:
 
                     if sltp is None:
                         logger.info(f"{symbol} - Setup rejected by Risk Engine: did not meet min R:R ratio (> 1.5) or structural SL exceeded 8.0%.")
+                        # Record the counterfactual so risk-engine rejects become measurable
+                        await create_shadow_trade_blocked(
+                            symbol=symbol,
+                            direction=trade_direction,
+                            strategy=trade_strategy or "TREND",
+                            entry_price=current_price,
+                            stop_loss=proxy_sl,
+                            take_profit_1=proxy_tp,
+                            take_profit_2=proxy_tp2,
+                            take_profit_3=proxy_tp3,
+                            primary_block_reason="RISK_ENGINE_REJECT",
+                            all_block_reasons=[f"V7={v7_score:.1f}"],
+                            v7_score=v7_score,
+                            regime=regime_val,
+                            breadth=breadth_pct,
+                            cvd_score=cvd_score_val,
+                            mtf_score=mtf_score_val
+                        )
                         continue
 
                     if getattr(sltp, 'is_pullback', False):
@@ -1679,8 +1647,7 @@ class ApexSystem:
                                         
                                     msg += (
                                         f"🛑 <b>Stop Loss:</b> ${sltp.stop_loss:.4f} <i>(-{sl_pct:.2f}%)</i>\n"
-                                        f"🏁 <b>TP Target 1:</b> ${sltp.pullback_tp_1:.4f}\n"
-                                        f"🏁 <b>TP Target 2:</b> ${sltp.pullback_tp_2:.4f}\n"
+                                        f"🏁 <b>TP Target 1:</b> ${sltp.take_profit_1:.4f}\n"
                                         f"🏁 <b>TP Target 3:</b> ${sltp.pullback_tp_3:.4f}\n\n"
                                         f"<i>Сформирована лимитная сетка на основе Market Breadth. Ожидаем заполнения.</i>"
                                     )
@@ -1706,25 +1673,33 @@ class ApexSystem:
                                 sltp.stop_loss = min(tight_sl, sltp.stop_loss)
                             logger.info(f"{symbol} - ATR Stop Cap: structural SL {sl_pct_check:.1%} too wide → tightened.")
 
-                    # ─── SQUEEZE ENGINE ────────────────────────────────────────────────────────
-                    funding_rate_val = market_ctx["funding"]["rate_pct"]
-                    funding_is_valid = market_ctx["funding"].get("is_valid", True)
-                    oi_change_val    = market_ctx["open_interest"]["change_pct"]
-                    oi_is_valid      = market_ctx["open_interest"].get("is_valid", True)
-                    is_squeeze       = False
+                    # ─── FINAL TP LADDER (local vars — SLTPResult only carries TP1) ────────────
+                    sl_price = sltp.stop_loss
+                    tp1_price = sltp.take_profit_1
+                    d1 = tp1_price - current_price  # signed distance (negative for SHORT)
+                    tp2_price = current_price + d1 * 1.6
+                    tp3_price = current_price + d1 * 2.4
 
-                    if trade_direction == "LONG" and funding_is_valid and funding_rate_val < -0.05 and oi_is_valid and oi_change_val > 2.0:
-                        logger.info(f"🚨 SHORT SQUEEZE on {symbol}! Boosting TP targets.")
-                        is_squeeze             = True
-                        sltp.take_profit_1     = sltp.take_profit_3 * 0.9
-                        sltp.take_profit_2     = sltp.take_profit_3 * 0.95
-                        sltp.take_profit_3     = current_price * 1.20
+                    # ─── SQUEEZE ENGINE ────────────────────────────────────────────────────────
+                    # Use Binance futures funding/OI fetched earlier in this scan (real data);
+                    # MEXC spot context returns is_valid=False and used to disable this branch.
+                    is_squeeze = False
+                    if trade_direction == "LONG" and funding_rate < -0.0005 and oi_change_1h > 2.0:
+                        logger.info(f"🚨 SHORT SQUEEZE on {symbol}! Funding {funding_rate*100:.3f}%, OI +{oi_change_1h:.1f}%. Extending TP ladder.")
+                        is_squeeze = True
+                        tp2_price = current_price + d1 * 2.2
+                        tp3_price = current_price + d1 * 3.5
 
                     if trade_strategy == "CAPITULATION":
                         logger.info(f"{symbol} - CAPITULATION trade: enforcing tight TP (max +5%).")
-                        sltp.take_profit_1 = current_price * 1.02
-                        sltp.take_profit_2 = current_price * 1.03
-                        sltp.take_profit_3 = current_price * 1.05
+                        if trade_direction == "LONG":
+                            tp1_price = current_price * 1.02
+                            tp2_price = current_price * 1.03
+                            tp3_price = current_price * 1.05
+                        else:
+                            tp1_price = current_price * 0.98
+                            tp2_price = current_price * 0.97
+                            tp3_price = current_price * 0.95
 
                     # ─── KELLY SIZING ──────────────────────────────────────────────────────────
                     deposit  = self.config.trading.initial_deposit_usd
@@ -1766,46 +1741,88 @@ class ApexSystem:
                         risk_usd *= 0.7
                         logger.info(f"{symbol} - RSI/Squeeze Warning: Reduced risk size by 30%.")
 
-                    sl_pct       = abs(current_price - sltp.stop_loss) / current_price if current_price > 0 else 0.03
+                    sl_pct       = abs(current_price - sl_price) / current_price if current_price > 0 else 0.03
                     position_usd = (risk_usd / sl_pct) if sl_pct > 0 else risk_usd * 10
                     position_usd = min(position_usd, deposit * 0.20)
-                    rr_ratio     = abs(sltp.take_profit_1 - current_price) / abs(current_price - sltp.stop_loss) if abs(current_price - sltp.stop_loss) > 0 else 2.0
+                    # Data health degrades position size (multiplier computed by check_data_health)
+                    position_usd *= max(0.25, size_multiplier)
+                    rr_ratio     = abs(tp1_price - current_price) / abs(current_price - sl_price) if abs(current_price - sl_price) > 0 else 2.0
 
-                    # ─── CONFIDENCE CALIBRATION (MOCKED FOR V10.5 DATA COLLECTION) ────────────────
-                    features_vector = {
-                        "ultra_score": ultra_score,
-                        "btc_rsi": btc_rsi,
-                        "cvd_score": cvd_score_val,
-                        "mtf_score": mtf_score_val,
-                        "funding_rate": market_ctx["funding"]["rate_pct"]
-                    }
-                    conf_winrate = isotonic_win_prob * 100.0  # fallback to isotonic
-                    conf_samples = 100
+                    # ─── CONFIDENCE (heuristic; sample_size=0 marks it as UNCALIBRATED) ────────
+                    # Honest placeholder until the isotonic model is trained on real outcomes.
+                    conf_winrate = max(30.0, min(70.0, 35.0 + ultra_score * 0.25))
                     confidence_data = {
-                        "bucket": "HIGH_CONFIDENCE" if conf_winrate > 55 else "MEDIUM_CONFIDENCE",
+                        "bucket": "HIGH_CONFIDENCE" if ultra_score >= 75 else ("MEDIUM_CONFIDENCE" if ultra_score >= 55 else "LOW_CONFIDENCE"),
                         "win_rate": conf_winrate,
-                        "sample_size": conf_samples
+                        "sample_size": 0
                     }
-                    logger.info(f"🧠 ML Confidence Score: {conf_winrate:.1f}% (Shadow Mode Mock)")
 
-                    # ─── BUILD SIGNAL PACKAGE ─────────────────────────────────────────────────
-                    dir_emoji   = "🚀" if trade_direction == "LONG" else "🔻"
+                    # ─── OPEN PAPER TRADE WITH REAL STRUCTURAL SL/TP ───────────────────────────
+                    # ExitEngine v2 takes over from here: partial TP -> BE -> trailing -> exit.
+                    await create_shadow_trade(
+                        symbol=symbol,
+                        direction=trade_direction,
+                        strategy=trade_strategy or "TREND",
+                        entry_price=current_price,
+                        stop_loss=sl_price,
+                        take_profit_1=tp1_price,
+                        take_profit_2=tp2_price,
+                        take_profit_3=tp3_price,
+                        v7_score=v7_score,
+                        regime=regime_val,
+                        breadth=breadth_pct,
+                        cvd_score=cvd_score_val,
+                        mtf_score=mtf_score_val
+                    )
+                    self.position_guard.on_trade_opened(symbol)
+                    logger.info(
+                        f"[PAPER_TRADE_OPENED] {symbol} {trade_direction} | Entry {format_price(current_price)} "
+                        f"| SL {format_price(sl_price)} ({sl_pct*100:.2f}%) | TP1 {format_price(tp1_price)} "
+                        f"| R:R {rr_ratio:.2f} | Size ${position_usd:.0f} | TP source: {sltp.structure_target_type}"
+                    )
+
+                    # ─── LIVE EXECUTION (only when explicitly enabled) ─────────────────────────
+                    if self.config.trading.live_trading_enabled and trade_direction == "LONG":
+                        try:
+                            from services.execution.order_router import ExecutionRequest
+                            from services.execution.transaction_cost_model import OrderUrgency
+
+                            urg = OrderUrgency.HIGH if trade_strategy == "MEAN_REVERSION" else OrderUrgency.MEDIUM
+                            req = ExecutionRequest(
+                                symbol=symbol,
+                                direction=trade_direction,
+                                amount=position_usd / current_price,
+                                current_price=current_price,
+                                urgency=urg,
+                                stop_loss=sl_price,
+                                take_profit=tp1_price
+                            )
+                            order = await self.order_router.submit_aggressive_entry(req)
+                            live_fill = order.get('average', current_price) or current_price
+                            logger.info(f"LIVE Aggressive Limit routed for {symbol} at ~{live_fill}")
+                        except Exception as exec_err:
+                            logger.error(f"Failed to execute LIVE order for {symbol} (paper trade still tracked): {exec_err}")
+
+                    # ─── BUILD SIGNAL PACKAGE (REAL numbers, no mocks) ─────────────────────────
                     strat_label = trade_strategy if trade_strategy else "TREND"
-
                     signal_data = {
                         "symbol":               symbol,
                         "direction":            trade_direction,
                         "strategy":             strat_label,
+                        "source":               "MARKET",
                         "is_squeeze":           is_squeeze,
+                        "entry_price":          current_price,
                         "entry_low":            current_price * (0.999 if trade_direction == "LONG" else 1.001),
                         "entry_high":           current_price * (1.001 if trade_direction == "LONG" else 0.999),
-                        "stop_loss":            sltp.stop_loss,
-                        "tp1":                  sltp.take_profit_1,
+                        "stop_loss":            sl_price,
+                        "tp1":                  tp1_price,
+                        "tp2":                  tp2_price,
+                        "tp3":                  tp3_price,
                         "score":                ultra_score,
                         "regime":               regime_val,
                         "rsi":                  rsi_now,
-                        "funding_rate":         market_ctx["funding"]["rate_pct"],
-                        "oi_change":            market_ctx["open_interest"]["change_pct"],
+                        "funding_rate":         funding_rate * 100 if funding_rate else market_ctx["funding"]["rate_pct"],
+                        "oi_change":            oi_change_1h,
                         "fear_greed":           market_ctx["fear_greed"]["value"],
                         "btc_dominance":        market_ctx["btc_dominance"]["value"],
                         "vwap_label":           indicators["vwap"]["label"],
@@ -1821,151 +1838,6 @@ class ApexSystem:
                         "confidence_sample_size": confidence_data["sample_size"]
                     }
 
-                    # ─── FEATURES DICT ────────────────────────────────────────────────────────
-                    features_dict = {
-                        "regime":               regime_val,
-                        "ultra_score":          ultra_score,
-                        "fvg_count":            len(smc_analysis.imbalance_zones),
-                        "btc_rsi":              btc_rsi if 'btc_rsi' in locals() else 50.0,
-                        "funding_rate":         market_ctx["funding"]["rate_pct"] if "funding" in market_ctx else 0.0,
-                        "oi_change":            market_ctx["open_interest"]["change_pct"] if "open_interest" in market_ctx else 0.0,
-                        "fg_index":             market_ctx["fear_greed"]["value"] if "fear_greed" in market_ctx else 50.0,
-                        "mtf_score":            mtf_score_val,
-                        "cvd_score":            cvd_score_val,
-                        "strategy":             trade_strategy,
-                        "direction":            trade_direction,
-                        "slippage":             spread_pct / 2.0, 
-                        "spread_at_entry":      spread_pct, 
-                        "btc_trend_strength":   float(market_ctx.get("btc_dominance", {}).get("value", 55.0)), 
-                        "volume_spike_score":   vol_ratio_15m,
-                    }
-
-                    # ─── DUAL SIGNAL PATH (MARKET vs LIMIT) ──────────────────────────────────
-                    structural_sl_pct = abs(current_price - sltp.stop_loss) / current_price * 100
-                    
-                    # NOTE: funding.is_valid and oi.is_valid are always False on MEXC/Binance Spot.
-                    # Removed them from gate — they were physically blocking ALL market orders.
-                    # Funding/OI context is still used as scoring bonus/penalty via confluence engine.
-                    is_market_entry = (
-                        ultra_score >= 72.0 and
-                        structural_sl_pct <= 3.0 and
-                        premium_discount < 0.75 and
-                        breadth_pct >= 20.0 and
-                        health_data["market_allowed"]
-                    )
-
-                    if is_market_entry:
-                        amount = position_usd / current_price
-                        entry_price = current_price
-                        sl_order_id = None
-                        tp_order_id = None
-                        execution_mode = "DEMO"
-                        trade_status = "OPEN"
-                        
-                        if not self.config.trading.live_trading_enabled:
-                            logger.info(f"[DEMO MODE] {symbol} Market entry simulated. No real order sent.")
-                        elif trade_direction == "SHORT":
-                            logger.info(f"[SPOT ROUTER GUARD] {symbol} Short entry blocked from LIVE MEXC Spot execution. Falling back to Phase A DEMO execution.")
-                            execution_mode = "DEMO"
-                        else:
-                            execution_mode = "LIVE"
-                            # 1. Place Aggressive Limit Entry via OrderRouter
-                            try:
-                                from services.execution.order_router import ExecutionRequest
-                                from services.execution.transaction_cost_model import OrderUrgency
-                                
-                                urg = OrderUrgency.HIGH if trade_strategy == "MEAN_REVERSION" else OrderUrgency.MEDIUM
-                                req = ExecutionRequest(
-                                    symbol=symbol,
-                                    direction=trade_direction,
-                                    amount=amount,
-                                    current_price=current_price,
-                                    urgency=urg,
-                                    stop_loss=sltp.stop_loss,
-                                    take_profit=sltp.take_profit_1
-                                )
-                                order = await self.order_router.submit_aggressive_entry(req)
-                                entry_price = order.get('average', current_price) or current_price
-                                filled_amount = order.get('amount', amount)
-                                sl_order_id = "async_router_managed"
-                                tp_order_id = "async_router_managed"
-                                trade_status = "OPEN_ROUTER_MANAGED"
-                                logger.info(f"LIVE Aggressive Limit routed for {symbol} at ~{entry_price}")
-                                
-                            except Exception as exec_err:
-                                logger.error(f"Failed to execute Aggressive Limit Order for {symbol}: {exec_err}")
-                                continue
-                                
-                        # Save to TimescaleDB
-                        signal_dict = {
-                            "timestamp": datetime.now(timezone.utc),
-                            "symbol": symbol,
-                            "strategy": trade_strategy,
-                            "direction": trade_direction,
-                            "status": trade_status,
-                            "entry_price": entry_price,
-                            "sl_price": sltp.stop_loss,
-                            "tp1_price": sltp.take_profit_1,
-                            "tp2_price": sltp.take_profit_2,
-                            "tp3_price": sltp.take_profit_3,
-                            "v7_score_raw": ultra_score,
-                            "mtf_score": mtf_score_val,
-                            "regime": regime_val,
-                            "session": SessionTagger.get_session(datetime.now(timezone.utc)),
-                            "logic_version": "10.5.0",
-                            "is_shadow": False
-                        }
-                        signal_id = await insert_signal_record(signal_dict)
-                        await insert_shadow_trade(
-                            signal_id=signal_id,
-                            symbol=symbol,
-                            session=signal_dict["session"],
-                            regime=regime_val,
-                            logic_version="10.5.0"
-                        )
-                        
-                        logger.info(f"🟢 SIGNAL {signal_id} SAVED TO TIMESCALEDB (SHADOW MODE)")
-                        
-                        import structlog
-                        struct_logger = structlog.get_logger("telemetry")
-                        struct_logger.info(
-                            "MARKET_ENTRY",
-                            symbol=symbol,
-                            avg_fill_price=entry_price,
-                            sl_order_id=sl_order_id,
-                            tp_order_id=tp_order_id,
-                            source="MARKET",
-                            mode=execution_mode,
-                            status=trade_status
-                        )
-                        logger.info(f"MARKET Signal executed ({execution_mode}): {symbol} {trade_direction}")
-                        signal_data["source"] = "MARKET"
-
-                    else:
-                        # ─── LIMIT / PULLBACK PATH ────────────────────────────────────────────────
-                        from database.timescaledb import save_pullback_item
-                        # Calculate a logical swing low. Assuming sltp.stop_loss is at or below it.
-                        await save_pullback_item(
-                            symbol=symbol,
-                            direction=trade_direction,
-                            score=ultra_score,
-                            original_entry=current_price,
-                            swing_low=sltp.stop_loss, 
-                            limit_entries=[{"price": current_price, "size": 1.0}],
-                            stop_loss=sltp.stop_loss,
-                            take_profit_1=sltp.take_profit_1,
-                            take_profit_2=sltp.take_profit_2,
-                            take_profit_3=sltp.take_profit_3,
-                            position_usd=position_usd,
-                            ttl_minutes=120,
-                            regime=regime_val,
-                            original_breadth=breadth_pct,
-                            original_mtf=mtf_score_val,
-                            original_cvd=cvd_score_val
-                        )
-                        logger.info(f"Signal routed to LIMIT Watchlist: {symbol} {trade_direction} [{strat_label}]")
-                        signal_data["source"] = "LIMIT"
-                        
                     # ─── SEND TO TELEGRAM ─────────────────────────────────────────────────────
                     try:
                         from aiogram import Bot
@@ -2069,9 +1941,11 @@ class ApexSystem:
     async def background_pullback_tracker(self):
         """Continuously monitors pullback watchlist items for limit grid hits, audits score decays, and handles promotions."""
         from database.timescaledb import (
-            get_active_pullback_items, 
-            update_pullback_status, 
-            expire_old_pullback_items, 
+            get_active_pullback_items,
+            update_pullback_status,
+            expire_old_pullback_items,
+            get_expiring_pullback_items,
+            update_pullback_brackets_json,
             save_trade,
             get_pullback_items_by_status,
             update_pullback_limit_entries
@@ -2079,7 +1953,6 @@ class ApexSystem:
         from services.indicators.market_data import get_market_context
         from services.intelligence.cvd_engine import calculate_cvd
         import json
-        import aiosqlite
         import time
         
         last_score_audit_time = 0.0
@@ -2087,18 +1960,11 @@ class ApexSystem:
         
         while self.running:
             try:
-                # 1. Expire outdated watchlists
+                # 1. Expire outdated watchlists (PostgreSQL — pullback_watchlist lives there,
+                # the old code read a stale local SQLite copy and saw nothing)
                 try:
-                    import aiosqlite
-                    db_path = "apex_lite.db"
-                    async with aiosqlite.connect(db_path) as db:
-                        db.row_factory = aiosqlite.Row
-                        async with db.execute('''
-                            SELECT * FROM pullback_watchlist
-                            WHERE (status = 'WAITING' OR status = 'WAITING_STRUCTURE') AND datetime(ttl_expiry) <= datetime('now')
-                        ''') as cursor:
-                            expiring_items = [dict(row) for row in await cursor.fetchall()]
-                            
+                    expiring_items = await get_expiring_pullback_items()
+
                     for exp_item in expiring_items:
                         exp_symbol = exp_item['symbol']
                         exp_status = 'EXPIRED' if exp_item['status'] == 'WAITING' else 'EXPIRED_STRUCTURE'
@@ -2153,33 +2019,11 @@ class ApexSystem:
                             
                             mtf_score = self.mtf_engine.get_alignment_score(symbol, tf_data)
                             mtf_val = mtf_score.score
-                            
-                            # SMC analysis
-                            smc_analysis = self.smc_core.analyze(df_1h, symbol)
-                            
-                            # Confluence V7 score re-calculation
-                            from shared.models import Direction, MarketRegime
-                            from services.intelligence.ofi_engine import OFIResult
-                            
-                            dir_enum = Direction.LONG if item.get('direction', 'LONG') == 'LONG' else Direction.SHORT
-                            current_regime = MarketRegime(item.get('regime', 'BULL'))
-                            ofi_mock = OFIResult(0.0, 0.0, 0.0)
-                            
-                            confluence = await self.confluence_engine.calculate_score(
-                                symbol=symbol,
-                                direction=dir_enum,
-                                current_price=df_1h['close'].iloc[-1],
-                                df_1h=df_1h,
-                                rsi_series=100 - (100 / (1 + rs)),
-                                smc=smc_analysis,
-                                mtf_score=mtf_score,
-                                ofi=ofi_mock,
-                                regime=current_regime,
-                                macro_bias=self.macro_state.macro_bias.value,
-                                rotation_signal=self.rotation_state
-                            )
-                            
-                            # Score decay is now handled by explicit CVD and MTF checks below
+
+                            # NOTE (audit v11.1): unused ConfluenceV4 re-calculation removed —
+                            # its result was discarded ("score decay handled by explicit CVD/MTF
+                            # checks below") while costing API calls and passing an MTFScore
+                            # object where the engine expects a float.
                             
                             # Enriched Cancellations Check (APEX v10.4)
                             current_price = df_1h['close'].iloc[-1]
@@ -2487,7 +2331,7 @@ class ApexSystem:
                                 passed = await self.pre_route_gate_check(symbol, direction)
                                 
                                 if passed:
-                                    # Execute paper entry!
+                                    # Execute paper entry! (save_trade signature: no tp2/tp3 params)
                                     await save_trade(
                                         signal_id=f"pullback_{item['id']}_{idx}",
                                         symbol=symbol,
@@ -2495,9 +2339,8 @@ class ApexSystem:
                                         entry_price=bracket_price,
                                         stop_loss=item['stop_loss'],
                                         take_profit_1=item['take_profit_1'],
-                                        take_profit_2=item['take_profit_2'],
-                                        take_profit_3=item['take_profit_3'],
                                         position_usd=item['position_usd'] * (bracket['size_pct'] / 100.0),
+                                        reasoning="Pullback limit fill",
                                         strategy="PULLBACK"
                                     )
                                     bracket["filled"] = True
@@ -2552,15 +2395,8 @@ class ApexSystem:
                             if all_filled:
                                 await update_pullback_status(item['id'], 'FILLED')
                             else:
-                                # Partially filled, save updated brackets JSON
-                                db_path = "apex_lite.db"
-                                async with aiosqlite.connect(db_path) as db:
-                                    await db.execute('''
-                                        UPDATE pullback_watchlist
-                                        SET limit_entries = ?
-                                        WHERE id = ?
-                                    ''', (json.dumps(limit_entries), item['id']))
-                                    await db.commit()
+                                # Partially filled, save updated brackets JSON (PostgreSQL)
+                                await update_pullback_brackets_json(item['id'], limit_entries)
             except Exception as e:
                 logger.error(f"Error in background pullback tracker: {e}")
                 
@@ -2574,12 +2410,16 @@ class ApexSystem:
         
         # Start background tasks
         asyncio.create_task(self.background_macro_updater())
-        asyncio.create_task(self.background_trade_tracker())
-        # asyncio.create_task(self.background_missed_signals_tracker())
-        # asyncio.create_task(self.background_pullback_tracker())
+        asyncio.create_task(self.background_trade_tracker())      # safety net for trades ExitEngine can't see
+        asyncio.create_task(self.background_missed_signals_tracker())
+        asyncio.create_task(self.background_pullback_tracker())   # re-enabled: ported off stale SQLite to PostgreSQL
         asyncio.create_task(self.fill_monitor.start())
         asyncio.create_task(self.order_router.start_limit_dispatcher())
-        asyncio.create_task(self.exit_engine.start())
+        asyncio.create_task(self.exit_engine.start())             # PRIMARY trade manager (v2)
+        # Resolves blocked counterfactuals in shadow_trades_blocked (was never started before)
+        from services.engine.shadow_monitor import ShadowTradeMonitor
+        self.shadow_monitor = ShadowTradeMonitor()
+        asyncio.create_task(self.shadow_monitor.start())
         asyncio.create_task(self.ws_manager.start(self.config.trading.symbols))
         asyncio.create_task(rs_matrix_engine.fast_price_poller(self.config.trading.symbols))
         
