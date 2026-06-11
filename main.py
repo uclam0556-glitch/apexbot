@@ -1189,12 +1189,22 @@ class ApexSystem:
                     # ─── V7 ADAPTIVE SCORING (0-100) ───────────────────────────────────────────
                     v7_score = ultra_score * 10.0
                     
-                    # ─── PHASE 2 LIQUIDATION MODIFIERS ─────────────────────────────────────────
+                    # ─── PHASE 2 POSITIONING MODIFIERS (FUNDING / LSR CROWDING) ────────────────
                     if trade_direction == "SHORT":
                         v7_score += funding_signal.score_modifier
                         v7_score += lsr_signal.score_modifier
                         if funding_signal.score_modifier != 0 or lsr_signal.score_modifier != 0:
                             logger.info(f"{symbol} - Phase 2 Shorts applied: Funding {funding_signal.bias} ({funding_signal.score_modifier}), LSR {lsr_signal.bias} ({lsr_signal.score_modifier})")
+                    else:
+                        # Positioning edge for LONGS (audit v11.1): engines' modifiers are
+                        # short-oriented, so invert. Crowded shorts (negative modifier) are
+                        # squeeze fuel for longs; crowded longs are exit liquidity.
+                        # Conservative 0.5x weight, capped at +/-10 until calibrated on outcomes.
+                        long_positioning = -(funding_signal.score_modifier + lsr_signal.score_modifier) * 0.5
+                        long_positioning = max(-10.0, min(10.0, long_positioning))
+                        if long_positioning != 0:
+                            v7_score += long_positioning
+                            logger.info(f"{symbol} - Positioning modifier for LONG: {long_positioning:+.1f} (Funding {funding_signal.bias}, LSR {lsr_signal.bias})")
                         
                     # ─── V9 QUANT INDICES (MULTICOLLINEARITY FIX) ─────────────────────────
                     # 1. OVEREXTENSION INDEX
