@@ -343,12 +343,12 @@ async def insert_shadow_trade(signal_id: int, symbol: str, session: str, regime:
             logic_version
         )
 
-async def update_shadow_trade(signal_id: int, outcome: str, mfe_pct: float, mae_pct: float, bars: int):
+async def update_shadow_trade(signal_id: int, outcome: str, mfe_pct: float, mae_pct: float, bars: int, pnl_pct: float = 0.0):
     pool = await get_pool()
     query1 = """
         UPDATE shadow_trades
-        SET outcome = $1, mfe_pct = $2, mae_pct = $3, bars_to_outcome = $4, resolved_at = $5
-        WHERE signal_id = $6;
+        SET outcome = $1, mfe_pct = $2, mae_pct = $3, bars_to_outcome = $4, resolved_at = $5, pnl_pct = $6, realized_pnl_pct = $6
+        WHERE signal_id = $7;
     """
     query2 = """
         UPDATE shadow_trades_blocked
@@ -356,7 +356,7 @@ async def update_shadow_trade(signal_id: int, outcome: str, mfe_pct: float, mae_
         WHERE signal_id = $6;
     """
     async with pool.acquire() as conn:
-        await conn.execute(query1, outcome, mfe_pct, mae_pct, bars, datetime.now(timezone.utc), signal_id)
+        await conn.execute(query1, outcome, mfe_pct, mae_pct, bars, datetime.now(timezone.utc), pnl_pct, signal_id)
         await conn.execute(query2, outcome, mfe_pct, mae_pct, bars, datetime.now(timezone.utc), signal_id)
 
 async def update_signal_status(signal_id: int, status: str):
@@ -368,14 +368,16 @@ async def update_signal_status(signal_id: int, status: str):
 async def get_open_shadow_trades() -> list:
     pool = await get_pool()
     # Only return NON-shadow (is_shadow=False) open trades for the background tracker.
-    # Shadow/blocked trades are handled exclusively by ShadowMonitor.
+    # last_update_at is exposed so the tracker can skip trades actively managed by ExitEngine
+    # (single-owner rule: ExitEngine is primary, tracker is the stale-trade safety net).
     query = '''
         SELECT st.signal_id as id, st.symbol, st.created_at as opened_at, st.mfe_pct, st.mae_pct,
-               s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1, 
+               st.last_update_at, st.partial_exit_count, st.remaining_size_pct, st.realized_pnl_pct,
+               s.entry_price, s.sl_price as stop_loss, s.tp1_price as take_profit_1,
                s.tp2_price as take_profit_2, s.tp3_price as take_profit_3, s.direction, s.strategy, s.status, s.is_shadow
         FROM shadow_trades st
         JOIN signals s ON st.signal_id = s.id
-        WHERE st.outcome = 'OPEN' AND s.is_shadow = FALSE;
+        WHERE st.outcome IN ('OPEN', 'PARTIAL_TP', 'BREAKEVEN', 'TRAILING') AND s.is_shadow = FALSE;
     '''
     async with pool.acquire() as conn:
         records = await conn.fetch(query)
@@ -447,15 +449,28 @@ async def insert_filter_block_record(symbol: str, strategy: str, block_reason: s
             "10.5.0",
             True
         )
+        # Dual-write into filter_audit so per-filter efficiency is queryable directly
+        # (previously this table existed but was never populated).
+        try:
+            await conn.execute(
+                """
+                INSERT INTO filter_audit (symbol, direction, filter_name, price_at_block, created_at)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                symbol, "LONG", block_reason, score, datetime.now(timezone.utc)
+            )
+        except Exception as fa_err:
+            logger.debug(f"filter_audit insert failed (non-fatal): {fa_err}")
 
 async def is_on_cooldown(symbol: str, cooldown_hours: int = 4) -> bool:
     try:
         pool = await get_pool()
         query = """
-            SELECT COUNT(*) FROM signals 
-            WHERE symbol = $1 
+            SELECT COUNT(*) FROM signals
+            WHERE symbol = $1
             AND created_at >= NOW() - INTERVAL '1 hour' * $2
-            AND status IN ('ACCEPTED', 'ENTERED')
+            AND is_shadow = FALSE
+            AND status NOT IN ('REJECTED_BY_FILTER', 'BLOCKED', 'CANCELLED')
         """
         async with pool.acquire() as conn:
             count = await conn.fetchval(query, symbol, cooldown_hours)
@@ -647,8 +662,9 @@ async def factory_reset_db():
 async def get_open_trades():
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Only count real (is_shadow=FALSE) trades for ExposureManager slot calculation
-        return await conn.fetch("SELECT * FROM signals WHERE status IN ('OPEN', 'BREAKEVEN') AND is_shadow = FALSE")
+        # Only count real (is_shadow=FALSE) trades for ExposureManager slot calculation.
+        # PARTIAL_TP/TRAILING are open states written by ExitEngine v2.
+        return await conn.fetch("SELECT * FROM signals WHERE status IN ('OPEN', 'BREAKEVEN', 'PARTIAL_TP', 'TRAILING') AND is_shadow = FALSE")
 
 async def save_pullback_item(
     symbol: str, direction: str, score: float, original_entry: float, swing_low: float,
@@ -671,6 +687,33 @@ async def save_pullback_item(
         ''', symbol, direction, score, original_entry, swing_low, limit_json, stop_loss,
              take_profit_1, take_profit_2, take_profit_3, position_usd, expiry, regime, status,
              datetime.now(timezone.utc), original_breadth, original_mtf, original_cvd)
+
+async def expire_old_pullback_items():
+    """Mark TTL-expired watchlist items so they stop counting toward exposure slots."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE pullback_watchlist
+            SET status = CASE WHEN status = 'WAITING' THEN 'EXPIRED' ELSE 'EXPIRED_STRUCTURE' END
+            WHERE status IN ('WAITING', 'WAITING_STRUCTURE') AND ttl_expiry <= NOW()
+        """)
+
+async def get_expiring_pullback_items():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT * FROM pullback_watchlist
+            WHERE status IN ('WAITING', 'WAITING_STRUCTURE') AND ttl_expiry <= NOW()
+        """)
+        return [dict(r) for r in rows]
+
+async def update_pullback_brackets_json(item_id: int, limit_entries: list):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE pullback_watchlist SET limit_entries = $1 WHERE id = $2",
+            json.dumps(limit_entries), item_id
+        )
 
 async def get_active_pullback_items():
     pool = await get_pool()
@@ -701,31 +744,46 @@ async def update_pullback_limit_entries(
         ''', limit_json, take_profit_1, take_profit_2, take_profit_3, new_status, exchange_order_id, item_id)
 
 async def get_tracking_shadow_trades():
+    # 'src' discriminates the physical table. CRITICAL: shadow_trades and
+    # shadow_trades_blocked have independent id sequences — updating a blocked
+    # trade's id against shadow_trades corrupts an unrelated real trade.
     pool = await get_pool()
     async with pool.acquire() as conn:
         return await conn.fetch("""
-            SELECT st.id, st.signal_id, st.symbol, st.created_at, st.resolved_at,
+            SELECT 'real' as src, st.id, st.signal_id, st.symbol, st.created_at, st.resolved_at,
                    st.outcome, st.mfe_pct, st.mae_pct, COALESCE(st.pnl_pct, 0.0) as pnl_pct,
                    st.bars_to_outcome, st.session_tag, st.regime_at_entry, st.logic_version,
                    s.direction, s.entry_price, s.sl_price as stop_loss,
                    s.tp1_price as take_profit_1, s.strategy,
                    st.highest_price_seen, st.lowest_price_seen, st.partial_exit_count,
-                   st.remaining_size_pct, st.breakeven_activated, st.trailing_stop_price
-            FROM shadow_trades st 
-            JOIN signals s ON st.signal_id = s.id 
+                   st.remaining_size_pct, st.breakeven_activated, st.trailing_stop_price,
+                   st.unrealized_pnl_pct
+            FROM shadow_trades st
+            JOIN signals s ON st.signal_id = s.id
             WHERE st.outcome IN ('OPEN', 'PARTIAL_TP', 'BREAKEVEN', 'TRAILING')
             UNION ALL
-            SELECT st.id, st.signal_id, st.symbol, st.created_at, st.resolved_at,
+            SELECT 'blocked' as src, st.id, st.signal_id, st.symbol, st.created_at, st.resolved_at,
                    st.outcome, st.mfe_pct, st.mae_pct, 0.0 as pnl_pct,
                    st.bars_to_outcome, st.session_tag, st.regime_at_entry, st.logic_version,
                    s.direction, s.entry_price, s.sl_price as stop_loss,
                    s.tp1_price as take_profit_1, s.strategy,
                    st.highest_price_seen, st.lowest_price_seen, st.partial_exit_count,
-                   st.remaining_size_pct, st.breakeven_activated, st.trailing_stop_price
-            FROM shadow_trades_blocked st 
-            JOIN signals s ON st.signal_id = s.id 
+                   st.remaining_size_pct, st.breakeven_activated, st.trailing_stop_price,
+                   st.unrealized_pnl_pct
+            FROM shadow_trades_blocked st
+            JOIN signals s ON st.signal_id = s.id
             WHERE st.outcome IN ('OPEN', 'PARTIAL_TP', 'BREAKEVEN', 'TRAILING')
         """)
+
+async def update_shadow_trade_blocked_status(trade_id: int, outcome: str, mfe_pct: float, mae_pct: float, duration: int):
+    """Resolve a blocked counterfactual trade (shadow_trades_blocked only — never touches real trades)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            UPDATE shadow_trades_blocked
+            SET outcome = $1, mfe_pct = $2, mae_pct = $3, bars_to_outcome = $4, resolved_at = NOW()
+            WHERE id = $5
+        ''', outcome, mfe_pct, mae_pct, duration, trade_id)
 
 async def update_shadow_trade_status(trade_id: int, outcome: str, mfe_pct: float, mae_pct: float, duration: int, pnl_pct: float = 0.0):
     pool = await get_pool()
@@ -760,26 +818,50 @@ async def update_exit_engine_state(trade_id: int, state_updates: dict):
     - exit_reason
     - status / outcome
     """
+    # Whitelist of columns this function may touch (protects against SQL injection via dict keys)
+    ALLOWED_COLUMNS = {
+        "outcome", "exit_reason", "unrealized_pnl_pct", "realized_pnl_pct", "pnl_pct",
+        "highest_price_seen", "lowest_price_seen", "partial_exit_count",
+        "remaining_size_pct", "breakeven_activated", "trailing_stop_price",
+        "mfe_pct", "mae_pct", "bars_to_outcome", "resolved_at",
+    }
+    # Any of these outcomes means the trade is finished — signals.status MUST be synced,
+    # otherwise ExposureManager keeps counting phantom open slots ("max slots 1/1" bug).
+    TERMINAL_OUTCOMES = {
+        "WON", "LOST", "WON_BREAKEVEN", "BREAKEVEN_CLOSED", "TIMEOUT",
+        "TIMEOUT_SMALL_WIN", "TIMEOUT_SMALL_LOSS", "TIMEOUT_BREAKEVEN",
+        "CLOSED_WON", "CLOSED_LOST", "CLOSED_BREAKEVEN", "CANCELLED", "EXPIRED_UNTRACKED",
+    }
     pool = await get_pool()
     async with pool.acquire() as conn:
         set_clauses = []
         values = []
-        for i, (k, v) in enumerate(state_updates.items(), start=1):
+        outcome_value = None
+        for k, v in state_updates.items():
             if k == "status":
                 k = "outcome"
-            set_clauses.append(f"{k} = ${i}")
+            if k not in ALLOWED_COLUMNS:
+                logger.warning(f"[ExitEngine] Ignoring unknown column in state update: {k}")
+                continue
+            if k == "outcome":
+                outcome_value = v
             values.append(v)
-            
-        set_clauses.append(f"last_update_at = NOW()")
-        
+            set_clauses.append(f"{k} = ${len(values)}")
+
+        is_terminal = outcome_value in TERMINAL_OUTCOMES
+        set_clauses.append("last_update_at = NOW()")
+        if is_terminal:
+            set_clauses.append("resolved_at = COALESCE(resolved_at, NOW())")
+
         if set_clauses:
             query = f"UPDATE shadow_trades SET {', '.join(set_clauses)} WHERE id = ${len(values)+1} RETURNING signal_id"
             values.append(trade_id)
             row = await conn.fetchrow(query, *values)
-            
-            # Sync signal status if outcome is provided
-            if row and row['signal_id'] and "status" in state_updates:
-                await conn.execute("UPDATE signals SET status = $1 WHERE id = $2", state_updates["status"], row['signal_id'])
+
+            # Sync signals.status on ANY outcome change (open-state or terminal),
+            # so ExposureManager slot counting always matches reality.
+            if row and row['signal_id'] and outcome_value is not None:
+                await conn.execute("UPDATE signals SET status = $1 WHERE id = $2", outcome_value, row['signal_id'])
 
 async def get_unchecked_missed_signals():
     pool = await get_pool()

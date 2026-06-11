@@ -5,7 +5,7 @@ import aiosqlite
 import ccxt.async_support as ccxt
 import json
 
-from database.timescaledb import get_tracking_shadow_trades, update_shadow_trade_status, get_pool
+from database.timescaledb import get_tracking_shadow_trades, update_shadow_trade_blocked_status, get_pool
 from shared.config import get_config
 
 logger = logging.getLogger("ShadowMonitor")
@@ -39,7 +39,9 @@ class ShadowTradeMonitor:
             await asyncio.sleep(60)  # Check once per minute
 
     async def _check_shadow_trades(self):
-        trades = await get_tracking_shadow_trades()
+        # This monitor resolves ONLY blocked counterfactuals (shadow_trades_blocked).
+        # Real open trades are managed exclusively by ExitEngine.
+        trades = [t for t in await get_tracking_shadow_trades() if t.get('src') == 'blocked']
         if not trades:
             return
             
@@ -250,15 +252,14 @@ class ShadowTradeMonitor:
                 duration_bars = int((now - created_at).total_seconds() / 60)
                 
             if status != 'TRACKING':
-                await update_shadow_trade_status(t['id'], status, mfe, mae, duration_bars, pnl_pct)
-                logger.info(f"[PAPER_TRADE_CLOSED] {sym} {direction} [{strategy}] resolved as {status}. MFE: +{mfe:.2f}%, MAE: {mae:.2f}%, PnL: {pnl_pct:.2f}%")
+                await update_shadow_trade_blocked_status(t['id'], status, mfe, mae, duration_bars)
+                logger.info(f"[BLOCKED_SHADOW_RESOLVED] {sym} {direction} [{strategy}] resolved as {status}. MFE: +{mfe:.2f}%, MAE: {mae:.2f}%, PnL: {pnl_pct:.2f}%")
             else:
-                logger.info(f"[PAPER_TRADE_UPDATED] {sym} | Status: TRACKING | PnL: {pnl_pct:.2f}% | MFE: +{mfe:.2f}% | MAE: {mae:.2f}% | Age: {duration_bars}m")
-                # Still tracking, but update MFE/MAE in DB so we can see it on the dashboard
+                # Still tracking, update MFE/MAE in shadow_trades_blocked for dashboard visibility
                 pool = await get_pool()
                 async with pool.acquire() as conn:
                     await conn.execute('''
-                        UPDATE shadow_trades 
+                        UPDATE shadow_trades_blocked
                         SET mfe_pct = $1, mae_pct = $2, bars_to_outcome = $3
                         WHERE id = $4
                     ''', mfe, mae, duration_bars, t['id'])
